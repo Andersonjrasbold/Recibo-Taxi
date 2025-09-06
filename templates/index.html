@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="pt-br" class="h-100" data-bs-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recibo Taxi</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background-color: #ff6d4d; color: #fff; }
+    .nav-masthead .nav-link { color: #000 !important; }
+    .nav-masthead .nav-link.active { border-bottom: 2px solid #000; }
+  </style>
+</head>
+<body class="d-flex h-100 text-center">
+  <div class="cover-container d-flex w-100 h-100 p-3 mx-auto flex-column">
+
+    <!-- Header alinhado com Flexbox -->
+    <header class="mb-2">
+      <div class="d-flex justify-content-center align-items-center">
+        <nav class="nav nav-masthead">
+          <a class="nav-link fw-bold py-1 px-3 active" aria-current="page" href="#">Home</a>
+          <a class="nav-link fw-bold py-1 px-3" href="#">Cadastro</a>
+          
+        </nav>
+      </div>
+    </header>
+
+    <main class="px-3">
+      <!-- Logo -->
+      <img src="/static/img/semfundo.png" alt="Logo Recibo Taxi"
+           class="d-block mx-auto mb-4" style="max-width: 700px; height: auto;">
+
+      <h1>Recibos digitais</h1>
+      <p class="lead">
+        Substitua o papel por recibos digitais. Gere QR Code, envie por WhatsApp ou E-mail – mesmo offline.
+      </p>
+
+      <!-- Botão que abre o modal -->
+      <p class="lead">
+        <button class="btn btn-lg btn-light fw-bold border-white bg-white text-dark"
+                data-bs-toggle="modal" data-bs-target="#modalRecibo">
+          Gerar Recibo
+        </button>
+      </p>
+    </main>
+
+    <footer class="mt-auto text-white-50">
+      <p>Projeto SaaS para taxistas.</p>
+    </footer>
+  </div>
+
+  <!-- Modal: Formulário de novo recibo -->
+  <div class="modal fade" id="modalRecibo" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <form class="modal-content" method="POST" action="/recibo">
+        <div class="modal-header">
+          <h5 class="modal-title">Novo Recibo</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        </div>
+
+        <div class="modal-body">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Passageiro</label>
+              <input name="passageiro" class="form-control" placeholder="Nome do passageiro">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Data</label>
+              <input type="date" name="data" class="form-control" required>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Origem</label>
+              <input name="origem" class="form-control" placeholder="Ponto de partida">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Destino</label>
+              <input name="destino" class="form-control" placeholder="Destino">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Valor (R$)</label>
+              <input name="valor" class="form-control" placeholder="Ex: 45,00" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Forma de pagamento</label>
+              <select name="forma_pagamento" class="form-select">
+                <option>Dinheiro</option>
+                <option>Cartão</option>
+                <option>Pix</option>
+              </select>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Placa</label>
+              <input name="placa" class="form-control" placeholder="ABC1D23">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Motorista</label>
+              <input name="motorista" class="form-control" placeholder="Seu nome">
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">Observações</label>
+              <textarea name="observacoes" class="form-control" rows="2" placeholder="Opcional"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancelar</button>
+          <button class="btn btn-dark" type="submit">Gerar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

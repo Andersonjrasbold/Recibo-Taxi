@@ -31,4 +31,6 @@ EXPOSE 8080
 # 7) Start com gunicorn
 #   - "app:app" = <arquivo_python>:<objeto_flask>
 #   - Se seu entrypoint for outro (ex: wsgi:app), ajuste aqui.
-CMD ["gunicorn", "-w", "4", "-k", "gthread", "-b", "0.0.0.0:8080", "app:app"]
+CMD ["gunicorn", "-w", "4", "-k", "gthread",
+     "--access-logfile", "-", "--error-logfile", "-", "--log-level", "debug",
+     "-b", "0.0.0.0:8080", "app:app"]

@@ -2,7 +2,7 @@ app = "recibo-taxi"
 primary_region = "gru"
 
 [build]
-  dockerfile = "dockerfile"   # minúsculo, igual ao seu arquivo
+  dockerfile = "dockerfile"   # minúsculo se seu arquivo é "dockerfile"
 
 [env]
   PORT = "8080"
@@ -16,17 +16,14 @@ primary_region = "gru"
     soft_limit = 50
     hard_limit = 100
 
-  # HTTP público
   [[services.ports]]
     port = 80
   [[services.ports]]
     port = 443
 
-  # Health check HTTP (testa a rota "/")
- [[services.http_checks]]
-  interval = "15s"
-  timeout = "2s"
-  method = "get"
-  path = "/health"
-  protocol = "http"
-
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "2s"
+    method = "get"
+    path = "/health"
+    protocol = "http"

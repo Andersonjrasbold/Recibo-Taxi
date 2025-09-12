@@ -2,7 +2,7 @@ app = "recibo-taxi"
 primary_region = "gru"
 
 [build]
-  dockerfile = "dockerfile"   # minúsculo se seu arquivo é "dockerfile"
+  dockerfile = "dockerfile"
 
 [env]
   PORT = "8080"
@@ -18,8 +18,11 @@ primary_region = "gru"
 
   [[services.ports]]
     port = 80
+    handlers = ["http"]        # <-- adicionado
+
   [[services.ports]]
     port = 443
+    handlers = ["tls", "http"] # <-- adicionado
 
   [[services.http_checks]]
     interval = "15s"

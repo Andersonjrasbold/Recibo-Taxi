@@ -7,6 +7,11 @@ app = Flask(__name__)
 # "banco" em memória para demo
 RECIBOS = {}
 
+# rota de saúde para o Fly
+@app.route("/health")
+def health():
+    return "OK", 200
+
 @app.route("/")
 def index():
     return render_template("index.html")

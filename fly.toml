@@ -23,9 +23,10 @@ primary_region = "gru"
     port = 443
 
   # Health check HTTP (testa a rota "/")
-  [[services.http_checks]]
-    interval = "15s"
-    timeout = "2s"
-    method = "get"
-    path = "/"
-    protocol = "http"
+ [[services.http_checks]]
+  interval = "15s"
+  timeout = "2s"
+  method = "get"
+  path = "/health"
+  protocol = "http"
+

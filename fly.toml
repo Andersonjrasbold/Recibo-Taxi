@@ -1,30 +1,26 @@
-app = "recibo-taxi"        # <-- se o nome do app no Fly for outro, troque aqui
-primary_region = "gru"
+app = "recibotaxi"        # troque para o nome do seu app no Fly
+primary_region = "gru"    # São Paulo
 
 [build]
-  dockerfile = "Dockerfile"
+  # usa seu Dockerfile automaticamente
 
-# (opcional) algumas libs usam PORT; seu gunicorn já fixa 8080, mas não atrapalha:
 [env]
   PORT = "8080"
 
-[http_service]
+[[services]]
+  protocol = "tcp"
   internal_port = 8080
-  force_https = true
-  auto_stop_machines = true
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ["app"]
-  # limite simples de concorrência por requisições
-  concurrency = { type = "requests", soft_limit = 20, hard_limit = 25 }
 
-# (opcional) healthcheck - habilite se você criou a rota /health no app.py
-# [checks]
-#   [checks.health]
-#     port = 8080
-#     type = "http"
-#     interval = "15s"
-#     timeout = "2s"
-#     grace_period = "30s"
-#     method = "GET"
-#     path = "/health"
+  [services.concurrency]
+    type = "connections"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[services.ports]]
+    port = 80
+  [[services.ports]]
+    port = 443
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"

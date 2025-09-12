@@ -1,24 +1,34 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
-# Configurações básicas do Python (logs imediatos e sem .pyc)
+# 1) Variáveis úteis
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8080
 
 WORKDIR /app
 
-# Instale as dependências primeiro (melhora cache)
-# Certifique-se de ter um requirements.txt na raiz do repo
+# 2) Instala deps de build só se precisar (psycopg / pillow etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+  && rm -rf /var/lib/apt/lists/*
+
+# 3) Dependências Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copie o restante do código
+# 4) Copia o app
 COPY . .
 
-# Exponha a porta que o app usa
+# 5) Usuário não-root (boa prática)
+RUN useradd -m appuser
+USER appuser
+
+# 6) Exponha a porta (tem que bater com fly.toml)
 EXPOSE 8080
 
-# Inicie com gunicorn (4 workers, thread worker, porta 8080)
-# Ajuste "app:app" se seu arquivo/instância tiver outro nome
+# 7) Start com gunicorn
+#   - "app:app" = <arquivo_python>:<objeto_flask>
+#   - Se seu entrypoint for outro (ex: wsgi:app), ajuste aqui.
 CMD ["gunicorn", "-w", "4", "-k", "gthread", "-b", "0.0.0.0:8080", "app:app"]

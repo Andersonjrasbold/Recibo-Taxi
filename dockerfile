@@ -26,4 +26,4 @@ RUN useradd -m appuser
 USER appuser
 
 EXPOSE 8080
-CMD ["python","-m","gunicorn", "-w","1","-k","gthread","--threads","8","--access-logfile","-","--error-logfile","-","--log-level","debug","--forwarded-allow-ips","*","--proxy-headers", "-b","0.0.0.0:8080","app:app"]
+CMD ["gunicorn","-w","1","-k","gthread","--threads","8","--access-logfile","-","--error-logfile","-","--log-level","debug","-b","0.0.0.0:8080","app:app"]

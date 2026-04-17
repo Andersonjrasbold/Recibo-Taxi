@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="dashboard-head">
+  <div class="row g-4 align-items-center">
+    <div class="col-lg-7">
+      <span class="eyebrow">Painel do taxista</span>
+      <h1>Bem-vindo, {{ current_user.full_name }}.</h1>
+      <p class="lead mb-0">Cadastre a corrida, gere o recibo e compartilhe com o passageiro em segundos.</p>
+    </div>
+    <div class="col-lg-5">
+      <div class="card-surface profile-card">
+        <div class="profile-grid">
+          <div>
+            <span class="mini-label">Placa</span>
+            <strong>{{ current_user.plate }}</strong>
+          </div>
+          <div>
+            <span class="mini-label">Cidade</span>
+            <strong>{{ current_user.city }}</strong>
+          </div>
+          <div>
+            <span class="mini-label">WhatsApp</span>
+            <strong>{{ current_user.whatsapp }}</strong>
+          </div>
+          <div>
+            <span class="mini-label">Veiculo</span>
+            <strong>{{ current_user.vehicle_model or '-' }}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="mt-4">
+  <div class="row g-4">
+    <div class="col-xl-7">
+      <div class="card-surface p-4 h-100">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Novo recibo</span>
+            <h2>Dados da corrida</h2>
+          </div>
+        </div>
+
+        <form method="POST" action="{{ url_for('recibo_criar') }}" class="row g-3 mt-1">
+          <div class="col-md-6">
+            <label class="form-label">Passageiro</label>
+            <input type="text" name="passageiro" class="form-control" required>
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Data</label>
+            <input type="date" name="data" class="form-control" value="{{ today }}" required>
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Hora</label>
+            <input type="time" name="hora" class="form-control">
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Origem</label>
+            <input type="text" name="origem" class="form-control" placeholder="Aeroporto, hotel, empresa..." required>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Destino</label>
+            <input type="text" name="destino" class="form-control" placeholder="Local de destino" required>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Valor (R$)</label>
+            <input type="text" name="valor" class="form-control" placeholder="64,00" required>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Forma de pagamento</label>
+            <select name="forma_pagamento" class="form-select">
+              <option>Pix</option>
+              <option>Cartao</option>
+              <option>Dinheiro</option>
+              <option>Voucher</option>
+            </select>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">E-mail do passageiro</label>
+            <input type="email" name="email_passageiro" class="form-control" placeholder="opcional">
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">WhatsApp do passageiro</label>
+            <input type="text" name="whatsapp_passageiro" class="form-control" placeholder="opcional">
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Observacoes</label>
+            <input type="text" name="observacoes" class="form-control" placeholder="Bagagem, empresa, observacoes da corrida...">
+          </div>
+
+          <div class="col-12 d-grid d-md-flex gap-3 mt-2">
+            <button class="btn btn-dark btn-lg" type="submit">Gerar recibo</button>
+            <span class="form-hint">Assim que o recibo for criado, voce podera abrir o WhatsApp ou o e-mail com a mensagem pronta.</span>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="col-xl-5">
+      <div class="card-surface p-4 h-100">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Historico</span>
+            <h2>Recibos emitidos</h2>
+          </div>
+          <span class="receipt-count">{{ receipts|length }} total</span>
+        </div>
+
+        {% if receipts %}
+          <div class="receipt-list">
+            {% for receipt in receipts %}
+              <article class="receipt-item">
+                <div class="receipt-item-top">
+                  <div>
+                    <strong>{{ receipt.passenger }}</strong>
+                    <p>{{ receipt.trip_date_display }} • R$ {{ receipt.amount_display }}</p>
+                  </div>
+                  <span class="status-chip">{{ receipt.payment_method }}</span>
+                </div>
+                <p class="route-line">{{ receipt.origin }} -> {{ receipt.destination }}</p>
+                <div class="receipt-item-actions">
+                  <a class="btn btn-sm btn-outline-dark" href="{{ url_for('recibo_view', rid=receipt.rid) }}">Ver</a>
+                  <a class="btn btn-sm btn-success" href="{{ receipt.whatsapp_link }}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+                  <a class="btn btn-sm btn-primary" href="{{ receipt.email_link }}">E-mail</a>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="empty-state">
+            <h3>Nenhum recibo emitido ainda</h3>
+            <p>Seu historico vai aparecer aqui assim que voce gerar a primeira corrida.</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+
+{% if storage_mode != 'astra' %}
+<section class="mt-4">
+  <div class="alert alert-warning border-0 shadow-sm">
+    Este painel esta em modo local. Para gravar em producao, configure as variaveis do Astra DB na Vercel.
+  </div>
+</section>
+{% endif %}
+{% endblock %}

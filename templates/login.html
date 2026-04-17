@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Entrar | {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+  <div class="row justify-content-center">
+    <div class="col-lg-5">
+      <div class="card-surface auth-card">
+        <span class="eyebrow">Acesso do taxista</span>
+        <h1>Entre com e-mail e senha</h1>
+        <p class="text-muted mb-4">Acesse seu painel para emitir, revisar e compartilhar recibos.</p>
+
+        <form method="POST" class="row g-3">
+          <div class="col-12">
+            <label class="form-label">E-mail</label>
+            <input
+              type="email"
+              name="email"
+              class="form-control form-control-lg"
+              placeholder="voce@taxi.com.br"
+              value="{{ form.email if form else '' }}"
+              required
+            >
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Senha</label>
+            <input type="password" name="senha" class="form-control form-control-lg" placeholder="Sua senha" required>
+          </div>
+
+          <div class="col-12 d-grid">
+            <button class="btn btn-dark btn-lg" type="submit">Entrar</button>
+          </div>
+        </form>
+
+        <p class="auth-switch mt-4 mb-0">
+          Ainda nao tem conta?
+          <a href="{{ url_for('cadastro') }}">Criar cadastro do taxista</a>
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

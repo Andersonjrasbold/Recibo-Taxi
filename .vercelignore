@@ -1,0 +1,11 @@
+.git
+.git 2
+.DS_Store
+assets
+static
+dockerfile
+fly.toml
+app 2.py
+requirements 2.txt
+dockerfile 2
+fly 2.toml

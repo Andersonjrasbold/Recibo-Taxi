@@ -1,124 +1,100 @@
-<!DOCTYPE html>
-<html lang="pt-br" class="h-100" data-bs-theme="auto">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Recibo Taxi</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>
-    body { background-color: #ff6d4d; color: #fff; }
-    .nav-masthead .nav-link { color: #000 !important; }
-    .nav-masthead .nav-link.active { border-bottom: 2px solid #000; }
-  </style>
-</head>
-<body class="d-flex h-100 text-center">
-  <div class="cover-container d-flex w-100 h-100 p-3 mx-auto flex-column">
+{% extends "base.html" %}
 
-    <!-- Header alinhado com Flexbox -->
-    <header class="mb-2">
-      <div class="d-flex justify-content-center align-items-center">
-        <nav class="nav nav-masthead">
-          <a class="nav-link fw-bold py-1 px-3 active" aria-current="page" href="#">Home</a>
-          <a class="nav-link fw-bold py-1 px-3" href="#">Cadastro</a>
-          
-        </nav>
-      </div>
-    </header>
+{% block title %}{{ app_name }} | Emita recibos em segundos{% endblock %}
 
-    <main class="px-3">
-      <!-- Logo -->
-    <img src="/static/img/semfundo.png" 
-     alt="Logo Recibo Taxi"
-     class="img-fluid d-block mx-auto mb-4"
-     style="max-width: 500px; height: auto;">
+{% block content %}
+<section class="hero-section">
+  <div class="row g-4 align-items-center">
+    <div class="col-lg-6">
+      <div class="hero-copy">
+        <span class="eyebrow">Fluxo simples para taxistas</span>
+        <h1>Login, cadastro e recibos prontos para envio por WhatsApp ou e-mail.</h1>
+        <p class="lead">
+          Centralize o cadastro do taxista, gere recibos digitais com historico e entregue o link do comprovante logo apos a corrida.
+        </p>
 
-
-
-      <h1>Recibos digitais</h1>
-      <p class="lead">
-        Substitua o papel por recibos digitais. Gere QR Code, envie por WhatsApp ou E-mail – mesmo offline.
-      </p>
-
-      <!-- Botão que abre o modal -->
-      <p class="lead">
-        <button class="btn btn-lg btn-light fw-bold border-white bg-white text-dark"
-                data-bs-toggle="modal" data-bs-target="#modalRecibo">
-          Gerar Recibo
-        </button>
-      </p>
-    </main>
-
-    <footer class="mt-auto text-white-50">
-      <p>Projeto SaaS para taxistas.</p>
-    </footer>
-  </div>
-
-  <!-- Modal: Formulário de novo recibo -->
-  <div class="modal fade" id="modalRecibo" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-      <form class="modal-content" method="POST" action="/recibo">
-        <div class="modal-header">
-          <h5 class="modal-title">Novo Recibo</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        <div class="d-flex flex-wrap gap-3 mt-4">
+          <a class="btn btn-dark btn-lg" href="{{ url_for('cadastro') }}">Comecar cadastro</a>
+          <a class="btn btn-outline-dark btn-lg" href="{{ url_for('login') }}">Ja tenho conta</a>
         </div>
 
-        <div class="modal-body">
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">Passageiro</label>
-              <input name="passageiro" class="form-control" placeholder="Nome do passageiro">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Data</label>
-              <input type="date" name="data" class="form-control" required>
-            </div>
+        <div class="hero-points mt-4">
+          <span>Cadastro completo do taxista</span>
+          <span>Historico dos recibos emitidos</span>
+          <span>Compartilhamento instantaneo</span>
+        </div>
+      </div>
+    </div>
 
-            <div class="col-md-6">
-              <label class="form-label">Origem</label>
-              <input name="origem" class="form-control" placeholder="Ponto de partida">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Destino</label>
-              <input name="destino" class="form-control" placeholder="Destino">
-            </div>
+    <div class="col-lg-6">
+      <div class="receipt-preview card-surface">
+        <div class="preview-head">
+          <div>
+            <span class="eyebrow">Exemplo de experiencia</span>
+            <h2>Recibo pronto em poucos cliques</h2>
+          </div>
+          <img src="{{ url_for('public_static', filename='img/semfundo.png') }}" alt="Marca Recibo Taxi" class="preview-logo">
+        </div>
 
-            <div class="col-md-6">
-              <label class="form-label">Valor (R$)</label>
-              <input name="valor" class="form-control" placeholder="Ex: 45,00" required>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Forma de pagamento</label>
-              <select name="forma_pagamento" class="form-select">
-                <option>Dinheiro</option>
-                <option>Cartão</option>
-                <option>Pix</option>
-              </select>
-            </div>
-
-            <div class="col-md-6">
-              <label class="form-label">Placa</label>
-              <input name="placa" class="form-control" placeholder="ABC1D23">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Motorista</label>
-              <input name="motorista" class="form-control" placeholder="Seu nome">
-            </div>
-
-            <div class="col-12">
-              <label class="form-label">Observações</label>
-              <textarea name="observacoes" class="form-control" rows="2" placeholder="Opcional"></textarea>
-            </div>
+        <div class="preview-ticket">
+          <div class="preview-row">
+            <span>Passageiro</span>
+            <strong>Mariana Lopes</strong>
+          </div>
+          <div class="preview-row">
+            <span>Rota</span>
+            <strong>Aeroporto -> Hotel</strong>
+          </div>
+          <div class="preview-row">
+            <span>Valor</span>
+            <strong>R$ 64,00</strong>
+          </div>
+          <div class="preview-row">
+            <span>Motorista</span>
+            <strong>Joao Pereira | ABC1D23</strong>
           </div>
         </div>
 
-        <div class="modal-footer">
-          <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancelar</button>
-          <button class="btn btn-dark" type="submit">Gerar</button>
+        <div class="preview-actions">
+          <button class="btn btn-success" type="button" disabled>Enviar no WhatsApp</button>
+          <button class="btn btn-primary" type="button" disabled>Enviar por e-mail</button>
         </div>
-      </form>
+      </div>
     </div>
   </div>
+</section>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+<section class="mt-5">
+  <div class="row g-4">
+    <div class="col-md-4">
+      <article class="feature-card card-surface h-100">
+        <span class="feature-number">01</span>
+        <h3>Cadastre o taxista</h3>
+        <p>Guarde nome, e-mail, WhatsApp, CPF, placa e dados operacionais em uma conta protegida por senha.</p>
+      </article>
+    </div>
+    <div class="col-md-4">
+      <article class="feature-card card-surface h-100">
+        <span class="feature-number">02</span>
+        <h3>Emita o recibo</h3>
+        <p>Preencha a corrida em um formulario rapido e gere um link publico com QR Code e visual pronto para o passageiro.</p>
+      </article>
+    </div>
+    <div class="col-md-4">
+      <article class="feature-card card-surface h-100">
+        <span class="feature-number">03</span>
+        <h3>Compartilhe na hora</h3>
+        <p>Abra o WhatsApp ou o e-mail com a mensagem pronta, sem precisar reescrever os dados da corrida.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+{% if storage_mode != 'astra' %}
+<section class="mt-5">
+  <div class="alert alert-warning border-0 shadow-sm">
+    Astra DB ainda nao esta configurado neste ambiente. O app esta funcionando em modo local para desenvolvimento.
+  </div>
+</section>
+{% endif %}
+{% endblock %}

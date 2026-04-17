@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Cadastro do Taxista | {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+  <div class="row justify-content-center">
+    <div class="col-xl-8">
+      <div class="card-surface auth-card auth-card-wide">
+        <span class="eyebrow">Cadastro do taxista</span>
+        <h1>Crie sua conta para emitir recibos digitais</h1>
+        <p class="text-muted mb-4">Os dados do cadastro alimentam automaticamente seus proximos recibos.</p>
+
+        <form method="POST" class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Nome completo</label>
+            <input type="text" name="nome_completo" class="form-control" value="{{ form.nome_completo if form else '' }}" required>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">E-mail</label>
+            <input type="email" name="email" class="form-control" value="{{ form.email if form else '' }}" required>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Senha</label>
+            <input type="password" name="senha" class="form-control" placeholder="Minimo de 8 caracteres" required>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">WhatsApp</label>
+            <input type="text" name="whatsapp" class="form-control" value="{{ form.whatsapp if form else '' }}" placeholder="(11) 99999-9999" required>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">CPF</label>
+            <input type="text" name="cpf" class="form-control" value="{{ form.cpf if form else '' }}" required>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Cidade</label>
+            <input type="text" name="cidade" class="form-control" value="{{ form.cidade if form else '' }}" required>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Placa do taxi</label>
+            <input type="text" name="placa" class="form-control" value="{{ form.placa if form else '' }}" placeholder="ABC1D23" required>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Modelo do veiculo</label>
+            <input type="text" name="modelo_veiculo" class="form-control" value="{{ form.modelo_veiculo if form else '' }}" placeholder="Corolla, Spin, etc.">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Prefixo do taxi</label>
+            <input type="text" name="prefixo_taxi" class="form-control" value="{{ form.prefixo_taxi if form else '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Numero do alvara</label>
+            <input type="text" name="numero_alvara" class="form-control" value="{{ form.numero_alvara if form else '' }}">
+          </div>
+
+          <div class="col-12 d-grid d-md-flex gap-3 mt-2">
+            <button class="btn btn-dark btn-lg" type="submit">Criar conta</button>
+            <a class="btn btn-outline-dark btn-lg" href="{{ url_for('login') }}">Ja tenho conta</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

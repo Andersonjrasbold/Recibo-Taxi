@@ -2,14 +2,19 @@
   "version": 2,
   "builds": [
     {
+      "src": "public/static/**",
+      "use": "@vercel/static"
+    },
+    {
       "src": "app.py",
-      "use": "@vercel/python",
-      "config": {
-        "includeFiles": ["public/**"]
-      }
+      "use": "@vercel/python"
     }
   ],
   "routes": [
+    {
+      "src": "/static/(.*)",
+      "dest": "/public/static/$1"
+    },
     {
       "src": "/(.*)",
       "dest": "app.py"

@@ -4,9 +4,9 @@
 
 {% block content %}
 <section class="auth-section">
-  <div class="row justify-content-center">
-    <div class="col-xl-8">
-      <div class="card-surface auth-card auth-card-wide">
+  <div class="row g-4 align-items-stretch">
+    <div class="col-xl-7">
+      <div class="card-surface auth-panel auth-card-wide">
         <span class="eyebrow">Cadastro do taxista</span>
         <h1>Crie sua conta para emitir recibos digitais</h1>
         <p class="text-muted mb-4">Os dados do cadastro alimentam automaticamente seus proximos recibos.</p>
@@ -68,6 +68,30 @@
           </div>
         </form>
       </div>
+    </div>
+
+    <div class="col-xl-5">
+      <aside class="card-surface tone-dark poster-panel">
+        <div class="poster-copy">
+          <span class="eyebrow eyebrow-light">Base visual do produto</span>
+          <h2>O cadastro abre a porta para um fluxo mais profissional e com cara de marca pronta.</h2>
+          <p>Assim que a conta nasce, o painel herda os tons do recibo e prepara cada corrida para ser compartilhada com mais presenca.</p>
+        </div>
+
+        <div class="poster-stage">
+          <img
+            src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
+            alt="Arte principal do recibo"
+            class="poster-image"
+          >
+        </div>
+
+        <div class="poster-benefits">
+          <span>Cadastro completo</span>
+          <span>Historico persistente</span>
+          <span>WhatsApp e e-mail</span>
+        </div>
+      </aside>
     </div>
   </div>
 </section>

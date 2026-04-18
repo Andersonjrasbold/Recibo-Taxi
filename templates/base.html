@@ -12,38 +12,42 @@
   <link href="{{ url_for('public_static', filename='css/app.css') }}" rel="stylesheet">
   {% block head %}{% endblock %}
 </head>
-<body>
+<body class="app-body">
   <div class="page-shell">
-    <div class="page-glow page-glow-one"></div>
-    <div class="page-glow page-glow-two"></div>
+    <div class="page-aura page-aura-one"></div>
+    <div class="page-aura page-aura-two"></div>
 
-    <nav class="navbar navbar-expand-lg py-3">
+    <nav class="site-nav">
       <div class="container">
-        <a class="navbar-brand brand-lockup" href="{{ url_for('index') }}">
-          <span class="brand-pill">RT</span>
-          <span>
+        <div class="nav-shell">
+          <a class="brand-lockup" href="{{ url_for('index') }}">
+            <span class="brand-mark">
+              <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Marca Recibo Taxi">
+            </span>
+            <span class="brand-copy">
             <strong>{{ app_name }}</strong>
-            <small>recibos digitais para taxistas</small>
-          </span>
-        </a>
+              <small>layout inspirado na arte do recibo</small>
+            </span>
+          </a>
 
-        <div class="d-flex align-items-center gap-2 ms-auto">
-          <span class="badge badge-storage {% if storage_mode == 'astra' %}badge-storage-live{% else %}badge-storage-local{% endif %}">
-            {{ storage_label }}
-          </span>
+          <div class="nav-actions">
+            <span class="badge badge-storage {% if storage_mode == 'astra' %}badge-storage-live{% else %}badge-storage-local{% endif %}">
+              {{ storage_label }}
+            </span>
 
-          {% if current_user %}
-            <a class="btn btn-outline-dark btn-sm" href="{{ url_for('dashboard') }}">Dashboard</a>
-            <a class="btn btn-dark btn-sm" href="{{ url_for('sair') }}">Sair</a>
-          {% else %}
-            <a class="btn btn-outline-dark btn-sm" href="{{ url_for('login') }}">Entrar</a>
-            <a class="btn btn-dark btn-sm" href="{{ url_for('cadastro') }}">Criar conta</a>
-          {% endif %}
+            {% if current_user %}
+              <a class="btn btn-outline-dark btn-sm" href="{{ url_for('dashboard') }}">Dashboard</a>
+              <a class="btn btn-dark btn-sm" href="{{ url_for('sair') }}">Sair</a>
+            {% else %}
+              <a class="btn btn-outline-dark btn-sm" href="{{ url_for('login') }}">Entrar</a>
+              <a class="btn btn-dark btn-sm" href="{{ url_for('cadastro') }}">Criar conta</a>
+            {% endif %}
+          </div>
         </div>
       </div>
     </nav>
 
-    <main class="pb-5">
+    <main class="site-main">
       <div class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}

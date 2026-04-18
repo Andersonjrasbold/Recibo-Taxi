@@ -4,24 +4,24 @@
 
 {% block content %}
 <section class="receipt-page">
-  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-    <div>
-      <span class="eyebrow">Recibo digital</span>
-      <h1 class="mb-1">Recibo #{{ dados.rid }}</h1>
-      <p class="text-muted mb-0">Pronto para visualizacao, compartilhamento e impressao.</p>
-    </div>
+  <div class="row g-4 align-items-stretch">
+    <div class="col-xl-8">
+      <div class="card-surface receipt-document h-100">
+        <div class="receipt-document-head mb-4">
+          <div>
+            <span class="eyebrow">Recibo digital</span>
+            <h1 class="mb-1">Recibo #{{ dados.rid }}</h1>
+            <p class="text-muted mb-0">Pronto para visualizacao, compartilhamento e impressao.</p>
+          </div>
 
-    <div class="d-flex gap-2">
-      {% if dados.is_owner %}
-        <a class="btn btn-outline-dark" href="{{ url_for('dashboard') }}">Voltar ao painel</a>
-      {% endif %}
-      <button class="btn btn-dark" type="button" onclick="window.print()">Imprimir</button>
-    </div>
-  </div>
+          <div class="receipt-item-actions">
+            {% if dados.is_owner %}
+              <a class="btn btn-outline-dark" href="{{ url_for('dashboard') }}">Voltar ao painel</a>
+            {% endif %}
+            <button class="btn btn-dark" type="button" onclick="window.print()">Imprimir</button>
+          </div>
+        </div>
 
-  <div class="row g-4">
-    <div class="col-lg-7">
-      <div class="card-surface p-4 h-100">
         <div class="section-heading">
           <div>
             <span class="eyebrow">Detalhes da corrida</span>
@@ -29,7 +29,7 @@
           </div>
         </div>
 
-        <div class="detail-grid mt-3">
+        <div class="detail-grid mt-4">
           <div>
             <span class="mini-label">Passageiro</span>
             <strong>{{ dados.passenger or '-' }}</strong>
@@ -102,11 +102,19 @@
       </div>
     </div>
 
-    <div class="col-lg-5">
-      <div class="card-surface p-4">
+    <div class="col-xl-4">
+      <div class="card-surface tone-dark share-panel">
+        <div class="share-visual">
+          <img
+            src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
+            alt="Arte principal do Recibo Taxi"
+            class="share-poster"
+          >
+        </div>
+
         <div class="section-heading">
           <div>
-            <span class="eyebrow">Compartilhar</span>
+            <span class="eyebrow eyebrow-light">Compartilhar</span>
             <h2>Enviar recibo</h2>
           </div>
         </div>

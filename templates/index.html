@@ -5,86 +5,78 @@
 {% block content %}
 <section class="hero-section">
   <div class="row g-4 align-items-center">
-    <div class="col-lg-6">
+    <div class="col-xl-6">
       <div class="hero-copy">
-        <span class="eyebrow">Fluxo simples para taxistas</span>
-        <h1>Login, cadastro e recibos prontos para envio por WhatsApp ou e-mail.</h1>
+        <span class="eyebrow eyebrow-light">Paleta e impacto do RECIBO.png</span>
+        <h1>O app agora tem a mesma energia visual do seu recibo.</h1>
         <p class="lead">
-          Centralize o cadastro do taxista, gere recibos digitais com historico e entregue o link do comprovante logo apos a corrida.
+          Cadastro do taxista, emissao da corrida e compartilhamento final em um layout mais forte, guiado pelos tons quentes e pelo contraste do RECIBO.png.
         </p>
 
-        <div class="d-flex flex-wrap gap-3 mt-4">
-          <a class="btn btn-dark btn-lg" href="{{ url_for('cadastro') }}">Comecar cadastro</a>
+        <div class="hero-actions mt-4">
+          <a class="btn btn-primary btn-lg" href="{{ url_for('cadastro') }}">Comecar cadastro</a>
           <a class="btn btn-outline-dark btn-lg" href="{{ url_for('login') }}">Ja tenho conta</a>
         </div>
 
-        <div class="hero-points mt-4">
+        <div class="hero-points">
           <span>Cadastro completo do taxista</span>
           <span>Historico dos recibos emitidos</span>
-          <span>Compartilhamento instantaneo</span>
+          <span>Envio imediato por WhatsApp e e-mail</span>
         </div>
       </div>
     </div>
 
-    <div class="col-lg-6">
-      <div class="receipt-preview card-surface">
-        <div class="preview-head">
+    <div class="col-xl-6">
+      <div class="card-surface tone-dark hero-stage">
+        <div class="hero-stage-copy">
           <div>
-            <span class="eyebrow">Exemplo de experiencia</span>
-            <h2>Recibo pronto em poucos cliques</h2>
+            <span class="eyebrow eyebrow-light">Peca visual principal</span>
+            <h2>O RECIBO.png virou referencia de layout e cor</h2>
           </div>
-          <img src="{{ url_for('public_static', filename='img/semfundo.png') }}" alt="Marca Recibo Taxi" class="preview-logo">
+          <p>Preto intenso, coral quente, laranja queimado e um papel claro para equilibrar leitura e identidade.</p>
         </div>
 
-        <div class="preview-ticket">
-          <div class="preview-row">
-            <span>Passageiro</span>
-            <strong>Mariana Lopes</strong>
-          </div>
-          <div class="preview-row">
-            <span>Rota</span>
-            <strong>Aeroporto -> Hotel</strong>
-          </div>
-          <div class="preview-row">
-            <span>Valor</span>
-            <strong>R$ 64,00</strong>
-          </div>
-          <div class="preview-row">
-            <span>Motorista</span>
-            <strong>Joao Pereira | ABC1D23</strong>
-          </div>
+        <div class="hero-poster-frame">
+          <img
+            src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
+            alt="Arte do Recibo Taxi"
+            class="hero-poster"
+          >
         </div>
 
-        <div class="preview-actions">
-          <button class="btn btn-success" type="button" disabled>Enviar no WhatsApp</button>
-          <button class="btn btn-primary" type="button" disabled>Enviar por e-mail</button>
+        <div class="palette-strip" aria-label="Paleta extraida do recibo">
+          <span class="palette-chip" style="background:#100d0d;"></span>
+          <span class="palette-chip" style="background:#9c3b2d;"></span>
+          <span class="palette-chip" style="background:#ec5543;"></span>
+          <span class="palette-chip" style="background:#ed6348;"></span>
+          <span class="palette-chip" style="background:#ef8f59;"></span>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="mt-5">
+<section class="feature-row">
   <div class="row g-4">
     <div class="col-md-4">
-      <article class="feature-card card-surface h-100">
+      <article class="feature-card card-surface">
         <span class="feature-number">01</span>
         <h3>Cadastre o taxista</h3>
-        <p>Guarde nome, e-mail, WhatsApp, CPF, placa e dados operacionais em uma conta protegida por senha.</p>
+        <p>Guarde nome, e-mail, WhatsApp, CPF, placa e dados operacionais em um painel com personalidade visual de produto.</p>
       </article>
     </div>
     <div class="col-md-4">
-      <article class="feature-card card-surface h-100">
+      <article class="feature-card card-surface">
         <span class="feature-number">02</span>
         <h3>Emita o recibo</h3>
-        <p>Preencha a corrida em um formulario rapido e gere um link publico com QR Code e visual pronto para o passageiro.</p>
+        <p>Preencha a corrida em um composer mais editorial e gere um link publico com QR Code e visual pronto para o passageiro.</p>
       </article>
     </div>
     <div class="col-md-4">
-      <article class="feature-card card-surface h-100">
+      <article class="feature-card card-surface">
         <span class="feature-number">03</span>
         <h3>Compartilhe na hora</h3>
-        <p>Abra o WhatsApp ou o e-mail com a mensagem pronta, sem precisar reescrever os dados da corrida.</p>
+        <p>Abra o WhatsApp ou o e-mail com a mensagem pronta, mantendo o recibo como protagonista do fluxo inteiro.</p>
       </article>
     </div>
   </div>

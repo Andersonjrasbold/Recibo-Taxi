@@ -4,14 +4,32 @@
 
 {% block content %}
 <section class="dashboard-head">
-  <div class="row g-4 align-items-center">
-    <div class="col-lg-7">
-      <span class="eyebrow">Painel do taxista</span>
-      <h1>Bem-vindo, {{ current_user.full_name }}.</h1>
-      <p class="lead mb-0">Cadastre a corrida, gere o recibo e compartilhe com o passageiro em segundos.</p>
+  <div class="row g-4 align-items-stretch">
+    <div class="col-xl-8">
+      <div class="card-surface tone-dark dashboard-banner">
+        <span class="eyebrow eyebrow-light">Painel do taxista</span>
+        <h1>Bem-vindo, {{ current_user.full_name }}.</h1>
+        <p class="lead mb-0">Cadastre a corrida, gere o recibo e compartilhe com o passageiro em segundos, agora com um layout puxado direto do visual do recibo oficial.</p>
+
+        <div class="hero-points">
+          <span>Placa {{ current_user.plate }}</span>
+          <span>{{ current_user.city }}</span>
+          <span>{{ current_user.whatsapp }}</span>
+          <span>{{ current_user.vehicle_model or 'Veiculo cadastrado' }}</span>
+        </div>
+      </div>
     </div>
-    <div class="col-lg-5">
-      <div class="card-surface profile-card">
+
+    <div class="col-xl-4">
+      <div class="card-surface dashboard-brand-card">
+        <span class="mini-label">Referencia visual</span>
+        <img
+          src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
+          alt="Arte principal do Recibo Taxi"
+          class="dashboard-brand-image"
+        >
+        <p>Os tons quentes do recibo agora guiam o painel, os cards e a tela de compartilhamento.</p>
+
         <div class="profile-grid">
           <div>
             <span class="mini-label">Placa</span>
@@ -38,7 +56,7 @@
 <section class="mt-4">
   <div class="row g-4">
     <div class="col-xl-7">
-      <div class="card-surface p-4 h-100">
+      <div class="card-surface composer-card h-100">
         <div class="section-heading">
           <div>
             <span class="eyebrow">Novo recibo</span>
@@ -111,7 +129,7 @@
     </div>
 
     <div class="col-xl-5">
-      <div class="card-surface p-4 h-100">
+      <div class="card-surface history-card h-100">
         <div class="section-heading">
           <div>
             <span class="eyebrow">Historico</span>

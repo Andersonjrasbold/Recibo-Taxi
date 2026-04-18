@@ -355,7 +355,8 @@ def favicon():
 
 @app.get("/static/<path:filename>")
 def public_static(filename: str):
-    return send_from_directory("public/static", filename)
+    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public", "static")
+    return send_from_directory(static_dir, filename)
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────

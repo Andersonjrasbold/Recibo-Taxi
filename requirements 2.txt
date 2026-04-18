@@ -1,8 +1,0 @@
-flask
-flask_sqlalchemy
-flask_login
-flask_migrate
-python-dotenv
-stripe>=10
-psycopg[binary]>=3.2
-gunicorn

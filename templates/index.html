@@ -1,92 +1,248 @@
 {% extends "base.html" %}
-
-{% block title %}{{ app_name }} | Emita recibos em segundos{% endblock %}
+{% block title %}Recibos digitais para taxistas{% endblock %}
 
 {% block content %}
+<!-- ── Hero ────────────────────────────────────────────────────────────── -->
 <section class="hero-section">
-  <div class="row g-4 align-items-center">
-    <div class="col-xl-6">
-      <div class="hero-copy">
-        <span class="eyebrow eyebrow-light">Paleta e impacto do RECIBO.png</span>
-        <h1>O app agora tem a mesma energia visual do seu recibo.</h1>
-        <p class="lead">
-          Cadastro do taxista, emissao da corrida e compartilhamento final em um layout mais forte, guiado pelos tons quentes e pelo contraste do RECIBO.png.
+  <div class="container">
+    <div class="row align-items-center g-5">
+      <div class="col-lg-6">
+        <div class="hero-eyebrow">
+          <i class="bi bi-taxi-front-fill me-2"></i>Para motoristas de táxi
+        </div>
+        <h1 class="hero-title">
+          Emita recibos<br>
+          <span class="hero-title-accent">profissionais</span><br>
+          em segundos.
+        </h1>
+        <p class="hero-lead">
+          Gere, compartilhe por WhatsApp ou e-mail e salve o histórico de todas as suas corridas. Sem papel, sem complicação.
         </p>
-
-        <div class="hero-actions mt-4">
-          <a class="btn btn-primary btn-lg" href="{{ url_for('cadastro') }}">Comecar cadastro</a>
-          <a class="btn btn-outline-dark btn-lg" href="{{ url_for('login') }}">Ja tenho conta</a>
+        <div class="hero-actions">
+          <a href="{{ url_for('gerador') }}" class="btn btn-hero-primary">
+            <i class="bi bi-lightning-fill me-2"></i>Gerar recibo agora
+            <small class="d-block" style="font-size:.68rem;font-weight:500;opacity:.82;margin-top:1px">Sem cadastro necessário</small>
+          </a>
+          <a href="{{ url_for('cadastro') }}" class="btn btn-hero-secondary">
+            Criar conta grátis <i class="bi bi-arrow-right ms-1"></i>
+          </a>
         </div>
-
-        <div class="hero-points">
-          <span>Cadastro completo do taxista</span>
-          <span>Historico dos recibos emitidos</span>
-          <span>Envio imediato por WhatsApp e e-mail</span>
+        <div class="hero-trust">
+          <span><i class="bi bi-check-circle-fill me-1"></i>100% gratuito para começar</span>
+          <span><i class="bi bi-check-circle-fill me-1"></i>Sem cartão de crédito</span>
+          <span><i class="bi bi-check-circle-fill me-1"></i>Recibo em 30 segundos</span>
         </div>
       </div>
-    </div>
-
-    <div class="col-xl-6">
-      <div class="card-surface tone-dark hero-stage">
-        <div class="hero-stage-copy">
-          <div>
-            <span class="eyebrow eyebrow-light">Peca visual principal</span>
-            <h2>O RECIBO.png virou referencia de layout e cor</h2>
+      <div class="col-lg-6">
+        <div class="hero-visual">
+          <div class="hero-card-mock">
+            <div class="mock-header">
+              <div class="mock-logo">
+                <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+              </div>
+              <span class="mock-id">#A3F9C2</span>
+            </div>
+            <div class="mock-body">
+              <div class="mock-row">
+                <span class="mock-label">Passageiro</span>
+                <span class="mock-value">Maria Silva</span>
+              </div>
+              <div class="mock-row">
+                <span class="mock-label">Trajeto</span>
+                <span class="mock-value">Aeroporto → Centro</span>
+              </div>
+              <div class="mock-row">
+                <span class="mock-label">Data</span>
+                <span class="mock-value">17/04/2025 · 09:30</span>
+              </div>
+              <div class="mock-divider"></div>
+              <div class="mock-amount">
+                <span class="mock-label">Total da corrida</span>
+                <span class="mock-price">R$ 78,50</span>
+              </div>
+              <div class="mock-payment">
+                <span class="mock-pix-badge"><i class="bi bi-qr-code me-1"></i>Pix</span>
+                <span class="mock-plate">ABC-1234</span>
+              </div>
+            </div>
+            <div class="mock-actions">
+              <button class="mock-btn mock-btn-whats">
+                <i class="bi bi-whatsapp me-1"></i>WhatsApp
+              </button>
+              <button class="mock-btn mock-btn-email">
+                <i class="bi bi-envelope-fill me-1"></i>E-mail
+              </button>
+            </div>
           </div>
-          <p>Preto intenso, coral quente, laranja queimado e um papel claro para equilibrar leitura e identidade.</p>
-        </div>
-
-        <div class="hero-poster-frame">
-          <img
-            src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
-            alt="Arte do Recibo Taxi"
-            class="hero-poster"
-          >
-        </div>
-
-        <div class="palette-strip" aria-label="Paleta extraida do recibo">
-          <span class="palette-chip" style="background:#100d0d;"></span>
-          <span class="palette-chip" style="background:#9c3b2d;"></span>
-          <span class="palette-chip" style="background:#ec5543;"></span>
-          <span class="palette-chip" style="background:#ed6348;"></span>
-          <span class="palette-chip" style="background:#ef8f59;"></span>
+          <div class="hero-glow"></div>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="feature-row">
-  <div class="row g-4">
-    <div class="col-md-4">
-      <article class="feature-card card-surface">
-        <span class="feature-number">01</span>
-        <h3>Cadastre o taxista</h3>
-        <p>Guarde nome, e-mail, WhatsApp, CPF, placa e dados operacionais em um painel com personalidade visual de produto.</p>
-      </article>
-    </div>
-    <div class="col-md-4">
-      <article class="feature-card card-surface">
-        <span class="feature-number">02</span>
-        <h3>Emita o recibo</h3>
-        <p>Preencha a corrida em um composer mais editorial e gere um link publico com QR Code e visual pronto para o passageiro.</p>
-      </article>
-    </div>
-    <div class="col-md-4">
-      <article class="feature-card card-surface">
-        <span class="feature-number">03</span>
-        <h3>Compartilhe na hora</h3>
-        <p>Abra o WhatsApp ou o e-mail com a mensagem pronta, mantendo o recibo como protagonista do fluxo inteiro.</p>
-      </article>
+<!-- ── How it works ──────────────────────────────────────────────────────── -->
+<section class="steps-section" id="como-funciona">
+  <div class="container">
+    <div class="section-label">Como funciona</div>
+    <h2 class="section-title">Três passos, recibo pronto</h2>
+    <div class="row g-4 mt-2">
+      <div class="col-md-4">
+        <div class="step-card">
+          <div class="step-number">01</div>
+          <div class="step-icon"><i class="bi bi-pencil-square"></i></div>
+          <h3 class="step-title">Preencha os dados</h3>
+          <p class="step-text">Informe passageiro, trajeto, valor e forma de pagamento em menos de 1 minuto.</p>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="step-card step-card-featured">
+          <div class="step-number">02</div>
+          <div class="step-icon"><i class="bi bi-file-earmark-check-fill"></i></div>
+          <h3 class="step-title">Recibo gerado</h3>
+          <p class="step-text">O sistema gera um recibo com ID único, link compartilhável e QR Code na hora.</p>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="step-card">
+          <div class="step-number">03</div>
+          <div class="step-icon"><i class="bi bi-share-fill"></i></div>
+          <h3 class="step-title">Compartilhe</h3>
+          <p class="step-text">Envie pelo WhatsApp ou e-mail com mensagem profissional gerada automaticamente.</p>
+        </div>
+      </div>
     </div>
   </div>
 </section>
 
-{% if storage_mode != 'astra' %}
-<section class="mt-5">
-  <div class="alert alert-warning border-0 shadow-sm">
-    Astra DB ainda nao esta configurado neste ambiente. O app esta funcionando em modo local para desenvolvimento.
+<!-- ── No-login banner ───────────────────────────────────────────────────── -->
+<section class="guest-cta-section">
+  <div class="container">
+    <div class="guest-cta-card">
+      <div class="guest-cta-icon"><i class="bi bi-lightning-charge-fill"></i></div>
+      <div class="guest-cta-content">
+        <h3 class="guest-cta-title">Experimente sem criar conta</h3>
+        <p class="guest-cta-text">Gere recibos agora mesmo. Cadastre-se depois para salvar o histórico.</p>
+      </div>
+      <a href="{{ url_for('gerador') }}" class="btn btn-guest-cta">
+        Gerar recibo grátis <i class="bi bi-arrow-right ms-1"></i>
+      </a>
+    </div>
   </div>
 </section>
-{% endif %}
+
+<!-- ── Pricing ───────────────────────────────────────────────────────────── -->
+<section class="pricing-section" id="planos">
+  <div class="container">
+    <div class="section-label">Preços</div>
+    <h2 class="section-title">Planos para cada necessidade</h2>
+    <p class="section-subtitle">Comece grátis. Faça upgrade quando precisar de mais.</p>
+
+    <div class="row g-4 justify-content-center mt-2">
+      <!-- Free -->
+      <div class="col-sm-10 col-md-4">
+        <div class="pricing-card">
+          <div class="pricing-plan-name">Grátis</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">0</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-tagline">Para quem quer experimentar</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Gerar recibos sem cadastro</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Até 30 recibos/mês na conta</li>
+            <li class="on"><i class="bi bi-check-lg"></i>WhatsApp e e-mail</li>
+            <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>
+            <li class="off"><i class="bi bi-x-lg"></i>Histórico ilimitado</li>
+            <li class="off"><i class="bi bi-x-lg"></i>Suporte dedicado</li>
+          </ul>
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar grátis</a>
+        </div>
+      </div>
+
+      <!-- Pro -->
+      <div class="col-sm-10 col-md-4">
+        <div class="pricing-card pricing-featured">
+          <div class="pricing-popular-badge">Mais popular</div>
+          <div class="pricing-plan-name">Pro</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">19</span>
+            <span class="pricing-cents">,90</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-tagline">Para quem trabalha todo dia</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Histórico completo e permanente</li>
+            <li class="on"><i class="bi bi-check-lg"></i>WhatsApp e e-mail</li>
+            <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Recibo com seus dados profissionais</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Suporte por WhatsApp</li>
+          </ul>
+          {% if current_user %}
+          <form action="{{ url_for('assinar', plan='pro') }}" method="post">
+            <button type="submit" class="btn btn-pricing-primary w-100">Assinar Pro</button>
+          </form>
+          {% else %}
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com Pro</a>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Business -->
+      <div class="col-sm-10 col-md-4">
+        <div class="pricing-card">
+          <div class="pricing-plan-name">Business</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">39</span>
+            <span class="pricing-cents">,90</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-tagline">Para frotas e cooperativas</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Tudo do plano Pro</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Relatórios mensais em PDF</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Múltiplos veículos/perfis</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Logo personalizada no recibo</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Exportação de dados (CSV)</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Suporte prioritário</li>
+          </ul>
+          {% if current_user %}
+          <form action="{{ url_for('assinar', plan='business') }}" method="post">
+            <button type="submit" class="btn btn-pricing-ghost w-100">Assinar Business</button>
+          </form>
+          {% else %}
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar com Business</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <p class="pricing-note text-center mt-4">
+      <i class="bi bi-shield-lock-fill me-1"></i>
+      Pagamentos processados com segurança pela <strong>Stripe</strong>. Cancele quando quiser, sem multa.
+    </p>
+  </div>
+</section>
+
+<!-- ── CTA Final ─────────────────────────────────────────────────────────── -->
+<section class="final-cta-section">
+  <div class="container">
+    <div class="final-cta-card">
+      <h2 class="final-cta-title">Pronto para começar?</h2>
+      <p class="final-cta-text">Não precisa de cartão de crédito. Seu primeiro recibo em 30 segundos.</p>
+      <div class="d-flex gap-3 justify-content-center flex-wrap">
+        <a href="{{ url_for('gerador') }}" class="btn btn-cta-primary">
+          <i class="bi bi-lightning-fill me-2"></i>Gerar recibo agora
+        </a>
+        <a href="{{ url_for('cadastro') }}" class="btn btn-cta-secondary">
+          Criar conta grátis
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
 {% endblock %}

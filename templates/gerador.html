@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}Gerar Recibo Grátis{% endblock %}
+
+{% block content %}
+<section class="generator-section">
+  <div class="container">
+    <!-- Header -->
+    <div class="generator-header">
+      <div class="gen-eyebrow">
+        <i class="bi bi-lightning-fill me-2"></i>Sem cadastro necessário
+      </div>
+      <h1 class="gen-title">Gere seu recibo agora</h1>
+      <p class="gen-subtitle">
+        Preencha os dados abaixo e receba um recibo profissional com link compartilhável e QR Code.
+        <br>
+        <a href="{{ url_for('cadastro') }}" class="gen-cta-link">Crie uma conta grátis</a> para salvar todos os seus recibos.
+      </p>
+    </div>
+
+    <form action="{{ url_for('gerador') }}" method="post" novalidate>
+      <div class="row g-4">
+
+        <!-- Driver info -->
+        <div class="col-lg-6">
+          <div class="gen-card">
+            <div class="gen-card-header">
+              <div class="gen-card-icon"><i class="bi bi-taxi-front-fill"></i></div>
+              <h2 class="gen-card-title">Dados do motorista</h2>
+            </div>
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label-gen" for="nome_motorista">
+                  Nome completo <span class="required-star">*</span>
+                </label>
+                <input type="text" id="nome_motorista" name="nome_motorista" class="form-control form-control-gen"
+                  placeholder="Seu nome completo" required
+                  value="{{ (form or {}).get('nome_motorista', '') }}">
+              </div>
+              <div class="col-6">
+                <label class="form-label-gen" for="placa">Placa</label>
+                <input type="text" id="placa" name="placa" class="form-control form-control-gen"
+                  placeholder="ABC-1234" maxlength="8" style="text-transform:uppercase"
+                  value="{{ (form or {}).get('placa', '') }}">
+              </div>
+              <div class="col-6">
+                <label class="form-label-gen" for="modelo_veiculo">Modelo</label>
+                <input type="text" id="modelo_veiculo" name="modelo_veiculo" class="form-control form-control-gen"
+                  placeholder="Toyota Corolla"
+                  value="{{ (form or {}).get('modelo_veiculo', '') }}">
+              </div>
+              <div class="col-6">
+                <label class="form-label-gen" for="cidade_motorista">Cidade</label>
+                <input type="text" id="cidade_motorista" name="cidade_motorista" class="form-control form-control-gen"
+                  placeholder="São Paulo"
+                  value="{{ (form or {}).get('cidade_motorista', '') }}">
+              </div>
+              <div class="col-6">
+                <label class="form-label-gen" for="whatsapp_motorista">WhatsApp</label>
+                <input type="tel" id="whatsapp_motorista" name="whatsapp_motorista" class="form-control form-control-gen"
+                  placeholder="(11) 99999-9999"
+                  value="{{ (form or {}).get('whatsapp_motorista', '') }}">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trip info -->
+        <div class="col-lg-6">
+          <div class="gen-card">
+            <div class="gen-card-header">
+              <div class="gen-card-icon"><i class="bi bi-map-fill"></i></div>
+              <h2 class="gen-card-title">Dados da corrida</h2>
+            </div>
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label-gen" for="passageiro">
+                  Passageiro <span class="required-star">*</span>
+                </label>
+                <input type="text" id="passageiro" name="passageiro" class="form-control form-control-gen"
+                  placeholder="Nome do passageiro" required
+                  value="{{ (form or {}).get('passageiro', '') }}">
+              </div>
+              <div class="col-7">
+                <label class="form-label-gen" for="data">
+                  Data <span class="required-star">*</span>
+                </label>
+                <input type="date" id="data" name="data" class="form-control form-control-gen"
+                  value="{{ (form or {}).get('data', today) }}" required>
+              </div>
+              <div class="col-5">
+                <label class="form-label-gen" for="hora">Hora</label>
+                <input type="time" id="hora" name="hora" class="form-control form-control-gen"
+                  value="{{ (form or {}).get('hora', '') }}">
+              </div>
+              <div class="col-12">
+                <label class="form-label-gen" for="origem">
+                  Origem <span class="required-star">*</span>
+                </label>
+                <input type="text" id="origem" name="origem" class="form-control form-control-gen"
+                  placeholder="Local de embarque" required
+                  value="{{ (form or {}).get('origem', '') }}">
+              </div>
+              <div class="col-12">
+                <label class="form-label-gen" for="destino">
+                  Destino <span class="required-star">*</span>
+                </label>
+                <input type="text" id="destino" name="destino" class="form-control form-control-gen"
+                  placeholder="Local de desembarque" required
+                  value="{{ (form or {}).get('destino', '') }}">
+              </div>
+              <div class="col-7">
+                <label class="form-label-gen" for="valor">
+                  Valor (R$) <span class="required-star">*</span>
+                </label>
+                <input type="text" id="valor" name="valor" class="form-control form-control-gen"
+                  placeholder="0,00" required inputmode="decimal"
+                  value="{{ (form or {}).get('valor', '') }}">
+              </div>
+              <div class="col-5">
+                <label class="form-label-gen" for="forma_pagamento">Pagamento</label>
+                <select id="forma_pagamento" name="forma_pagamento" class="form-select form-control-gen">
+                  <option value="Pix" {% if (form or {}).get('forma_pagamento') == 'Pix' %}selected{% endif %}>Pix</option>
+                  <option value="Cartão" {% if (form or {}).get('forma_pagamento') == 'Cartão' %}selected{% endif %}>Cartão</option>
+                  <option value="Dinheiro" {% if (form or {}).get('forma_pagamento') == 'Dinheiro' %}selected{% endif %}>Dinheiro</option>
+                  <option value="Voucher" {% if (form or {}).get('forma_pagamento') == 'Voucher' %}selected{% endif %}>Voucher</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Optional passenger contact -->
+        <div class="col-12">
+          <div class="gen-card gen-card-optional">
+            <button class="btn btn-gen-expand" type="button"
+              data-bs-toggle="collapse" data-bs-target="#passageiroContact">
+              <i class="bi bi-person-lines-fill me-2"></i>
+              Adicionar contato do passageiro (opcional)
+              <i class="bi bi-chevron-down ms-auto"></i>
+            </button>
+            <div class="collapse" id="passageiroContact">
+              <div class="gen-optional-body">
+                <div class="row g-3">
+                  <div class="col-md-6">
+                    <label class="form-label-gen" for="email_passageiro">E-mail do passageiro</label>
+                    <input type="email" id="email_passageiro" name="email_passageiro"
+                      class="form-control form-control-gen" placeholder="email@passageiro.com"
+                      value="{{ (form or {}).get('email_passageiro', '') }}">
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label-gen" for="whatsapp_passageiro">WhatsApp do passageiro</label>
+                    <input type="tel" id="whatsapp_passageiro" name="whatsapp_passageiro"
+                      class="form-control form-control-gen" placeholder="(11) 99999-9999"
+                      value="{{ (form or {}).get('whatsapp_passageiro', '') }}">
+                  </div>
+                  <div class="col-12">
+                    <label class="form-label-gen" for="observacoes">Observações</label>
+                    <textarea id="observacoes" name="observacoes" class="form-control form-control-gen"
+                      rows="2" placeholder="Observações sobre a corrida...">{{ (form or {}).get('observacoes', '') }}</textarea>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Submit -->
+        <div class="col-12">
+          <div class="gen-submit-wrap">
+            <button type="submit" class="btn btn-gen-submit">
+              <i class="bi bi-file-earmark-plus-fill me-2"></i>Gerar recibo agora
+            </button>
+            <p class="gen-submit-note">
+              <i class="bi bi-shield-check me-1"></i>
+              Seu recibo receberá um link público e QR Code para compartilhamento.
+            </p>
+          </div>
+        </div>
+      </div>
+    </form>
+
+    <!-- Register CTA -->
+    <div class="gen-register-cta mt-5">
+      <div class="gen-register-cta-inner">
+        <div class="gen-register-icon"><i class="bi bi-bookmark-heart-fill"></i></div>
+        <div>
+          <h3 class="gen-register-title">Salve todos os seus recibos</h3>
+          <p class="gen-register-text">
+            Com uma conta grátis você acessa o histórico completo, reenvie recibos a qualquer hora e faça upgrade quando precisar de mais recursos.
+          </p>
+        </div>
+        <div class="gen-register-actions">
+          <a href="{{ url_for('cadastro') }}" class="btn btn-gen-register">Criar conta grátis</a>
+          <a href="{{ url_for('login') }}" class="btn btn-gen-login">Já tenho conta</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

@@ -1,153 +1,225 @@
 {% extends "base.html" %}
+{% block title %}Recibo #{{ dados.rid }}{% endblock %}
 
-{% block title %}Recibo {{ dados.rid }} | {{ app_name }}{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+{% endblock %}
 
 {% block content %}
-<section class="receipt-page">
-  <div class="row g-4 align-items-stretch">
-    <div class="col-xl-8">
-      <div class="card-surface receipt-document h-100">
-        <div class="receipt-document-head mb-4">
-          <div>
-            <span class="eyebrow">Recibo digital</span>
-            <h1 class="mb-1">Recibo #{{ dados.rid }}</h1>
-            <p class="text-muted mb-0">Pronto para visualizacao, compartilhamento e impressao.</p>
-          </div>
+<div class="container py-4">
 
-          <div class="receipt-item-actions">
-            {% if dados.is_owner %}
-              <a class="btn btn-outline-dark" href="{{ url_for('dashboard') }}">Voltar ao painel</a>
+  <!-- Guest receipt banner -->
+  {% if dados.is_guest %}
+  <div class="guest-receipt-banner mb-4">
+    <div class="guest-receipt-banner-content">
+      <i class="bi bi-info-circle-fill me-2"></i>
+      <span>Este recibo foi gerado sem conta. <strong>Cadastre-se grátis</strong> para salvar e gerenciar todos os seus recibos.</span>
+    </div>
+    <a href="{{ url_for('cadastro') }}" class="btn btn-guest-register">
+      Criar conta grátis <i class="bi bi-arrow-right ms-1"></i>
+    </a>
+  </div>
+  {% endif %}
+
+  <!-- Created success banner -->
+  {% if dados.just_created %}
+  <div class="alert alert-success alert-dismissible fade show mb-4" role="alert">
+    <i class="bi bi-check-circle-fill me-2"></i>
+    Recibo gerado com sucesso! Compartilhe pelo WhatsApp ou e-mail abaixo.
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+  </div>
+  {% endif %}
+
+  <div class="row g-4">
+    <!-- Receipt document -->
+    <div class="col-lg-7">
+      <div class="receipt-document">
+        <!-- Document header -->
+        <div class="receipt-doc-header">
+          <div class="receipt-doc-logo">
+            <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+          </div>
+          <div class="receipt-doc-id-wrap">
+            <span class="receipt-doc-id-label">Recibo</span>
+            <span class="receipt-doc-id">#{{ dados.rid }}</span>
+          </div>
+        </div>
+
+        <div class="receipt-doc-divider"></div>
+
+        <!-- Amount highlight -->
+        <div class="receipt-amount-highlight">
+          <span class="receipt-amount-label">Valor da corrida</span>
+          <span class="receipt-amount-value">R$ {{ dados.amount_display }}</span>
+          <span class="receipt-payment-method">{{ dados.payment_method }}</span>
+        </div>
+
+        <div class="receipt-doc-divider"></div>
+
+        <!-- Trip details -->
+        <div class="receipt-section">
+          <div class="receipt-section-title">
+            <i class="bi bi-map-fill me-2"></i>Detalhes da corrida
+          </div>
+          <div class="receipt-detail-grid">
+            <div class="detail-item">
+              <span class="detail-label">Passageiro</span>
+              <span class="detail-value">{{ dados.passenger or '—' }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Data</span>
+              <span class="detail-value">{{ dados.trip_date_display }}{% if dados.trip_time %} às {{ dados.trip_time }}{% endif %}</span>
+            </div>
+            <div class="detail-item detail-item-full">
+              <span class="detail-label">Origem</span>
+              <span class="detail-value">{{ dados.origin or '—' }}</span>
+            </div>
+            <div class="detail-item detail-item-full">
+              <span class="detail-label">Destino</span>
+              <span class="detail-value">{{ dados.destination or '—' }}</span>
+            </div>
+            {% if dados.notes %}
+            <div class="detail-item detail-item-full">
+              <span class="detail-label">Observações</span>
+              <span class="detail-value">{{ dados.notes }}</span>
+            </div>
             {% endif %}
-            <button class="btn btn-dark" type="button" onclick="window.print()">Imprimir</button>
           </div>
         </div>
 
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Detalhes da corrida</span>
-            <h2>Comprovante</h2>
+        <div class="receipt-doc-divider"></div>
+
+        <!-- Driver info -->
+        <div class="receipt-section">
+          <div class="receipt-section-title">
+            <i class="bi bi-taxi-front-fill me-2"></i>Dados do motorista
+          </div>
+          <div class="receipt-detail-grid">
+            <div class="detail-item">
+              <span class="detail-label">Motorista</span>
+              <span class="detail-value">{{ dados.driver_snapshot.full_name or '—' }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Placa</span>
+              <span class="detail-value mono">{{ dados.driver_snapshot.plate or '—' }}</span>
+            </div>
+            {% if dados.driver_snapshot.vehicle_model %}
+            <div class="detail-item">
+              <span class="detail-label">Veículo</span>
+              <span class="detail-value">{{ dados.driver_snapshot.vehicle_model }}</span>
+            </div>
+            {% endif %}
+            {% if dados.driver_snapshot.city %}
+            <div class="detail-item">
+              <span class="detail-label">Cidade</span>
+              <span class="detail-value">{{ dados.driver_snapshot.city }}</span>
+            </div>
+            {% endif %}
+            {% if dados.driver_snapshot.whatsapp %}
+            <div class="detail-item">
+              <span class="detail-label">WhatsApp</span>
+              <span class="detail-value">{{ dados.driver_snapshot.whatsapp }}</span>
+            </div>
+            {% endif %}
+            {% if dados.driver_snapshot.license_number %}
+            <div class="detail-item">
+              <span class="detail-label">Alvará</span>
+              <span class="detail-value mono">{{ dados.driver_snapshot.license_number }}</span>
+            </div>
+            {% endif %}
           </div>
         </div>
 
-        <div class="detail-grid mt-4">
-          <div>
-            <span class="mini-label">Passageiro</span>
-            <strong>{{ dados.passenger or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Data</span>
-            <strong>{{ dados.trip_date_display }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Hora</span>
-            <strong>{{ dados.trip_time or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Valor</span>
-            <strong>R$ {{ dados.amount_display }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Origem</span>
-            <strong>{{ dados.origin or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Destino</span>
-            <strong>{{ dados.destination or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Pagamento</span>
-            <strong>{{ dados.payment_method or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Observacoes</span>
-            <strong>{{ dados.notes or '-' }}</strong>
-          </div>
-        </div>
+        <div class="receipt-doc-divider"></div>
 
-        <hr class="my-4">
-
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Taxista responsavel</span>
-            <h2>{{ dados.driver_snapshot.full_name }}</h2>
-          </div>
-        </div>
-
-        <div class="detail-grid mt-3">
-          <div>
-            <span class="mini-label">Placa</span>
-            <strong>{{ dados.driver_snapshot.plate or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Cidade</span>
-            <strong>{{ dados.driver_snapshot.city or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">WhatsApp</span>
-            <strong>{{ dados.driver_snapshot.whatsapp or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Veiculo</span>
-            <strong>{{ dados.driver_snapshot.vehicle_model or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Prefixo</span>
-            <strong>{{ dados.driver_snapshot.taxi_prefix or '-' }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Alvara</span>
-            <strong>{{ dados.driver_snapshot.license_number or '-' }}</strong>
-          </div>
+        <div class="receipt-doc-footer">
+          <span class="receipt-doc-footer-text">Documento gerado em {{ dados.created_at[:10] }} via Recibo Táxi</span>
+          <button class="btn btn-print" onclick="window.print()">
+            <i class="bi bi-printer-fill me-1"></i>Imprimir
+          </button>
         </div>
       </div>
     </div>
 
-    <div class="col-xl-4">
-      <div class="card-surface tone-dark share-panel">
-        <div class="share-visual">
-          <img
-            src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
-            alt="Arte principal do Recibo Taxi"
-            class="share-poster"
-          >
+    <!-- Share panel -->
+    <div class="col-lg-5">
+      <div class="share-panel-card">
+        <div class="share-panel-header">
+          <h2 class="share-panel-title"><i class="bi bi-share-fill me-2"></i>Compartilhar</h2>
         </div>
 
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow eyebrow-light">Compartilhar</span>
-            <h2>Enviar recibo</h2>
+        <!-- WhatsApp -->
+        <a href="{{ dados.whatsapp_link }}" target="_blank" rel="noopener" class="share-btn share-btn-whats">
+          <i class="bi bi-whatsapp share-btn-icon"></i>
+          <div class="share-btn-content">
+            <span class="share-btn-label">Enviar pelo WhatsApp</span>
+            <span class="share-btn-sub">Mensagem profissional gerada automaticamente</span>
+          </div>
+          <i class="bi bi-arrow-right share-btn-arrow"></i>
+        </a>
+
+        <!-- Email -->
+        <a href="{{ dados.email_link }}" class="share-btn share-btn-email">
+          <i class="bi bi-envelope-fill share-btn-icon"></i>
+          <div class="share-btn-content">
+            <span class="share-btn-label">Enviar por E-mail</span>
+            <span class="share-btn-sub">Abre seu cliente de e-mail preferido</span>
+          </div>
+          <i class="bi bi-arrow-right share-btn-arrow"></i>
+        </a>
+
+        <!-- Link -->
+        <div class="share-link-wrap">
+          <span class="share-link-label"><i class="bi bi-link-45deg me-1"></i>Link do recibo</span>
+          <div class="share-link-box">
+            <input type="text" class="share-link-input" value="{{ dados.public_url }}" readonly id="receiptLink">
+            <button class="btn btn-copy" onclick="copyLink()" title="Copiar link">
+              <i class="bi bi-clipboard-fill"></i>
+            </button>
           </div>
         </div>
 
-        <div class="share-stack mt-3">
-          <a class="btn btn-success btn-lg w-100" href="{{ dados.whatsapp_link }}" target="_blank" rel="noopener noreferrer">Enviar por WhatsApp</a>
-          <a class="btn btn-primary btn-lg w-100" href="{{ dados.email_link }}">Enviar por e-mail</a>
+        <!-- QR Code -->
+        <div class="qr-wrap">
+          <span class="qr-label"><i class="bi bi-qr-code me-1"></i>QR Code do recibo</span>
+          <div id="qrcode" class="qr-canvas"></div>
         </div>
 
-        <div class="share-link mt-4">
-          <span class="mini-label">Link publico do recibo</span>
-          <a href="{{ dados.public_url }}" target="_blank" rel="noopener noreferrer">{{ dados.public_url }}</a>
+        {% if dados.is_owner %}
+        <div class="mt-3 text-center">
+          <a href="{{ url_for('dashboard') }}" class="btn btn-back-dash">
+            <i class="bi bi-arrow-left me-1"></i>Voltar ao painel
+          </a>
         </div>
-
-        <div class="qr-card mt-4">
-          <canvas id="qrcanvas" width="240" height="240"></canvas>
-          <p class="text-muted small mb-0 mt-3">Escaneie para abrir este recibo no celular.</p>
-        </div>
+        {% endif %}
       </div>
     </div>
   </div>
-</section>
+</div>
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 <script>
-  (function () {
-    const canvas = document.getElementById("qrcanvas");
-    if (!canvas || !window.QRCode) return;
-    QRCode.toCanvas(canvas, {{ dados.public_url|tojson }}, { width: 240 }, function (error) {
-      if (error) console.error(error);
+  // QR Code
+  var qr = qrcode(0, 'M');
+  qr.addData('{{ dados.public_url }}');
+  qr.make();
+  var el = document.getElementById('qrcode');
+  if (el) el.innerHTML = qr.createImgTag(4, 8);
+
+  // Copy link
+  function copyLink() {
+    var inp = document.getElementById('receiptLink');
+    inp.select();
+    inp.setSelectionRange(0, 99999);
+    navigator.clipboard.writeText(inp.value).catch(function() {
+      document.execCommand('copy');
     });
-  })();
+    var btn = document.querySelector('.btn-copy');
+    btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+    setTimeout(function() {
+      btn.innerHTML = '<i class="bi bi-clipboard-fill"></i>';
+    }, 2000);
+  }
 </script>
 {% endblock %}

@@ -1,179 +1,255 @@
 {% extends "base.html" %}
-
-{% block title %}Dashboard | {{ app_name }}{% endblock %}
+{% block title %}Painel{% endblock %}
 
 {% block content %}
-<section class="dashboard-head">
-  <div class="row g-4 align-items-stretch">
-    <div class="col-xl-8">
-      <div class="card-surface tone-dark dashboard-banner">
-        <span class="eyebrow eyebrow-light">Painel do taxista</span>
-        <h1>Bem-vindo, {{ current_user.full_name }}.</h1>
-        <p class="lead mb-0">Cadastre a corrida, gere o recibo e compartilhe com o passageiro em segundos, agora com um layout puxado direto do visual do recibo oficial.</p>
-
-        <div class="hero-points">
-          <span>Placa {{ current_user.plate }}</span>
-          <span>{{ current_user.city }}</span>
-          <span>{{ current_user.whatsapp }}</span>
-          <span>{{ current_user.vehicle_model or 'Veiculo cadastrado' }}</span>
-        </div>
+<!-- ── Dashboard header ───────────────────────────────────────────────────── -->
+<div class="db-header">
+  <div class="container">
+    <div class="db-header-inner">
+      <div>
+        <h1 class="db-title">Olá, {{ current_user.full_name.split()[0] }} 👋</h1>
+        <p class="db-subtitle">{{ current_user.city }} · {{ current_user.plate }}</p>
+      </div>
+      <div class="db-plan-badge db-plan-{{ user_plan }}">
+        {% if user_plan == 'pro' %}
+        <i class="bi bi-star-fill me-1"></i>Plano Pro
+        {% elif user_plan == 'business' %}
+        <i class="bi bi-briefcase-fill me-1"></i>Business
+        {% else %}
+        <i class="bi bi-person me-1"></i>Plano Grátis
+        {% endif %}
       </div>
     </div>
 
-    <div class="col-xl-4">
-      <div class="card-surface dashboard-brand-card">
-        <span class="mini-label">Referencia visual</span>
-        <img
-          src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
-          alt="Arte principal do Recibo Taxi"
-          class="dashboard-brand-image"
-        >
-        <p>Os tons quentes do recibo agora guiam o painel, os cards e a tela de compartilhamento.</p>
-
-        <div class="profile-grid">
-          <div>
-            <span class="mini-label">Placa</span>
-            <strong>{{ current_user.plate }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Cidade</span>
-            <strong>{{ current_user.city }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">WhatsApp</span>
-            <strong>{{ current_user.whatsapp }}</strong>
-          </div>
-          <div>
-            <span class="mini-label">Veiculo</span>
-            <strong>{{ current_user.vehicle_model or '-' }}</strong>
+    <!-- Stats -->
+    <div class="db-stats">
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-blue"><i class="bi bi-receipt"></i></div>
+        <div class="stat-body">
+          <div class="stat-value">{{ receipts|length }}</div>
+          <div class="stat-label">Total de recibos</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-coral"><i class="bi bi-calendar-month"></i></div>
+        <div class="stat-body">
+          <div class="stat-value">{{ receipts_this_month }}</div>
+          <div class="stat-label">Este mês</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-green"><i class="bi bi-taxi-front-fill"></i></div>
+        <div class="stat-body">
+          <div class="stat-value">{{ current_user.plate }}</div>
+          <div class="stat-label">Placa</div>
+        </div>
+      </div>
+      {% if user_plan == 'free' %}
+      <div class="stat-card stat-card-upgrade">
+        <div class="stat-icon stat-icon-orange"><i class="bi bi-lightning-fill"></i></div>
+        <div class="stat-body">
+          <div class="stat-value">Pro</div>
+          <div class="stat-label">
+            <a href="{{ url_for('planos') }}" class="upgrade-link">Fazer upgrade →</a>
           </div>
         </div>
       </div>
+      {% endif %}
     </div>
   </div>
-</section>
+</div>
 
-<section class="mt-4">
+<!-- ── Main content ───────────────────────────────────────────────────────── -->
+<div class="container mt-4 mb-5">
+
+  {% if user_plan == 'free' and receipts|length >= 25 %}
+  <div class="upgrade-banner mb-4">
+    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+    Você está próximo do limite de 30 recibos/mês do plano grátis.
+    <a href="{{ url_for('planos') }}" class="upgrade-banner-link ms-2">Fazer upgrade agora →</a>
+  </div>
+  {% endif %}
+
   <div class="row g-4">
-    <div class="col-xl-7">
-      <div class="card-surface composer-card h-100">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Novo recibo</span>
-            <h2>Dados da corrida</h2>
-          </div>
+    <!-- Composer -->
+    <div class="col-lg-5">
+      <div class="db-card composer-card">
+        <div class="db-card-header">
+          <h2 class="db-card-title"><i class="bi bi-plus-circle-fill me-2"></i>Novo recibo</h2>
         </div>
+        <form action="{{ url_for('recibo_criar') }}" method="post" novalidate>
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label-db" for="passageiro">Passageiro <span class="required-star">*</span></label>
+              <input type="text" id="passageiro" name="passageiro" class="form-control form-control-db"
+                placeholder="Nome do passageiro" required>
+            </div>
+            <div class="col-6">
+              <label class="form-label-db" for="data">Data <span class="required-star">*</span></label>
+              <input type="date" id="data" name="data" class="form-control form-control-db"
+                value="{{ today }}" required>
+            </div>
+            <div class="col-6">
+              <label class="form-label-db" for="hora">Hora</label>
+              <input type="time" id="hora" name="hora" class="form-control form-control-db">
+            </div>
+            <div class="col-12">
+              <label class="form-label-db" for="origem">Origem <span class="required-star">*</span></label>
+              <input type="text" id="origem" name="origem" class="form-control form-control-db"
+                placeholder="Local de embarque" required>
+            </div>
+            <div class="col-12">
+              <label class="form-label-db" for="destino">Destino <span class="required-star">*</span></label>
+              <input type="text" id="destino" name="destino" class="form-control form-control-db"
+                placeholder="Local de desembarque" required>
+            </div>
+            <div class="col-7">
+              <label class="form-label-db" for="valor">Valor (R$) <span class="required-star">*</span></label>
+              <input type="text" id="valor" name="valor" class="form-control form-control-db"
+                placeholder="0,00" required inputmode="decimal">
+            </div>
+            <div class="col-5">
+              <label class="form-label-db" for="forma_pagamento">Pagamento</label>
+              <select id="forma_pagamento" name="forma_pagamento" class="form-select form-control-db">
+                <option value="Pix">Pix</option>
+                <option value="Cartão">Cartão</option>
+                <option value="Dinheiro">Dinheiro</option>
+                <option value="Voucher">Voucher</option>
+              </select>
+            </div>
 
-        <form method="POST" action="{{ url_for('recibo_criar') }}" class="row g-3 mt-1">
-          <div class="col-md-6">
-            <label class="form-label">Passageiro</label>
-            <input type="text" name="passageiro" class="form-control" required>
-          </div>
+            <!-- Dados do passageiro (opcionais) -->
+            <div class="col-12">
+              <button class="btn btn-expand-optional" type="button"
+                data-bs-toggle="collapse" data-bs-target="#optionalFields">
+                <i class="bi bi-chevron-down me-1"></i>Dados opcionais do passageiro
+              </button>
+              <div class="collapse mt-2" id="optionalFields">
+                <div class="row g-3">
+                  <div class="col-12">
+                    <label class="form-label-db" for="email_passageiro">E-mail do passageiro</label>
+                    <input type="email" id="email_passageiro" name="email_passageiro"
+                      class="form-control form-control-db" placeholder="email@passageiro.com">
+                  </div>
+                  <div class="col-12">
+                    <label class="form-label-db" for="whatsapp_passageiro">WhatsApp do passageiro</label>
+                    <input type="tel" id="whatsapp_passageiro" name="whatsapp_passageiro"
+                      class="form-control form-control-db" placeholder="(11) 99999-9999">
+                  </div>
+                  <div class="col-12">
+                    <label class="form-label-db" for="observacoes">Observações</label>
+                    <textarea id="observacoes" name="observacoes" class="form-control form-control-db"
+                      rows="2" placeholder="Observações da corrida..."></textarea>
+                  </div>
+                </div>
+              </div>
+            </div>
 
-          <div class="col-md-3">
-            <label class="form-label">Data</label>
-            <input type="date" name="data" class="form-control" value="{{ today }}" required>
-          </div>
-
-          <div class="col-md-3">
-            <label class="form-label">Hora</label>
-            <input type="time" name="hora" class="form-control">
-          </div>
-
-          <div class="col-md-6">
-            <label class="form-label">Origem</label>
-            <input type="text" name="origem" class="form-control" placeholder="Aeroporto, hotel, empresa..." required>
-          </div>
-
-          <div class="col-md-6">
-            <label class="form-label">Destino</label>
-            <input type="text" name="destino" class="form-control" placeholder="Local de destino" required>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label">Valor (R$)</label>
-            <input type="text" name="valor" class="form-control" placeholder="64,00" required>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label">Forma de pagamento</label>
-            <select name="forma_pagamento" class="form-select">
-              <option>Pix</option>
-              <option>Cartao</option>
-              <option>Dinheiro</option>
-              <option>Voucher</option>
-            </select>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label">E-mail do passageiro</label>
-            <input type="email" name="email_passageiro" class="form-control" placeholder="opcional">
-          </div>
-
-          <div class="col-md-6">
-            <label class="form-label">WhatsApp do passageiro</label>
-            <input type="text" name="whatsapp_passageiro" class="form-control" placeholder="opcional">
-          </div>
-
-          <div class="col-md-6">
-            <label class="form-label">Observacoes</label>
-            <input type="text" name="observacoes" class="form-control" placeholder="Bagagem, empresa, observacoes da corrida...">
-          </div>
-
-          <div class="col-12 d-grid d-md-flex gap-3 mt-2">
-            <button class="btn btn-dark btn-lg" type="submit">Gerar recibo</button>
-            <span class="form-hint">Assim que o recibo for criado, voce podera abrir o WhatsApp ou o e-mail com a mensagem pronta.</span>
+            <div class="col-12">
+              <button type="submit" class="btn btn-generate w-100">
+                <i class="bi bi-file-earmark-plus-fill me-2"></i>Gerar e salvar recibo
+              </button>
+            </div>
           </div>
         </form>
       </div>
+
+      <!-- Profile card -->
+      <div class="db-card profile-card mt-4">
+        <div class="db-card-header">
+          <h2 class="db-card-title"><i class="bi bi-person-badge-fill me-2"></i>Meu perfil</h2>
+          {% if user_plan != 'free' %}
+          <form action="{{ url_for('portal_cliente') }}" method="post">
+            <button type="submit" class="btn btn-manage-plan btn-sm">
+              <i class="bi bi-gear me-1"></i>Gerenciar plano
+            </button>
+          </form>
+          {% else %}
+          <a href="{{ url_for('planos') }}" class="btn btn-upgrade-sm btn-sm">
+            <i class="bi bi-lightning-fill me-1"></i>Upgrade
+          </a>
+          {% endif %}
+        </div>
+        <div class="profile-grid-db">
+          <div class="profile-item">
+            <span class="profile-item-label">Motorista</span>
+            <span class="profile-item-value">{{ current_user.full_name }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">Cidade</span>
+            <span class="profile-item-value">{{ current_user.city }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">Placa</span>
+            <span class="profile-item-value mono">{{ current_user.plate }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">Veículo</span>
+            <span class="profile-item-value">{{ current_user.vehicle_model or '—' }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">WhatsApp</span>
+            <span class="profile-item-value">{{ current_user.whatsapp or '—' }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">Prefixo</span>
+            <span class="profile-item-value">{{ current_user.taxi_prefix or '—' }}</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="col-xl-5">
-      <div class="card-surface history-card h-100">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Historico</span>
-            <h2>Recibos emitidos</h2>
-          </div>
-          <span class="receipt-count">{{ receipts|length }} total</span>
+    <!-- Receipt history -->
+    <div class="col-lg-7">
+      <div class="db-card history-card">
+        <div class="db-card-header">
+          <h2 class="db-card-title">
+            <i class="bi bi-clock-history me-2"></i>Histórico de recibos
+          </h2>
+          <span class="receipt-count-badge">{{ receipts|length }}</span>
         </div>
 
         {% if receipts %}
-          <div class="receipt-list">
-            {% for receipt in receipts %}
-              <article class="receipt-item">
-                <div class="receipt-item-top">
-                  <div>
-                    <strong>{{ receipt.passenger }}</strong>
-                    <p>{{ receipt.trip_date_display }} • R$ {{ receipt.amount_display }}</p>
-                  </div>
-                  <span class="status-chip">{{ receipt.payment_method }}</span>
-                </div>
-                <p class="route-line">{{ receipt.origin }} -> {{ receipt.destination }}</p>
-                <div class="receipt-item-actions">
-                  <a class="btn btn-sm btn-outline-dark" href="{{ url_for('recibo_view', rid=receipt.rid) }}">Ver</a>
-                  <a class="btn btn-sm btn-success" href="{{ receipt.whatsapp_link }}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
-                  <a class="btn btn-sm btn-primary" href="{{ receipt.email_link }}">E-mail</a>
-                </div>
-              </article>
-            {% endfor %}
+        <div class="receipt-list">
+          {% for r in receipts %}
+          <div class="receipt-row">
+            <div class="receipt-row-left">
+              <div class="receipt-row-passenger">{{ r.passenger }}</div>
+              <div class="receipt-row-route">
+                <i class="bi bi-geo-alt-fill me-1"></i>{{ r.origin }}
+                <i class="bi bi-arrow-right mx-1"></i>{{ r.destination }}
+              </div>
+              <div class="receipt-row-meta">
+                <span class="meta-date"><i class="bi bi-calendar3 me-1"></i>{{ r.trip_date_display }}</span>
+                <span class="meta-payment payment-{{ r.payment_method|lower|replace('ã','a')|replace('é','e') }}">{{ r.payment_method }}</span>
+              </div>
+            </div>
+            <div class="receipt-row-right">
+              <div class="receipt-row-amount">R$ {{ r.amount_display }}</div>
+              <div class="receipt-row-actions">
+                <a href="{{ url_for('recibo_view', rid=r.rid) }}" class="btn btn-action btn-action-view" title="Ver recibo">
+                  <i class="bi bi-eye-fill"></i>
+                </a>
+                <a href="{{ r.whatsapp_link }}" target="_blank" rel="noopener" class="btn btn-action btn-action-whats" title="Enviar WhatsApp">
+                  <i class="bi bi-whatsapp"></i>
+                </a>
+                <a href="{{ r.email_link }}" class="btn btn-action btn-action-email" title="Enviar e-mail">
+                  <i class="bi bi-envelope-fill"></i>
+                </a>
+              </div>
+            </div>
           </div>
+          {% endfor %}
+        </div>
         {% else %}
-          <div class="empty-state">
-            <h3>Nenhum recibo emitido ainda</h3>
-            <p>Seu historico vai aparecer aqui assim que voce gerar a primeira corrida.</p>
-          </div>
+        <div class="empty-history">
+          <div class="empty-history-icon"><i class="bi bi-receipt-cutoff"></i></div>
+          <h3 class="empty-history-title">Nenhum recibo ainda</h3>
+          <p class="empty-history-text">Use o formulário ao lado para gerar seu primeiro recibo.</p>
+        </div>
         {% endif %}
       </div>
     </div>
   </div>
-</section>
-
-{% if storage_mode != 'astra' %}
-<section class="mt-4">
-  <div class="alert alert-warning border-0 shadow-sm">
-    Este painel esta em modo local. Para gravar em producao, configure as variaveis do Astra DB na Vercel.
-  </div>
-</section>
-{% endif %}
+</div>
 {% endblock %}

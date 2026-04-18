@@ -1,97 +1,117 @@
 {% extends "base.html" %}
-
-{% block title %}Cadastro do Taxista | {{ app_name }}{% endblock %}
+{% block title %}Criar conta{% endblock %}
 
 {% block content %}
 <section class="auth-section">
-  <div class="row g-4 align-items-stretch">
-    <div class="col-xl-7">
-      <div class="card-surface auth-panel auth-card-wide">
-        <span class="eyebrow">Cadastro do taxista</span>
-        <h1>Crie sua conta para emitir recibos digitais</h1>
-        <p class="text-muted mb-4">Os dados do cadastro alimentam automaticamente seus proximos recibos.</p>
-
-        <form method="POST" class="row g-3">
-          <div class="col-md-6">
-            <label class="form-label">Nome completo</label>
-            <input type="text" name="nome_completo" class="form-control" value="{{ form.nome_completo if form else '' }}" required>
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-10 col-xl-9">
+        <div class="auth-card auth-card-wide">
+          <div class="auth-card-header">
+            <div class="auth-logo">
+              <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+            </div>
+            <h1 class="auth-title">Criar conta grátis</h1>
+            <p class="auth-subtitle">Cadastre-se para salvar e gerenciar todos os seus recibos</p>
           </div>
 
-          <div class="col-md-6">
-            <label class="form-label">E-mail</label>
-            <input type="email" name="email" class="form-control" value="{{ form.email if form else '' }}" required>
-          </div>
+          <form action="{{ url_for('cadastro') }}" method="post" class="auth-form" novalidate>
+            <!-- Seção: dados pessoais -->
+            <div class="form-section">
+              <div class="form-section-title">
+                <i class="bi bi-person-fill me-2"></i>Dados pessoais
+              </div>
+              <div class="row g-3">
+                <div class="col-12">
+                  <label for="nome_completo" class="form-label-auth">Nome completo <span class="required-star">*</span></label>
+                  <input type="text" id="nome_completo" name="nome_completo" class="form-control form-control-auth"
+                    placeholder="Seu nome completo" required
+                    value="{{ (form or {}).get('nome_completo', '') }}">
+                </div>
+                <div class="col-md-6">
+                  <label for="email" class="form-label-auth">E-mail <span class="required-star">*</span></label>
+                  <input type="email" id="email" name="email" class="form-control form-control-auth"
+                    placeholder="seu@email.com" autocomplete="email" required
+                    value="{{ (form or {}).get('email', '') }}">
+                </div>
+                <div class="col-md-6">
+                  <label for="senha" class="form-label-auth">Senha <span class="required-star">*</span></label>
+                  <input type="password" id="senha" name="senha" class="form-control form-control-auth"
+                    placeholder="Mínimo 8 caracteres" autocomplete="new-password" minlength="8" required>
+                </div>
+                <div class="col-md-6">
+                  <label for="whatsapp" class="form-label-auth">WhatsApp <span class="required-star">*</span></label>
+                  <input type="tel" id="whatsapp" name="whatsapp" class="form-control form-control-auth"
+                    placeholder="(11) 99999-9999" required
+                    value="{{ (form or {}).get('whatsapp', '') }}">
+                </div>
+                <div class="col-md-6">
+                  <label for="cpf" class="form-label-auth">CPF <span class="required-star">*</span></label>
+                  <input type="text" id="cpf" name="cpf" class="form-control form-control-auth"
+                    placeholder="000.000.000-00" required
+                    value="{{ (form or {}).get('cpf', '') }}">
+                </div>
+              </div>
+            </div>
 
-          <div class="col-md-6">
-            <label class="form-label">Senha</label>
-            <input type="password" name="senha" class="form-control" placeholder="Minimo de 8 caracteres" required>
-          </div>
+            <!-- Seção: dados do veículo -->
+            <div class="form-section">
+              <div class="form-section-title">
+                <i class="bi bi-taxi-front-fill me-2"></i>Dados do veículo e licença
+              </div>
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label for="placa" class="form-label-auth">Placa <span class="required-star">*</span></label>
+                  <input type="text" id="placa" name="placa" class="form-control form-control-auth"
+                    placeholder="ABC-1234" required maxlength="8" style="text-transform:uppercase"
+                    value="{{ (form or {}).get('placa', '') }}">
+                </div>
+                <div class="col-md-4">
+                  <label for="modelo_veiculo" class="form-label-auth">Modelo do veículo</label>
+                  <input type="text" id="modelo_veiculo" name="modelo_veiculo" class="form-control form-control-auth"
+                    placeholder="Ex: Toyota Corolla"
+                    value="{{ (form or {}).get('modelo_veiculo', '') }}">
+                </div>
+                <div class="col-md-4">
+                  <label for="cidade" class="form-label-auth">Cidade <span class="required-star">*</span></label>
+                  <input type="text" id="cidade" name="cidade" class="form-control form-control-auth"
+                    placeholder="São Paulo" required
+                    value="{{ (form or {}).get('cidade', '') }}">
+                </div>
+                <div class="col-md-6">
+                  <label for="prefixo_taxi" class="form-label-auth">Prefixo do táxi</label>
+                  <input type="text" id="prefixo_taxi" name="prefixo_taxi" class="form-control form-control-auth"
+                    placeholder="Ex: 0042"
+                    value="{{ (form or {}).get('prefixo_taxi', '') }}">
+                </div>
+                <div class="col-md-6">
+                  <label for="numero_alvara" class="form-label-auth">Número do alvará</label>
+                  <input type="text" id="numero_alvara" name="numero_alvara" class="form-control form-control-auth"
+                    placeholder="Ex: ALV-00123"
+                    value="{{ (form or {}).get('numero_alvara', '') }}">
+                </div>
+              </div>
+            </div>
 
-          <div class="col-md-6">
-            <label class="form-label">WhatsApp</label>
-            <input type="text" name="whatsapp" class="form-control" value="{{ form.whatsapp if form else '' }}" placeholder="(11) 99999-9999" required>
-          </div>
+            <button type="submit" class="btn btn-auth-submit w-100">
+              <i class="bi bi-person-check-fill me-2"></i>Criar minha conta grátis
+            </button>
+          </form>
 
-          <div class="col-md-4">
-            <label class="form-label">CPF</label>
-            <input type="text" name="cpf" class="form-control" value="{{ form.cpf if form else '' }}" required>
-          </div>
+          <div class="auth-divider"><span>ou</span></div>
 
-          <div class="col-md-4">
-            <label class="form-label">Cidade</label>
-            <input type="text" name="cidade" class="form-control" value="{{ form.cidade if form else '' }}" required>
+          <div class="text-center">
+            <p class="auth-switch-text">
+              Já tem conta?
+              <a href="{{ url_for('login') }}" class="auth-switch-link">Entrar</a>
+            </p>
+            <p class="auth-switch-text mt-2">
+              Quer só gerar um recibo rápido?
+              <a href="{{ url_for('gerador') }}" class="auth-switch-link">Gerar sem cadastro</a>
+            </p>
           </div>
-
-          <div class="col-md-4">
-            <label class="form-label">Placa do taxi</label>
-            <input type="text" name="placa" class="form-control" value="{{ form.placa if form else '' }}" placeholder="ABC1D23" required>
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label">Modelo do veiculo</label>
-            <input type="text" name="modelo_veiculo" class="form-control" value="{{ form.modelo_veiculo if form else '' }}" placeholder="Corolla, Spin, etc.">
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label">Prefixo do taxi</label>
-            <input type="text" name="prefixo_taxi" class="form-control" value="{{ form.prefixo_taxi if form else '' }}">
-          </div>
-
-          <div class="col-md-4">
-            <label class="form-label">Numero do alvara</label>
-            <input type="text" name="numero_alvara" class="form-control" value="{{ form.numero_alvara if form else '' }}">
-          </div>
-
-          <div class="col-12 d-grid d-md-flex gap-3 mt-2">
-            <button class="btn btn-dark btn-lg" type="submit">Criar conta</button>
-            <a class="btn btn-outline-dark btn-lg" href="{{ url_for('login') }}">Ja tenho conta</a>
-          </div>
-        </form>
+        </div>
       </div>
-    </div>
-
-    <div class="col-xl-5">
-      <aside class="card-surface tone-dark poster-panel">
-        <div class="poster-copy">
-          <span class="eyebrow eyebrow-light">Base visual do produto</span>
-          <h2>O cadastro abre a porta para um fluxo mais profissional e com cara de marca pronta.</h2>
-          <p>Assim que a conta nasce, o painel herda os tons do recibo e prepara cada corrida para ser compartilhada com mais presenca.</p>
-        </div>
-
-        <div class="poster-stage">
-          <img
-            src="{{ url_for('public_static', filename='img/RECIBO.png') }}"
-            alt="Arte principal do recibo"
-            class="poster-image"
-          >
-        </div>
-
-        <div class="poster-benefits">
-          <span>Cadastro completo</span>
-          <span>Historico persistente</span>
-          <span>WhatsApp e e-mail</span>
-        </div>
-      </aside>
     </div>
   </div>
 </section>

@@ -10,6 +10,7 @@ from flask import (
     abort,
     flash,
     g,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -22,13 +23,23 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
     from astrapy import DataAPIClient
-except ImportError:  # pragma: no cover - covered indirectly when dependency is missing
+except ImportError:
     DataAPIClient = None
 
+try:
+    import stripe as stripe_lib
+except ImportError:
+    stripe_lib = None
 
-APP_NAME = "Recibo Taxi"
+
+APP_NAME = "Recibo Táxi"
 DEFAULT_USERS_COLLECTION = "taxistas"
 DEFAULT_RECEIPTS_COLLECTION = "recibos"
+
+STRIPE_PRICE_IDS = {
+    "pro": "STRIPE_PRO_PRICE_ID",
+    "business": "STRIPE_BUSINESS_PRICE_ID",
+}
 
 
 def now_iso() -> str:
@@ -53,7 +64,7 @@ def format_date_br(date_value: str) -> str:
 
 
 def normalize_money(value: str) -> tuple[str, str]:
-    raw = (value or "").strip().replace("R$", "").replace(" ", "")
+    raw = (value or "").strip().replace("R$", "").replace("\xa0", "").replace(" ", "")
     if not raw:
         raise ValueError("Informe o valor da corrida.")
 
@@ -66,7 +77,7 @@ def normalize_money(value: str) -> tuple[str, str]:
     try:
         amount = Decimal(normalized).quantize(Decimal("0.01"))
     except InvalidOperation as exc:
-        raise ValueError("Informe um valor valido.") from exc
+        raise ValueError("Informe um valor válido (ex: 45,00).") from exc
 
     display = f"{amount:.2f}".replace(".", ",")
     return str(amount), display
@@ -74,15 +85,15 @@ def normalize_money(value: str) -> tuple[str, str]:
 
 def compose_receipt_message(receipt: dict, public_url: str) -> str:
     lines = [
-        f"Recibo {receipt['rid']}",
-        f"Passageiro: {receipt.get('passenger') or '-'}",
-        f"Data: {receipt.get('trip_date_display') or '-'}",
-        f"Origem: {receipt.get('origin') or '-'}",
-        f"Destino: {receipt.get('destination') or '-'}",
-        f"Valor: R$ {receipt.get('amount_display') or '-'}",
-        f"Pagamento: {receipt.get('payment_method') or '-'}",
+        f"✅ Recibo #{receipt['rid']}",
+        f"👤 Passageiro: {receipt.get('passenger') or '-'}",
+        f"📅 Data: {receipt.get('trip_date_display') or '-'}",
+        f"📍 Origem: {receipt.get('origin') or '-'}",
+        f"🏁 Destino: {receipt.get('destination') or '-'}",
+        f"💰 Valor: R$ {receipt.get('amount_display') or '-'}",
+        f"💳 Pagamento: {receipt.get('payment_method') or '-'}",
         "",
-        f"Acesse o recibo: {public_url}",
+        f"🔗 Acesse o recibo: {public_url}",
     ]
     return "\n".join(lines)
 
@@ -97,7 +108,7 @@ def build_whatsapp_link(receipt: dict, public_url: str) -> str:
 
 def build_email_link(receipt: dict, public_url: str) -> str:
     target = quote((receipt.get("passenger_email") or "").strip())
-    subject = quote(f"Recibo {receipt['rid']} - {APP_NAME}")
+    subject = quote(f"Recibo #{receipt['rid']} — Recibo Táxi")
     body = quote(compose_receipt_message(receipt, public_url))
     return f"mailto:{target}?subject={subject}&body={body}"
 
@@ -108,6 +119,18 @@ def public_receipt_url(rid: str) -> str:
         return f"{base_url}{url_for('recibo_view', rid=rid)}"
     return url_for("recibo_view", rid=rid, _external=True)
 
+
+def get_stripe():
+    if stripe_lib is None:
+        return None
+    key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+    if not key:
+        return None
+    stripe_lib.api_key = key
+    return stripe_lib
+
+
+# ── Stores ──────────────────────────────────────────────────────────────────
 
 class InMemoryStore:
     kind = "memory"
@@ -121,10 +144,14 @@ class InMemoryStore:
     def create_user(self, payload: dict) -> dict:
         email = payload["email"]
         if email in self.user_ids_by_email:
-            raise ValueError("Ja existe uma conta com este e-mail.")
+            raise ValueError("Já existe uma conta com este e-mail.")
         self.users_by_id[payload["_id"]] = dict(payload)
         self.user_ids_by_email[email] = payload["_id"]
         return dict(payload)
+
+    def update_user(self, user_id: str, updates: dict) -> None:
+        if user_id in self.users_by_id:
+            self.users_by_id[user_id].update(updates)
 
     def get_user_by_email(self, email: str) -> dict | None:
         user_id = self.user_ids_by_email.get(email)
@@ -148,11 +175,11 @@ class InMemoryStore:
 
     def list_receipts_by_driver(self, driver_id: str) -> list[dict]:
         receipts = [
-            dict(receipt)
-            for receipt in self.receipts_by_id.values()
-            if receipt.get("driver_id") == driver_id
+            dict(r)
+            for r in self.receipts_by_id.values()
+            if r.get("driver_id") == driver_id
         ]
-        receipts.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        receipts.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         return receipts
 
 
@@ -170,14 +197,11 @@ class AstraStore:
     ) -> None:
         if DataAPIClient is None:
             raise RuntimeError(
-                "A dependencia 'astrapy' nao esta instalada. Rode 'pip install -r requirements.txt'."
+                "A dependência 'astrapy' não está instalada. Rode 'pip install -r requirements.txt'."
             )
-
         self.client = DataAPIClient()
         self.database = self.client.get_database(
-            api_endpoint,
-            token=token,
-            keyspace=keyspace,
+            api_endpoint, token=token, keyspace=keyspace
         )
         self.users_collection_name = users_collection
         self.receipts_collection_name = receipts_collection
@@ -195,9 +219,12 @@ class AstraStore:
     def create_user(self, payload: dict) -> dict:
         email = payload["email"]
         if self.get_user_by_email(email):
-            raise ValueError("Ja existe uma conta com este e-mail.")
+            raise ValueError("Já existe uma conta com este e-mail.")
         self.users.insert_one(payload)
         return dict(payload)
+
+    def update_user(self, user_id: str, updates: dict) -> None:
+        self.users.find_one_and_update({"_id": user_id}, {"$set": updates})
 
     def get_user_by_email(self, email: str) -> dict | None:
         user = self.users.find_one({"email": email})
@@ -219,9 +246,11 @@ class AstraStore:
 
     def list_receipts_by_driver(self, driver_id: str) -> list[dict]:
         receipts = self.receipts.find({"driver_id": driver_id}).to_list()
-        receipts.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return [dict(receipt) for receipt in receipts]
+        receipts.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return [dict(r) for r in receipts]
 
+
+# ── Store singleton ──────────────────────────────────────────────────────────
 
 _STORE = None
 
@@ -234,14 +263,8 @@ def get_store():
     api_endpoint = os.environ.get("ASTRA_DB_API_ENDPOINT", "").strip()
     token = os.environ.get("ASTRA_DB_APPLICATION_TOKEN", "").strip()
     keyspace = os.environ.get("ASTRA_DB_KEYSPACE", "default_keyspace").strip()
-    users_collection = os.environ.get(
-        "ASTRA_DB_COLLECTION_USERS",
-        DEFAULT_USERS_COLLECTION,
-    ).strip()
-    receipts_collection = os.environ.get(
-        "ASTRA_DB_COLLECTION_RECEIPTS",
-        DEFAULT_RECEIPTS_COLLECTION,
-    ).strip()
+    users_col = os.environ.get("ASTRA_DB_COLLECTION_USERS", DEFAULT_USERS_COLLECTION).strip()
+    receipts_col = os.environ.get("ASTRA_DB_COLLECTION_RECEIPTS", DEFAULT_RECEIPTS_COLLECTION).strip()
 
     if not api_endpoint and not token:
         _STORE = InMemoryStore()
@@ -249,18 +272,20 @@ def get_store():
 
     if not api_endpoint or not token:
         raise RuntimeError(
-            "Configuracao do Astra DB incompleta. Defina ASTRA_DB_API_ENDPOINT e ASTRA_DB_APPLICATION_TOKEN."
+            "Configuração Astra DB incompleta. Defina ASTRA_DB_API_ENDPOINT e ASTRA_DB_APPLICATION_TOKEN."
         )
 
     _STORE = AstraStore(
         api_endpoint=api_endpoint,
         token=token,
         keyspace=keyspace,
-        users_collection=users_collection,
-        receipts_collection=receipts_collection,
+        users_collection=users_col,
+        receipts_collection=receipts_col,
     )
     return _STORE
 
+
+# ── App ──────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__, static_folder=None)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -268,7 +293,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 secret_key = os.environ.get("SECRET_KEY", "").strip()
 if not secret_key:
     if os.environ.get("VERCEL"):
-        raise RuntimeError("Defina a variavel SECRET_KEY antes de publicar na Vercel.")
+        raise RuntimeError("Defina a variável SECRET_KEY antes de publicar na Vercel.")
     secret_key = "dev-secret-key"
 
 app.config.update(
@@ -286,7 +311,6 @@ def login_required(view):
             flash("Entre com sua conta para continuar.", "warning")
             return redirect(url_for("login"))
         return view(*args, **kwargs)
-
     return wrapped_view
 
 
@@ -296,7 +320,6 @@ def load_current_user() -> None:
     g.user = None
     if not user_id:
         return
-
     user = get_store().get_user_by_id(user_id)
     if not user:
         session.pop("user_id", None)
@@ -312,8 +335,13 @@ def inject_globals() -> dict:
         "current_user": g.get("user"),
         "storage_mode": store.kind,
         "storage_label": store.label,
+        "current_year": datetime.utcnow().year,
+        "stripe_configured": bool(os.environ.get("STRIPE_SECRET_KEY")),
+        "stripe_pub_key": os.environ.get("STRIPE_PUBLISHABLE_KEY", ""),
     }
 
+
+# ── Static & health ──────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
@@ -330,6 +358,8 @@ def public_static(filename: str):
     return send_from_directory("public/static", filename)
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
 @app.get("/")
 def index():
     if g.user:
@@ -345,14 +375,12 @@ def login():
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
         password = request.form.get("senha", "")
-
         user = get_store().get_user_by_email(email)
         if not user or not check_password_hash(user["password_hash"], password):
-            flash("E-mail ou senha invalidos.", "danger")
+            flash("E-mail ou senha inválidos.", "danger")
             return render_template("login.html", form=request.form), 401
-
         session["user_id"] = user["_id"]
-        flash("Login realizado com sucesso.", "success")
+        flash("Bem-vindo de volta!", "success")
         return redirect(url_for("dashboard"))
 
     return render_template("login.html")
@@ -376,7 +404,7 @@ def cadastro():
         license_number = request.form.get("numero_alvara", "").strip()
 
         if not all([full_name, email, password, whatsapp, cpf, city, plate]):
-            flash("Preencha os campos obrigatorios do cadastro.", "danger")
+            flash("Preencha todos os campos obrigatórios.", "danger")
             return render_template("register.html", form=request.form), 400
 
         if len(password) < 8:
@@ -395,6 +423,7 @@ def cadastro():
             "vehicle_model": vehicle_model,
             "taxi_prefix": taxi_prefix,
             "license_number": license_number,
+            "plan": "free",
             "created_at": now_iso(),
         }
 
@@ -405,7 +434,7 @@ def cadastro():
             return render_template("register.html", form=request.form), 409
 
         session["user_id"] = created_user["_id"]
-        flash("Cadastro concluido. Agora voce ja pode emitir recibos.", "success")
+        flash("Conta criada! Já pode emitir e salvar seus recibos.", "success")
         return redirect(url_for("dashboard"))
 
     return render_template("register.html")
@@ -414,9 +443,11 @@ def cadastro():
 @app.get("/sair")
 def sair():
     session.clear()
-    flash("Sua sessao foi encerrada.", "info")
+    flash("Sessão encerrada com sucesso.", "info")
     return redirect(url_for("index"))
 
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @app.get("/dashboard")
 @login_required
@@ -430,10 +461,21 @@ def dashboard():
         item["email_link"] = build_email_link(item, share_url)
         receipts.append(item)
 
+    this_month = datetime.utcnow().strftime("%Y-%m")
+    receipts_this_month = sum(
+        1 for r in receipts if r.get("created_at", "").startswith(this_month)
+    )
+
+    if request.args.get("subscribed") == "1":
+        plan_name = g.user.get("plan", "pro").capitalize()
+        flash(f"✅ Plano {plan_name} ativado com sucesso! Seja bem-vindo.", "success")
+
     return render_template(
         "dashboard.html",
         receipts=receipts,
+        receipts_this_month=receipts_this_month,
         today=datetime.now().strftime("%Y-%m-%d"),
+        user_plan=g.user.get("plan", "free"),
     )
 
 
@@ -447,7 +489,7 @@ def recibo_criar():
     payment_method = request.form.get("forma_pagamento", "").strip() or "Pix"
 
     if not all([passenger, trip_date, origin, destination]):
-        flash("Preencha os dados principais da corrida para gerar o recibo.", "danger")
+        flash("Preencha os dados principais da corrida.", "danger")
         return redirect(url_for("dashboard"))
 
     try:
@@ -487,15 +529,205 @@ def recibo_criar():
     }
 
     get_store().create_receipt(receipt)
-    flash("Recibo pronto para envio por WhatsApp ou e-mail.", "success")
+    flash("Recibo gerado e salvo na sua conta!", "success")
     return redirect(url_for("recibo_view", rid=rid, created="1"))
 
+
+# ── Public generator (no login) ───────────────────────────────────────────────
+
+@app.route("/gerar", methods=["GET", "POST"])
+def gerador():
+    if g.user:
+        return redirect(url_for("dashboard"))
+
+    if request.method == "POST":
+        passenger = request.form.get("passageiro", "").strip()
+        trip_date = request.form.get("data", "").strip()
+        origin = request.form.get("origem", "").strip()
+        destination = request.form.get("destino", "").strip()
+        payment_method = request.form.get("forma_pagamento", "").strip() or "Pix"
+        driver_name = request.form.get("nome_motorista", "").strip()
+        driver_plate = request.form.get("placa", "").strip().upper()
+        driver_phone = request.form.get("whatsapp_motorista", "").strip()
+        driver_city = request.form.get("cidade_motorista", "").strip()
+        driver_vehicle = request.form.get("modelo_veiculo", "").strip()
+
+        if not all([passenger, trip_date, origin, destination, driver_name]):
+            flash("Preencha os campos obrigatórios para gerar o recibo.", "danger")
+            return render_template(
+                "gerador.html", form=request.form, today=datetime.now().strftime("%Y-%m-%d")
+            ), 400
+
+        try:
+            amount_value, amount_display = normalize_money(request.form.get("valor", ""))
+        except ValueError as exc:
+            flash(str(exc), "danger")
+            return render_template(
+                "gerador.html", form=request.form, today=datetime.now().strftime("%Y-%m-%d")
+            ), 400
+
+        rid = uuid4().hex[:10].upper()
+        receipt = {
+            "_id": rid,
+            "rid": rid,
+            "driver_id": None,
+            "is_guest": True,
+            "passenger": passenger,
+            "passenger_email": normalize_email(request.form.get("email_passageiro", "")),
+            "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
+            "trip_date": trip_date,
+            "trip_date_display": format_date_br(trip_date),
+            "trip_time": request.form.get("hora", "").strip(),
+            "origin": origin,
+            "destination": destination,
+            "amount_value": amount_value,
+            "amount_display": amount_display,
+            "payment_method": payment_method,
+            "notes": request.form.get("observacoes", "").strip(),
+            "created_at": now_iso(),
+            "driver_snapshot": {
+                "full_name": driver_name,
+                "email": "",
+                "whatsapp": driver_phone,
+                "city": driver_city,
+                "plate": driver_plate,
+                "vehicle_model": driver_vehicle,
+                "taxi_prefix": "",
+                "license_number": "",
+            },
+        }
+
+        get_store().create_receipt(receipt)
+        return redirect(url_for("recibo_view", rid=rid, created="1"))
+
+    return render_template("gerador.html", today=datetime.now().strftime("%Y-%m-%d"))
+
+
+# ── Pricing & Stripe ──────────────────────────────────────────────────────────
+
+@app.get("/planos")
+def planos():
+    return render_template("planos.html")
+
+
+@app.post("/assinar/<plan>")
+@login_required
+def assinar(plan: str):
+    stripe = get_stripe()
+    if not stripe:
+        flash("Pagamentos ainda não configurados. Entre em contato conosco.", "warning")
+        return redirect(url_for("planos"))
+
+    price_env = STRIPE_PRICE_IDS.get(plan)
+    if not price_env:
+        abort(400)
+
+    price_id = os.environ.get(price_env, "").strip()
+    if not price_id:
+        flash("Este plano não está disponível no momento.", "warning")
+        return redirect(url_for("planos"))
+
+    base = os.environ.get("APP_BASE_URL", "").strip().rstrip("/")
+    success_url = (
+        f"{base}{url_for('dashboard')}?subscribed=1"
+        if base
+        else url_for("dashboard", subscribed=1, _external=True)
+    )
+    cancel_url = (
+        f"{base}{url_for('planos')}"
+        if base
+        else url_for("planos", _external=True)
+    )
+
+    try:
+        checkout = stripe.checkout.Session.create(
+            customer_email=g.user["email"],
+            payment_method_types=["card"],
+            line_items=[{"price": price_id, "quantity": 1}],
+            mode="subscription",
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"user_id": g.user["_id"], "plan": plan},
+            locale="pt-BR",
+        )
+    except Exception as exc:
+        flash(f"Erro ao iniciar pagamento: {exc}", "danger")
+        return redirect(url_for("planos"))
+
+    return redirect(checkout.url, code=303)
+
+
+@app.post("/portal-cliente")
+@login_required
+def portal_cliente():
+    stripe = get_stripe()
+    if not stripe:
+        abort(503)
+
+    customer_id = g.user.get("stripe_customer_id")
+    if not customer_id:
+        flash("Você não possui uma assinatura ativa para gerenciar.", "warning")
+        return redirect(url_for("dashboard"))
+
+    base = os.environ.get("APP_BASE_URL", "").strip().rstrip("/")
+    return_url = (
+        f"{base}{url_for('dashboard')}"
+        if base
+        else url_for("dashboard", _external=True)
+    )
+    portal = stripe.billing_portal.Session.create(
+        customer=customer_id, return_url=return_url
+    )
+    return redirect(portal.url, code=303)
+
+
+@app.post("/webhook/stripe")
+def stripe_webhook():
+    stripe = get_stripe()
+    if not stripe:
+        abort(503)
+
+    payload = request.get_data()
+    sig = request.headers.get("Stripe-Signature", "")
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, secret)
+    except Exception:
+        abort(400)
+
+    obj = event["data"]["object"]
+
+    if event["type"] == "checkout.session.completed":
+        user_id = obj.get("metadata", {}).get("user_id")
+        plan = obj.get("metadata", {}).get("plan", "pro")
+        if user_id:
+            get_store().update_user(user_id, {
+                "plan": plan,
+                "stripe_customer_id": obj.get("customer"),
+                "stripe_subscription_id": obj.get("subscription"),
+            })
+
+    elif event["type"] == "customer.subscription.deleted":
+        # Downgrade happens here — production: index customer_id → user_id
+        pass
+
+    elif event["type"] == "customer.subscription.updated":
+        status = obj.get("status")
+        if status not in ("active", "trialing"):
+            # Subscription paused or past_due — handle accordingly
+            pass
+
+    return jsonify({"ok": True})
+
+
+# ── Receipt view ──────────────────────────────────────────────────────────────
 
 @app.get("/recibo/<rid>")
 def recibo_view(rid: str):
     receipt = get_store().get_receipt(rid)
     if not receipt:
-        abort(404, description="Recibo nao encontrado.")
+        abort(404, description="Recibo não encontrado.")
 
     share_url = public_receipt_url(rid)
     context = dict(receipt)
@@ -503,6 +735,8 @@ def recibo_view(rid: str):
     context["whatsapp_link"] = build_whatsapp_link(context, share_url)
     context["email_link"] = build_email_link(context, share_url)
     context["is_owner"] = bool(g.user and g.user["_id"] == receipt.get("driver_id"))
+    context["is_guest"] = receipt.get("is_guest", False)
+    context["just_created"] = request.args.get("created") == "1"
 
     return render_template("recibo_view.html", dados=context)
 

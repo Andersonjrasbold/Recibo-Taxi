@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Planos e Preços{% endblock %}
+
+{% block content %}
+<section class="planos-section">
+  <div class="container">
+    <!-- Header -->
+    <div class="planos-header">
+      <div class="section-label">Planos</div>
+      <h1 class="planos-title">Escolha o plano ideal para você</h1>
+      <p class="planos-subtitle">
+        Comece grátis, sem cartão de crédito. Faça upgrade quando precisar de mais recursos.
+      </p>
+    </div>
+
+    <!-- Cards -->
+    <div class="row g-4 justify-content-center">
+      <!-- Free -->
+      <div class="col-sm-10 col-md-6 col-lg-4">
+        <div class="pricing-card">
+          <div class="pricing-plan-name">Grátis</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">0</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-tagline">Para quem quer experimentar</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Gerar recibos sem cadastro</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Até 30 recibos salvos/mês</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Compartilhar por WhatsApp e e-mail</li>
+            <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Link público do recibo</li>
+            <li class="off"><i class="bi bi-x-lg"></i>Histórico ilimitado</li>
+            <li class="off"><i class="bi bi-x-lg"></i>Suporte dedicado</li>
+            <li class="off"><i class="bi bi-x-lg"></i>Relatórios mensais</li>
+          </ul>
+          {% if current_user %}
+          <div class="pricing-current-plan text-center py-2">
+            {% if current_user.get('plan', 'free') == 'free' %}
+            <span class="pricing-current-badge">✓ Seu plano atual</span>
+            {% else %}
+            <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar grátis</a>
+            {% endif %}
+          </div>
+          {% else %}
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar grátis</a>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Pro (featured) -->
+      <div class="col-sm-10 col-md-6 col-lg-4">
+        <div class="pricing-card pricing-featured">
+          <div class="pricing-popular-badge">Mais popular</div>
+          <div class="pricing-plan-name">Pro</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">19</span>
+            <span class="pricing-cents">,90</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-tagline">Para taxistas que trabalham todo dia</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Histórico completo e permanente</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Compartilhar por WhatsApp e e-mail</li>
+            <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Link público do recibo</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Recibo com seus dados profissionais</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Suporte por WhatsApp</li>
+            <li class="off"><i class="bi bi-x-lg"></i>Relatórios mensais em PDF</li>
+          </ul>
+          {% if current_user %}
+            {% if current_user.get('plan', 'free') == 'pro' %}
+            <div class="text-center py-2">
+              <span class="pricing-current-badge">✓ Seu plano atual</span>
+            </div>
+            <form action="{{ url_for('portal_cliente') }}" method="post" class="mt-2">
+              <button type="submit" class="btn btn-pricing-ghost w-100">Gerenciar assinatura</button>
+            </form>
+            {% else %}
+            <form action="{{ url_for('assinar', plan='pro') }}" method="post">
+              <button type="submit" class="btn btn-pricing-primary w-100">
+                {% if not stripe_configured %}
+                Assinar Pro (em breve)
+                {% else %}
+                Assinar Pro — R$ 19,90/mês
+                {% endif %}
+              </button>
+            </form>
+            {% endif %}
+          {% else %}
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com Pro</a>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Business -->
+      <div class="col-sm-10 col-md-6 col-lg-4">
+        <div class="pricing-card">
+          <div class="pricing-plan-name">Business</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">39</span>
+            <span class="pricing-cents">,90</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-tagline">Para frotas e cooperativas</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Tudo do plano Pro</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Relatórios mensais em PDF</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Múltiplos veículos/perfis</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Logo personalizada no recibo</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Exportação de dados (CSV)</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Suporte prioritário 24h</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Onboarding dedicado</li>
+            <li class="on"><i class="bi bi-check-lg"></i>API de integração</li>
+          </ul>
+          {% if current_user %}
+            {% if current_user.get('plan', 'free') == 'business' %}
+            <div class="text-center py-2">
+              <span class="pricing-current-badge">✓ Seu plano atual</span>
+            </div>
+            <form action="{{ url_for('portal_cliente') }}" method="post" class="mt-2">
+              <button type="submit" class="btn btn-pricing-ghost w-100">Gerenciar assinatura</button>
+            </form>
+            {% else %}
+            <form action="{{ url_for('assinar', plan='business') }}" method="post">
+              <button type="submit" class="btn btn-pricing-ghost w-100">
+                {% if not stripe_configured %}
+                Assinar Business (em breve)
+                {% else %}
+                Assinar Business — R$ 39,90/mês
+                {% endif %}
+              </button>
+            </form>
+            {% endif %}
+          {% else %}
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar com Business</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Stripe trust note -->
+    <p class="pricing-note text-center mt-4">
+      <i class="bi bi-shield-lock-fill me-1"></i>
+      Pagamentos 100% seguros via <strong>Stripe</strong>. Cancele a qualquer momento, sem multa.
+    </p>
+
+    <!-- FAQ -->
+    <div class="faq-section mt-5">
+      <h2 class="faq-title text-center">Perguntas frequentes</h2>
+      <div class="row justify-content-center mt-4">
+        <div class="col-lg-8">
+          <div class="accordion faq-accordion" id="faqAccordion">
+            <div class="accordion-item faq-item">
+              <h3 class="accordion-header">
+                <button class="accordion-button faq-btn" type="button" data-bs-toggle="collapse" data-bs-target="#faq1">
+                  Posso gerar recibos sem me cadastrar?
+                </button>
+              </h3>
+              <div id="faq1" class="accordion-collapse collapse show" data-bs-parent="#faqAccordion">
+                <div class="accordion-body faq-body">
+                  Sim! Você pode gerar recibos avulsos sem criar conta. Eles são públicos e compartilháveis, mas não ficam salvos no histórico. Para guardar seus recibos, cadastre-se gratuitamente.
+                </div>
+              </div>
+            </div>
+            <div class="accordion-item faq-item">
+              <h3 class="accordion-header">
+                <button class="accordion-button faq-btn collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq2">
+                  Como funciona o cancelamento?
+                </button>
+              </h3>
+              <div id="faq2" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body faq-body">
+                  Você pode cancelar sua assinatura a qualquer momento pelo portal do cliente, sem multa. O acesso continua até o fim do período pago.
+                </div>
+              </div>
+            </div>
+            <div class="accordion-item faq-item">
+              <h3 class="accordion-header">
+                <button class="accordion-button faq-btn collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq3">
+                  Quais formas de pagamento são aceitas?
+                </button>
+              </h3>
+              <div id="faq3" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body faq-body">
+                  Aceitamos cartão de crédito e débito das principais bandeiras (Visa, Mastercard, Elo, Amex) através da Stripe, plataforma líder mundial em pagamentos.
+                </div>
+              </div>
+            </div>
+            <div class="accordion-item faq-item">
+              <h3 class="accordion-header">
+                <button class="accordion-button faq-btn collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq4">
+                  Meus recibos ficam guardados para sempre?
+                </button>
+              </h3>
+              <div id="faq4" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body faq-body">
+                  No plano Pro e Business sim — seus recibos ficam guardados permanentemente. No plano Grátis, o histórico tem limite de 30 recibos por mês.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

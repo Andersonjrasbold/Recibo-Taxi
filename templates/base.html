@@ -108,6 +108,7 @@
           <strong class="footer-col-title">Conta</strong>
           {% if current_user %}
           <a href="{{ url_for('dashboard') }}" class="footer-link">Meu Painel</a>
+          <a href="{{ url_for('perfil') }}" class="footer-link">Meu Cadastro</a>
           <a href="{{ url_for('planos') }}" class="footer-link">Meu Plano</a>
           <a href="{{ url_for('sair') }}" class="footer-link">Sair</a>
           {% else %}

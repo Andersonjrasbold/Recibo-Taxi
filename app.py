@@ -67,6 +67,42 @@ PAID_PLANS = ("pro", "business")
 # de escrita no banco. É best-effort — ver comentário em client_ip().
 MAX_RECEIPT_AMOUNT = Decimal("99999.99")
 
+# Sem teto por campo, um POST de 200 KB por campo passava direto para o banco.
+# (rótulo, tamanho máximo) — o rótulo entra na mensagem de erro.
+RECEIPT_FIELD_LIMITS = {
+    "passageiro": ("O nome do passageiro", 120),
+    "origem": ("A origem", 200),
+    "destino": ("O destino", 200),
+    "observacoes": ("As observações", 500),
+    "forma_pagamento": ("A forma de pagamento", 40),
+    "email_passageiro": ("O e-mail do passageiro", 254),
+    "whatsapp_passageiro": ("O WhatsApp do passageiro", 20),
+    "data": ("A data", 10),
+    "hora": ("A hora", 5),
+    "nome_motorista": ("O nome do motorista", 120),
+    "placa": ("A placa", 10),
+    "whatsapp_motorista": ("O WhatsApp do motorista", 20),
+    "cidade_motorista": ("A cidade", 80),
+    "modelo_veiculo": ("O modelo do veículo", 80),
+}
+
+SIGNUP_FIELD_LIMITS = {
+    "nome_completo": ("O nome completo", 120),
+    "email": ("O e-mail", 254),
+    "senha": ("A senha", 200),
+    "whatsapp": ("O WhatsApp", 20),
+    "cpf": ("O CPF", 14),
+    "cidade": ("A cidade", 80),
+    "placa": ("A placa", 10),
+    "modelo_veiculo": ("O modelo do veículo", 80),
+    "prefixo_taxi": ("O prefixo do táxi", 20),
+    "numero_alvara": ("O número do alvará", 40),
+}
+
+# Teto por lote na limpeza, para a rotina não estourar o tempo da função
+# quando houver backlog grande.
+CLEANUP_BATCH_LIMIT = 500
+
 GUEST_DAILY_LIMIT = 20
 # A Política de Privacidade promete remover recibos sem cadastro em 12 meses.
 GUEST_RETENTION_DAYS = 365
@@ -228,6 +264,14 @@ def public_receipt_url(rid: str) -> str:
     return absolute_url("recibo_view", rid=rid)
 
 
+def field_limit_error(limits: dict[str, tuple[str, int]]) -> str | None:
+    """Primeira mensagem de erro de tamanho, ou None se tudo couber."""
+    for field, (label, maximo) in limits.items():
+        if len(request.form.get(field, "")) > maximo:
+            return f"{label} passa do limite de {maximo} caracteres."
+    return None
+
+
 def client_ip() -> str:
     """IP do cliente, já corrigido pelo ProxyFix.
 
@@ -270,8 +314,15 @@ class InMemoryStore:
         return dict(payload)
 
     def update_user(self, user_id: str, updates: dict) -> None:
-        if user_id in self.users_by_id:
-            self.users_by_id[user_id].update(updates)
+        user = self.users_by_id.get(user_id)
+        if not user:
+            return
+        email_antigo = user.get("email")
+        user.update(updates)
+        email_novo = user.get("email")
+        if email_novo != email_antigo:
+            self.user_ids_by_email.pop(email_antigo, None)
+            self.user_ids_by_email[email_novo] = user_id
 
     def get_user_by_email(self, email: str) -> dict | None:
         user_id = self.user_ids_by_email.get(email)
@@ -339,21 +390,23 @@ class InMemoryStore:
         entry["count"] += 1
         return entry["count"]
 
-    def purge_guest_receipts_before(self, cutoff_iso: str) -> int:
+    def purge_guest_receipts_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
         stale = [
             rid
             for rid, r in self.receipts_by_id.items()
             if r.get("is_guest") and r.get("created_at", "") < cutoff_iso
         ]
-        for rid in stale:
+        lote = stale[:limit]
+        for rid in lote:
             del self.receipts_by_id[rid]
-        return len(stale)
+        return len(lote), len(stale) > len(lote)
 
-    def purge_counters_before(self, cutoff_iso: str) -> int:
+    def purge_counters_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
         stale = [k for k, v in self.counters.items() if v.get("created_at", "") < cutoff_iso]
-        for key in stale:
+        lote = stale[:limit]
+        for key in lote:
             del self.counters[key]
-        return len(stale)
+        return len(lote), len(stale) > len(lote)
 
 
 class AstraStore:
@@ -463,15 +516,36 @@ class AstraStore:
         )
         return int((doc or {}).get("count", 1))
 
-    def purge_guest_receipts_before(self, cutoff_iso: str) -> int:
-        result = self.receipts.delete_many(
-            {"is_guest": True, "created_at": {"$lt": cutoff_iso}}
-        )
-        return int(getattr(result, "deleted_count", 0) or 0)
+    def _purge_in_batches(self, collection, filtro: dict, limit: int) -> tuple[int, bool]:
+        """Apaga no máximo `limit` documentos, em lotes pequenos.
 
-    def purge_counters_before(self, cutoff_iso: str) -> int:
-        result = self.counters.delete_many({"created_at": {"$lt": cutoff_iso}})
-        return int(getattr(result, "deleted_count", 0) or 0)
+        delete_many sem teto pode varrer um backlog grande e estourar o tempo
+        da função. Os ids vão em blocos porque o operador $in tem limite de
+        tamanho no Data API.
+        """
+        ids = [
+            doc["_id"]
+            for doc in collection.find(filtro, projection={"_id": True}, limit=limit + 1)
+        ]
+        sobrou = len(ids) > limit
+        ids = ids[:limit]
+
+        removidos = 0
+        for i in range(0, len(ids), 100):
+            bloco = ids[i : i + 100]
+            resultado = collection.delete_many({"_id": {"$in": bloco}})
+            removidos += int(getattr(resultado, "deleted_count", 0) or 0) or len(bloco)
+        return removidos, sobrou
+
+    def purge_guest_receipts_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
+        return self._purge_in_batches(
+            self.receipts, {"is_guest": True, "created_at": {"$lt": cutoff_iso}}, limit
+        )
+
+    def purge_counters_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
+        return self._purge_in_batches(
+            self.counters, {"created_at": {"$lt": cutoff_iso}}, limit
+        )
 
 
 # ── Store singleton ──────────────────────────────────────────────────────────
@@ -536,6 +610,8 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=bool(os.environ.get("VERCEL")),
+    # Nenhum formulário do app precisa de mais que isto.
+    MAX_CONTENT_LENGTH=1 * 1024 * 1024,
 )
 
 
@@ -727,6 +803,11 @@ def cadastro():
         return redirect(url_for("dashboard"))
 
     if request.method == "POST":
+        erro_tamanho = field_limit_error(SIGNUP_FIELD_LIMITS)
+        if erro_tamanho:
+            flash(erro_tamanho, "danger")
+            return render_template("register.html", form=request.form), 400
+
         full_name = request.form.get("nome_completo", "").strip()
         email = normalize_email(request.form.get("email", ""))
         password = request.form.get("senha", "")
@@ -851,6 +932,60 @@ def redefinir_senha(token: str):
     return render_template("redefinir_senha.html", token=token)
 
 
+@app.route("/perfil", methods=["GET", "POST"])
+@login_required
+def perfil():
+    """Correção de dados cadastrais — o que a LGPD chama de direito de retificação."""
+    if request.method == "POST":
+        erro_tamanho = field_limit_error(SIGNUP_FIELD_LIMITS)
+        if erro_tamanho:
+            flash(erro_tamanho, "danger")
+            return render_template("perfil.html", form=request.form), 400
+
+        # Alterar dados da conta pede a senha atual: sem isso, uma sessão
+        # sequestrada trocaria o e-mail e tomaria a conta em silêncio.
+        if not check_password_hash(g.user["password_hash"], request.form.get("senha_atual", "")):
+            flash("Senha incorreta. Nenhuma alteração foi salva.", "danger")
+            return render_template("perfil.html", form=request.form), 401
+
+        full_name = request.form.get("nome_completo", "").strip()
+        email = normalize_email(request.form.get("email", ""))
+        whatsapp = request.form.get("whatsapp", "").strip()
+        cpf = request.form.get("cpf", "").strip()
+        city = request.form.get("cidade", "").strip()
+        plate = request.form.get("placa", "").strip().upper()
+
+        if not all([full_name, email, whatsapp, cpf, city, plate]):
+            flash("Preencha todos os campos obrigatórios.", "danger")
+            return render_template("perfil.html", form=request.form), 400
+
+        if email != g.user["email"]:
+            existente = get_store().get_user_by_email(email)
+            if existente and existente["_id"] != g.user["_id"]:
+                flash("Já existe uma conta com este e-mail.", "danger")
+                return render_template("perfil.html", form=request.form), 409
+
+        get_store().update_user(
+            g.user["_id"],
+            {
+                "full_name": full_name,
+                "email": email,
+                "whatsapp": whatsapp,
+                "cpf": cpf,
+                "city": city,
+                "plate": plate,
+                "vehicle_model": request.form.get("modelo_veiculo", "").strip(),
+                "taxi_prefix": request.form.get("prefixo_taxi", "").strip(),
+                "license_number": request.form.get("numero_alvara", "").strip(),
+                "updated_at": now_iso(),
+            },
+        )
+        flash("Cadastro atualizado.", "success")
+        return redirect(url_for("dashboard"))
+
+    return render_template("perfil.html", form=g.user)
+
+
 @app.post("/excluir-conta")
 @login_required
 def excluir_conta():
@@ -948,6 +1083,11 @@ def dashboard():
 @app.post("/recibo")
 @login_required
 def recibo_criar():
+    erro_tamanho = field_limit_error(RECEIPT_FIELD_LIMITS)
+    if erro_tamanho:
+        flash(erro_tamanho, "danger")
+        return redirect(url_for("dashboard"))
+
     if g.user.get("plan", "free") not in PAID_PLANS:
         month_start, month_end = month_range_utc()
         used = get_store().count_receipts_in_range(
@@ -1020,6 +1160,13 @@ def gerador():
         return redirect(url_for("dashboard"))
 
     if request.method == "POST":
+        erro_tamanho = field_limit_error(RECEIPT_FIELD_LIMITS)
+        if erro_tamanho:
+            flash(erro_tamanho, "danger")
+            return render_template(
+                "gerador.html", form=request.form, today=today_br()
+            ), 400
+
         passenger = request.form.get("passageiro", "").strip()
         trip_date = request.form.get("data", "").strip()
         origin = request.form.get("origem", "").strip()
@@ -1290,23 +1437,26 @@ def tarefa_limpeza():
 
     store = get_store()
     now = datetime.now(timezone.utc)
-    receipts_removed = store.purge_guest_receipts_before(
-        to_utc_iso(now - timedelta(days=GUEST_RETENTION_DAYS))
+    receipts_removed, receipts_left = store.purge_guest_receipts_before(
+        to_utc_iso(now - timedelta(days=GUEST_RETENTION_DAYS)), CLEANUP_BATCH_LIMIT
     )
-    counters_removed = store.purge_counters_before(
-        to_utc_iso(now - timedelta(days=COUNTER_RETENTION_DAYS))
+    counters_removed, counters_left = store.purge_counters_before(
+        to_utc_iso(now - timedelta(days=COUNTER_RETENTION_DAYS)), CLEANUP_BATCH_LIMIT
     )
 
+    incompleto = receipts_left or counters_left
     app.logger.info(
-        "Limpeza: %s recibos sem cadastro e %s contadores removidos.",
+        "Limpeza: %s recibos sem cadastro e %s contadores removidos.%s",
         receipts_removed,
         counters_removed,
+        " Ainda há backlog — a próxima execução continua." if incompleto else "",
     )
     return jsonify(
         {
             "ok": True,
             "recibos_removidos": receipts_removed,
             "contadores_removidos": counters_removed,
+            "backlog_restante": incompleto,
         }
     )
 

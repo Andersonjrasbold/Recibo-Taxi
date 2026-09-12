@@ -331,6 +331,89 @@ check("anonimo nao ve o e-mail do passageiro", "privado@exemplo.com" not in anon
       and "privado%40exemplo.com" not in anon_html)
 
 
+print("\n-- Limite de tamanho por campo --")
+cl = novo_cliente("tam@t.com")
+grande = "A" * 5000
+r = cl.post("/recibo", data={"passageiro":grande,"data":"2026-09-12","origem":"A",
+    "destino":"B","valor":"10"})
+check("recibo com nome de 5000 chars e recusado", "/recibo/" not in r.headers.get("Location",""))
+r = cl.post("/recibo", data={"passageiro":"Maria","data":"2026-09-12","origem":"A",
+    "destino":"B","valor":"10","observacoes":grande})
+check("observacoes de 5000 chars e recusada", "/recibo/" not in r.headers.get("Location",""))
+r = cl.post("/recibo", data={"passageiro":"Maria","data":"2026-09-12","origem":"A",
+    "destino":"B","valor":"10","observacoes":"tudo certo"})
+check("recibo normal continua passando", "/recibo/" in r.headers.get("Location",""))
+
+cg2 = A.app.test_client()
+r = cg2.post("/gerar", data={"passageiro":grande,"data":"2026-09-12","origem":"A","destino":"B",
+    "valor":"20","nome_motorista":"Ze"}, environ_base={"REMOTE_ADDR":"198.51.100.77"})
+check("gerador publico tambem recusa (400)", r.status_code == 400, r.status_code)
+
+cc = A.app.test_client()
+r = cc.post("/cadastro", data={"nome_completo":grande,"email":"x@t.com","senha":"senha12345",
+    "whatsapp":"11999998888","cpf":"12345678900","cidade":"SP","placa":"abc1d23"})
+check("cadastro recusa nome gigante (400)", r.status_code == 400, r.status_code)
+check("conta nao foi criada", A.get_store().get_user_by_email("x@t.com") is None)
+
+print("\n-- Limpeza em lotes --")
+store = A.get_store()
+velho = A.to_utc_iso(A.datetime.now(A.timezone.utc) - A.timedelta(days=A.GUEST_RETENTION_DAYS + 5))
+for i in range(A.CLEANUP_BATCH_LIMIT + 30):
+    store.create_receipt({"_id":f"OLD{i}","rid":f"OLD{i}","driver_id":None,"is_guest":True,"created_at":velho})
+os.environ["CRON_SECRET"] = "segredo-de-teste"
+r = c0.get("/tarefas/limpeza", headers={"Authorization": "Bearer segredo-de-teste"})
+d = r.get_json()
+check(f"apaga no maximo {A.CLEANUP_BATCH_LIMIT} por execucao",
+      d["recibos_removidos"] == A.CLEANUP_BATCH_LIMIT, d["recibos_removidos"])
+check("avisa que sobrou backlog", d["backlog_restante"] is True, d)
+r2 = c0.get("/tarefas/limpeza", headers={"Authorization": "Bearer segredo-de-teste"})
+d2 = r2.get_json()
+check("segunda execucao limpa o resto", d2["recibos_removidos"] == 30, d2["recibos_removidos"])
+check("e avisa que acabou", d2["backlog_restante"] is False, d2)
+os.environ.pop("CRON_SECRET", None)
+
+
+print("\n-- Edicao de cadastro (/perfil) --")
+cpf_ = novo_cliente("perfil@t.com")
+r = cpf_.get("/perfil")
+check("pagina abre para quem esta logado", r.status_code == 200, r.status_code)
+check("vem preenchida com os dados atuais", "perfil@t.com" in r.get_data(as_text=True))
+check("exige login", A.app.test_client().get("/perfil").status_code == 302)
+
+base = {"nome_completo":"Ana Souza Lima","email":"perfil@t.com","whatsapp":"11988887777",
+        "cpf":"12345678900","cidade":"Santos","placa":"xyz9k88","modelo_veiculo":"Corolla"}
+
+r = cpf_.post("/perfil", data={**base, "senha_atual":"errada"})
+check("senha errada nao salva nada", r.status_code == 401, r.status_code)
+check("dados continuam os antigos",
+      A.get_store().get_user_by_email("perfil@t.com")["city"] == "SP")
+
+r = cpf_.post("/perfil", data={**base, "senha_atual":"senha12345"})
+check("salva com a senha certa", r.status_code == 302, r.status_code)
+u = A.get_store().get_user_by_email("perfil@t.com")
+check("cidade atualizada", u["city"] == "Santos", u["city"])
+check("placa normalizada para maiuscula", u["plate"] == "XYZ9K88", u["plate"])
+check("nome atualizado", u["full_name"] == "Ana Souza Lima")
+
+# e-mail duplicado
+outro = novo_cliente("ocupado@t.com")
+r = cpf_.post("/perfil", data={**base, "email":"ocupado@t.com", "senha_atual":"senha12345"})
+check("recusa e-mail ja usado por outra conta", r.status_code == 409, r.status_code)
+
+# troca de e-mail valida mantem o login funcionando
+r = cpf_.post("/perfil", data={**base, "email":"novo-email@t.com", "senha_atual":"senha12345"})
+check("troca de e-mail e aceita", r.status_code == 302, r.status_code)
+check("e-mail antigo nao acha mais a conta", A.get_store().get_user_by_email("perfil@t.com") is None)
+check("e-mail novo acha a conta", A.get_store().get_user_by_email("novo-email@t.com") is not None)
+cnovo = A.app.test_client()
+check("login com o e-mail novo funciona",
+      cnovo.post("/login", data={"email":"novo-email@t.com","senha":"senha12345"}).status_code == 302)
+
+r = cpf_.post("/perfil", data={**base, "email":"novo-email@t.com", "nome_completo":"A"*5000,
+                               "senha_atual":"senha12345"})
+check("campo gigante e recusado", r.status_code == 400, r.status_code)
+
+
 print("\n" + ("="*50))
 print(f"FALHAS: {len(fails)}" + ("" if not fails else " -> " + ", ".join(fails)))
 sys.exit(1 if fails else 0)

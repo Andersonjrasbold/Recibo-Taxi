@@ -2,7 +2,7 @@
 
 Aplicação Flask para taxistas emitirem e compartilharem recibos digitais.
 
-- Cadastro e login do motorista
+- Cadastro e login do motorista, com edição dos próprios dados em `/perfil`
 - Emissão de recibos, com histórico por conta
 - Gerador público, sem cadastro, para experimentar
 - Compartilhamento por WhatsApp ou e-mail, com link público e QR Code
@@ -92,6 +92,10 @@ Grátis quando a assinatura é cancelada ou a cobrança falha em definitivo —
 Protegida por `Authorization: Bearer $CRON_SECRET`. O `vercel.json` agenda a
 chamada diária às 04:00 UTC. Sem `CRON_SECRET` a rota fica fechada.
 
+Apaga no máximo 500 registros por execução, para não estourar o tempo da
+função com backlog grande. A resposta traz `backlog_restante: true` quando
+sobrou trabalho — a execução seguinte continua de onde parou.
+
 ## Segurança
 
 - CSP com nonce por requisição — sem `'unsafe-inline'` em `script-src`
@@ -100,6 +104,9 @@ chamada diária às 04:00 UTC. Sem `CRON_SECRET` a rota fica fechada.
 - Senhas com hash `werkzeug` (PBKDF2 com sal)
 - Token de reset ligado ao hash da senha atual, o que o torna de uso único
 - Rate limit por IP no gerador público (best-effort; para abuso sério, WAF da Vercel)
+- Teto de tamanho por campo em todo formulário que escreve no banco, mais
+  `MAX_CONTENT_LENGTH` de 1 MB no corpo da requisição
+- Alterar dados da conta em `/perfil` exige a senha atual
 
 ## Deploy na Vercel
 

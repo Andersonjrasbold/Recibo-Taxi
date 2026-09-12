@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Meu cadastro{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+  <div class="row justify-content-center">
+    <div class="col-lg-8 col-xl-7">
+
+      <div class="mb-3">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-back-dash">
+          <i class="bi bi-arrow-left me-1"></i>Voltar ao painel
+        </a>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header">
+          <h1 class="db-card-title"><i class="bi bi-person-badge-fill me-2"></i>Meu cadastro</h1>
+        </div>
+
+        <p class="danger-text mb-4">
+          Corrija seus dados quando precisar. Eles aparecem nos recibos que você emite —
+          alterar aqui não muda os recibos já emitidos, que guardam uma cópia dos dados
+          de quando foram criados.
+        </p>
+
+        <form action="{{ url_for('perfil') }}" method="post" novalidate>
+          <div class="row g-3">
+
+            <div class="col-md-7">
+              <label class="form-label-db" for="nome_completo">Nome completo *</label>
+              <input type="text" id="nome_completo" name="nome_completo" maxlength="120" required
+                     class="form-control form-control-db" value="{{ form.full_name or form.get('nome_completo', '') }}">
+            </div>
+
+            <div class="col-md-5">
+              <label class="form-label-db" for="cpf">CPF *</label>
+              <input type="text" id="cpf" name="cpf" maxlength="14" required
+                     class="form-control form-control-db mono" value="{{ form.cpf or '' }}">
+            </div>
+
+            <div class="col-md-7">
+              <label class="form-label-db" for="email">E-mail (é o seu login) *</label>
+              <input type="email" id="email" name="email" maxlength="254" required
+                     class="form-control form-control-db" value="{{ form.email or '' }}">
+            </div>
+
+            <div class="col-md-5">
+              <label class="form-label-db" for="whatsapp">WhatsApp *</label>
+              <input type="text" id="whatsapp" name="whatsapp" maxlength="20" required
+                     class="form-control form-control-db" value="{{ form.whatsapp or '' }}">
+            </div>
+
+            <div class="col-md-7">
+              <label class="form-label-db" for="cidade">Cidade *</label>
+              <input type="text" id="cidade" name="cidade" maxlength="80" required
+                     class="form-control form-control-db" value="{{ form.city or form.get('cidade', '') }}">
+            </div>
+
+            <div class="col-md-5">
+              <label class="form-label-db" for="placa">Placa *</label>
+              <input type="text" id="placa" name="placa" maxlength="10" required
+                     class="form-control form-control-db mono" value="{{ form.plate or form.get('placa', '') }}">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label-db" for="modelo_veiculo">Modelo do veículo</label>
+              <input type="text" id="modelo_veiculo" name="modelo_veiculo" maxlength="80"
+                     class="form-control form-control-db" value="{{ form.vehicle_model or form.get('modelo_veiculo', '') }}">
+            </div>
+
+            <div class="col-md-3">
+              <label class="form-label-db" for="prefixo_taxi">Prefixo</label>
+              <input type="text" id="prefixo_taxi" name="prefixo_taxi" maxlength="20"
+                     class="form-control form-control-db" value="{{ form.taxi_prefix or form.get('prefixo_taxi', '') }}">
+            </div>
+
+            <div class="col-md-3">
+              <label class="form-label-db" for="numero_alvara">Alvará</label>
+              <input type="text" id="numero_alvara" name="numero_alvara" maxlength="40"
+                     class="form-control form-control-db" value="{{ form.license_number or form.get('numero_alvara', '') }}">
+            </div>
+
+            <div class="col-12"><hr class="my-2"></div>
+
+            <div class="col-md-6">
+              <label class="form-label-db" for="senha_atual">
+                <i class="bi bi-shield-lock me-1"></i>Confirme sua senha atual *
+              </label>
+              <input type="password" id="senha_atual" name="senha_atual" required
+                     autocomplete="current-password" class="form-control form-control-db"
+                     placeholder="Sua senha">
+            </div>
+
+            <div class="col-12">
+              <button type="submit" class="btn btn-generate w-100">
+                <i class="bi bi-check-lg me-2"></i>Salvar alterações
+              </button>
+            </div>
+
+          </div>
+        </form>
+
+        <p class="danger-text mt-4 mb-0">
+          Quer trocar a senha? <a href="{{ url_for('recuperar_senha') }}">Use o link de redefinição</a>.
+          Quer apagar tudo? A exclusão de conta fica no fim do painel.
+        </p>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}

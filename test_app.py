@@ -10,9 +10,22 @@ import io
 import os
 import sys
 
-# Forca o modo local (InMemoryStore) e desliga o envio de e-mail.
-for key in ("ASTRA_DB_API_ENDPOINT", "ASTRA_DB_APPLICATION_TOKEN", "SMTP_HOST"):
-    os.environ.pop(key, None)
+# Desliga tudo que sai da maquina: Astra, SMTP e, principalmente, o Supabase
+# de producao — get_store() prefere SUPABASE_DB_URL, e a suite cria dezenas de
+# contas de teste. Isto nao pode nunca apontar para a nuvem.
+# Vazio, nao removido: o app chama load_dotenv() no import, e o load_dotenv
+# repoe o que foi REMOVIDO mas respeita o que ja existe — mesmo vazio.
+for key in ("ASTRA_DB_API_ENDPOINT", "ASTRA_DB_APPLICATION_TOKEN",
+            "SMTP_HOST", "SUPABASE_DB_URL"):
+    os.environ[key] = ""
+
+# Trava: se o DATABASE_URL nao for local, a suite se recusa a rodar.
+_dsn = os.environ.get("DATABASE_URL", "")
+if _dsn and not any(h in _dsn for h in ("127.0.0.1", "localhost", "::1")):
+    raise SystemExit(
+        f"DATABASE_URL aponta para fora desta maquina.\n"
+        f"A suite cria dezenas de contas de teste — recusando rodar."
+    )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import app as A
@@ -21,6 +34,18 @@ fails = []
 def check(label, cond, extra=""):
     print(("  OK  " if cond else " FALHA") + f"  {label}" + (f"  [{extra}]" if extra and not cond else ""))
     if not cond: fails.append(label)
+
+def recibo_bruto(rid, created_at, driver_id=None, is_guest=True):
+    """Recibo completo — o Postgres, ao contrario do Astra, cobra os NOT NULL."""
+    return {
+        "_id": rid, "rid": rid, "driver_id": driver_id, "is_guest": is_guest,
+        "passenger": "Teste", "passenger_email": "", "passenger_whatsapp": "",
+        "trip_date": "2026-09-12", "trip_time": "", "origin": "A", "destino": "B",
+        "destination": "B", "amount_value": "10.00", "amount_display": "10,00",
+        "payment_method": "Pix", "notes": "", "created_at": created_at,
+        "driver_snapshot": {},
+    }
+
 
 def novo_cliente(email="a@t.com"):
     c = A.app.test_client()
@@ -173,14 +198,16 @@ check("nenhum handler inline nos templates",
 
 print("\n-- Falha explicita sem Astra em producao --")
 A._STORE = None
+_db = os.environ.pop("DATABASE_URL", "")
 os.environ["VERCEL"] = "1"
 try:
     A.get_store()
-    check("levanta erro na Vercel sem Astra", False, "nao levantou")
+    check("levanta erro na Vercel sem banco nenhum", False, "nao levantou")
 except RuntimeError as exc:
-    check("levanta erro na Vercel sem Astra", "ASTRA_DB_API_ENDPOINT" in str(exc))
+    check("levanta erro na Vercel sem banco nenhum", "ASTRA_DB_API_ENDPOINT" in str(exc))
 finally:
     os.environ.pop("VERCEL", None)
+    if _db: os.environ["DATABASE_URL"] = _db
     A._STORE = None
 
 
@@ -223,12 +250,12 @@ check("com segredo errado responde 401", r.status_code == 401, r.status_code)
 store = A.get_store()
 velho = A.to_utc_iso(A.datetime.now(A.timezone.utc) - A.timedelta(days=A.GUEST_RETENTION_DAYS + 5))
 novo_iso = A.now_iso()
-store.create_receipt({"_id":"VELHO1","rid":"VELHO1","driver_id":None,"is_guest":True,"created_at":velho})
-store.create_receipt({"_id":"NOVO1","rid":"NOVO1","driver_id":None,"is_guest":True,"created_at":novo_iso})
+store.create_receipt(recibo_bruto("AAAAAAAAAAAAAA", velho))
+store.create_receipt(recibo_bruto("BBBBBBBBBBBBBB", novo_iso))
 r = c0.get("/tarefas/limpeza", headers={"Authorization": "Bearer segredo-de-teste"})
 check("com o segredo certo responde 200", r.status_code == 200, r.status_code)
-check("apagou o recibo vencido", store.get_receipt("VELHO1") is None)
-check("preservou o recibo recente", store.get_receipt("NOVO1") is not None)
+check("apagou o recibo vencido", store.get_receipt("AAAAAAAAAAAAAA") is None)
+check("preservou o recibo recente", store.get_receipt("BBBBBBBBBBBBBB") is not None)
 os.environ.pop("CRON_SECRET", None)
 
 print("\n-- Contador atomico --")
@@ -359,7 +386,7 @@ print("\n-- Limpeza em lotes --")
 store = A.get_store()
 velho = A.to_utc_iso(A.datetime.now(A.timezone.utc) - A.timedelta(days=A.GUEST_RETENTION_DAYS + 5))
 for i in range(A.CLEANUP_BATCH_LIMIT + 30):
-    store.create_receipt({"_id":f"OLD{i}","rid":f"OLD{i}","driver_id":None,"is_guest":True,"created_at":velho})
+    store.create_receipt(recibo_bruto(f"{i:014X}", velho))
 os.environ["CRON_SECRET"] = "segredo-de-teste"
 r = c0.get("/tarefas/limpeza", headers={"Authorization": "Bearer segredo-de-teste"})
 d = r.get_json()
@@ -412,6 +439,40 @@ check("login com o e-mail novo funciona",
 r = cpf_.post("/perfil", data={**base, "email":"novo-email@t.com", "nome_completo":"A"*5000,
                                "senha_atual":"senha12345"})
 check("campo gigante e recusado", r.status_code == 400, r.status_code)
+
+
+print("\n-- Corrida da cota do plano Gratis --")
+if A.get_store().kind == "postgres":
+    import concurrent.futures as _cf
+    cc = novo_cliente("corrida@t.com")
+    uidc = A.get_store().get_user_by_email("corrida@t.com")["_id"]
+    # 28 recibos ja usados no mes
+    for i in range(28):
+        A.get_store().create_receipt(
+            recibo_bruto(f"C{i:013X}", A.now_iso(), driver_id=uidc, is_guest=False),
+            quota_limit=A.FREE_MONTHLY_LIMIT)
+
+    def emitir(i):
+        return A.get_store().create_receipt(
+            recibo_bruto(f"D{i:013X}", A.now_iso(), driver_id=uidc, is_guest=False),
+            quota_limit=A.FREE_MONTHLY_LIMIT) is not None
+
+    with _cf.ThreadPoolExecutor(max_workers=10) as ex:
+        res = list(ex.map(emitir, range(10)))
+    check("10 emissoes simultaneas partindo de 28 liberam exatamente 2",
+          sum(res) == 2, f"liberou {sum(res)}")
+    total = len(A.get_store().list_receipts_by_driver(uidc))
+    check("total no mes para em 30", total == 30, total)
+else:
+    print("  (pulado: so faz sentido no Postgres)")
+
+print("\n-- rid com 14 digitos --")
+cr2 = novo_cliente("rid@t.com")
+r = cr2.post("/recibo", data={"passageiro":"M","data":"2026-09-12","origem":"A",
+                              "destino":"B","valor":"30"})
+rid14 = r.headers["Location"].split("/recibo/")[1].split("?")[0]
+check("rid tem 14 caracteres", len(rid14) == 14, f"{rid14} ({len(rid14)})")
+check("rid e hexadecimal maiusculo", all(c in "0123456789ABCDEF" for c in rid14), rid14)
 
 
 print("\n" + ("="*50))

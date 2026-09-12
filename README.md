@@ -7,7 +7,7 @@ Aplicação Flask para taxistas emitirem e compartilharem recibos digitais.
 - Gerador público, sem cadastro, para experimentar
 - Compartilhamento por WhatsApp ou e-mail, com link público e QR Code
 - Assinatura Pro via Stripe
-- Persistência em Astra DB (DataStax)
+- Persistência em Postgres (Supabase). O Astra DB segue como caminho legado durante a migração
 - Deploy na Vercel
 
 ## Rodar localmente
@@ -26,10 +26,25 @@ para a Vercel — está no `.gitignore` e no `.vercelignore`.
 > **Use chaves de teste no `.env`.** As chaves de produção ficam só nas
 > Environment Variables do projeto na Vercel. Chave Stripe live move dinheiro real.
 
-Com `ASTRA_DB_API_ENDPOINT` e `ASTRA_DB_APPLICATION_TOKEN` vazios, o app sobe em
-**modo local**: tudo fica em memória e some ao reiniciar. Serve para desenvolver
-sem rede. Em produção (variável `VERCEL` presente) essa situação levanta erro em
-vez de passar batido, porque os dados não persistiriam.
+### Banco local para desenvolvimento
+
+Os testes rodam contra Postgres de verdade, sem Docker:
+
+```bash
+brew install postgresql@17
+export PATH="/opt/homebrew/opt/postgresql@17/bin:$PATH"
+initdb -D /tmp/rt-pgdata -U postgres --auth=trust
+pg_ctl -D /tmp/rt-pgdata -o "-p 55432 -k /tmp/rtpg" -l /tmp/rt-pgdata/server.log start
+createdb -h 127.0.0.1 -p 55432 -U postgres recibo_taxi
+psql -h 127.0.0.1 -p 55432 -U postgres -d recibo_taxi -f supabase/migrations/0001_schema_inicial.sql
+```
+
+Depois é só `DATABASE_URL=postgresql://postgres@127.0.0.1:55432/recibo_taxi` no `.env`.
+
+O app escolhe o store nesta ordem: `SUPABASE_DB_URL` > `DATABASE_URL` > Astra DB >
+memória. Sem banco nenhum ele sobe em **modo local** (tudo em memória, some ao
+reiniciar); em produção (variável `VERCEL` presente) isso levanta erro em vez de
+passar batido, porque os dados não persistiriam.
 
 ## Testes
 
@@ -42,9 +57,15 @@ Sai com código 1 se algo falhar. Cobre limite de plano, ciclo da assinatura,
 redefinição de senha, exclusão de conta, cabeçalhos de segurança, rate limit e
 a rotina de retenção.
 
-> As implementações do `AstraStore` (contadores, limpeza, contagem mensal) não
-> são exercitadas por esses testes — eles rodam no `InMemoryStore`. Valide contra
-> um Astra de desenvolvimento antes de confiar nelas em produção.
+A suíte roda contra o store configurado e **se recusa a rodar** se o
+`DATABASE_URL` apontar para fora da máquina — ela cria dezenas de contas de teste.
+
+Rode nos dois backends antes de publicar:
+
+```bash
+python test_app.py                 # Postgres local
+DATABASE_URL="" python test_app.py # store em memória
+```
 
 ## Variáveis de ambiente
 
@@ -65,13 +86,37 @@ a rotina de retenção.
 | `SMTP_HOST` e `SMTP_*` | para o reset de senha | Vazio: o link só aparece no log |
 | `CRON_SECRET` | para a limpeza | Vazio: `/tarefas/limpeza` responde 503 |
 
-## Astra DB
+## Banco
 
-Data API com três coleções, criadas sozinhas na primeira execução:
+Schema em `supabase/migrations/`. Quatro tabelas:
 
-- `taxistas` — contas dos motoristas
-- `recibos` — recibos emitidos
-- `contadores` — contadores de rate limit do gerador público
+- `drivers` — contas dos motoristas
+- `receipts` — recibos emitidos (`rid` de 14 hex; com 10 a chance de colisão
+  passava de 36% em 1 milhão de recibos)
+- `rate_limits` — contador do gerador público
+- `receipt_quotas` — cota mensal do plano Grátis
+
+Duas funções carregam a lógica que precisa ser atômica:
+
+- `bump_counter(key)` — incremento do rate limit numa ida só ao banco
+- `consume_receipt_quota(driver, limite)` — consome a cota com `where used < limite`.
+  É o que fecha a corrida: sem ela, duas emissões simultâneas furavam o teto de 30.
+
+### Conexão na Vercel
+
+Use o **Transaction pooler** (porta 6543). A conexão direta
+(`db.<ref>.supabase.co:5432`) é **IPv6-only** e a Vercel só sai por IPv4 — ela
+falha com erro de rede, que parece problema de DNS e não de credencial.
+
+O `psycopg` 3 cria prepared statements sozinho depois de 5 execuções da mesma
+query, e o Supavisor em transaction mode não os suporta. Por isso o pool é criado
+com `prepare_threshold=None` — sem isso o erro só apareceria em produção, depois
+de algum tempo no ar.
+
+### Astra DB (legado)
+
+Continua funcionando enquanto a migração não termina: com `ASTRA_DB_*` definidos
+e nenhum `DATABASE_URL`/`SUPABASE_DB_URL`, o app usa o `AstraStore`.
 
 ## Planos
 

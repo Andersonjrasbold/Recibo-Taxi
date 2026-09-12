@@ -25,5 +25,8 @@
       "path": "/tarefas/limpeza",
       "schedule": "0 4 * * *"
     }
+  ],
+  "regions": [
+    "gru1"
   ]
 }

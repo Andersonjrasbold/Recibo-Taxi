@@ -1,3 +1,4 @@
+import atexit
 import hashlib
 import hmac
 import os
@@ -33,6 +34,17 @@ except ImportError:  # dependência opcional, usada só em desenvolvimento
     load_dotenv = None
 
 try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Json
+    from psycopg_pool import ConnectionPool
+except ImportError:  # só necessário quando DATABASE_URL/SUPABASE_DB_URL existe
+    psycopg = None
+    dict_row = None
+    Json = None
+    ConnectionPool = None
+
+try:
     from astrapy import DataAPIClient
 except ImportError:
     DataAPIClient = None
@@ -66,6 +78,10 @@ PAID_PLANS = ("pro", "business")
 # Gerador público: teto diário por IP, para o endpoint não virar porta aberta
 # de escrita no banco. É best-effort — ver comentário em client_ip().
 MAX_RECEIPT_AMOUNT = Decimal("99999.99")
+
+# 14 dígitos hex = 2^56. Com 10 (2^40) a chance de colisão passava de 36% em
+# 1 milhão de recibos, e uma colisão derruba a emissão com erro 500.
+RID_LENGTH = 14
 
 # Sem teto por campo, um POST de 200 KB por campo passava direto para o banco.
 # (rótulo, tamanho máximo) — o rótulo entra na mensagem de erro.
@@ -304,6 +320,7 @@ class InMemoryStore:
         self.user_ids_by_email: dict[str, str] = {}
         self.receipts_by_id: dict[str, dict] = {}
         self.counters: dict[str, dict] = {}
+        self.quotas: dict[tuple[str, str], int] = {}
 
     def create_user(self, payload: dict) -> dict:
         email = payload["email"]
@@ -355,7 +372,14 @@ class InMemoryStore:
         ]:
             del self.receipts_by_id[rid]
 
-    def create_receipt(self, payload: dict) -> dict:
+    def create_receipt(self, payload: dict, quota_limit: int | None = None) -> dict | None:
+        driver_id = payload.get("driver_id")
+        if quota_limit is not None and driver_id:
+            chave = (driver_id, today_br()[:7])
+            usada = self.quotas.get(chave, 0)
+            if usada >= quota_limit:
+                return None
+            self.quotas[chave] = usada + 1
         self.receipts_by_id[payload["_id"]] = dict(payload)
         return dict(payload)
 
@@ -363,14 +387,14 @@ class InMemoryStore:
         receipt = self.receipts_by_id.get(rid)
         return dict(receipt) if receipt else None
 
-    def list_receipts_by_driver(self, driver_id: str) -> list[dict]:
+    def list_receipts_by_driver(self, driver_id: str, limit: int | None = None) -> list[dict]:
         receipts = [
             dict(r)
             for r in self.receipts_by_id.values()
             if r.get("driver_id") == driver_id
         ]
         receipts.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        return receipts
+        return receipts[:limit] if limit is not None else receipts
 
     def count_receipts_in_range(
         self, driver_id: str, start_iso: str, end_iso: str, cap: int
@@ -480,7 +504,16 @@ class AstraStore:
     def delete_receipts_by_driver(self, driver_id: str) -> None:
         self.receipts.delete_many({"driver_id": driver_id})
 
-    def create_receipt(self, payload: dict) -> dict:
+    def create_receipt(self, payload: dict, quota_limit: int | None = None) -> dict | None:
+        # O Data API não tem transação: aqui a cota continua sendo check-then-insert
+        # e a corrida segue existindo. É um dos motivos da migração para Postgres.
+        if quota_limit is not None and payload.get("driver_id"):
+            inicio, fim = month_range_utc()
+            usados = self.count_receipts_in_range(
+                payload["driver_id"], inicio, fim, quota_limit
+            )
+            if usados >= quota_limit:
+                return None
         self.receipts.insert_one(payload)
         return dict(payload)
 
@@ -488,9 +521,10 @@ class AstraStore:
         receipt = self.receipts.find_one({"_id": rid})
         return dict(receipt) if receipt else None
 
-    def list_receipts_by_driver(self, driver_id: str) -> list[dict]:
+    def list_receipts_by_driver(self, driver_id: str, limit: int | None = None) -> list[dict]:
         receipts = self.receipts.find({"driver_id": driver_id}).to_list()
         receipts.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        receipts = receipts[:limit] if limit is not None else receipts
         return [dict(r) for r in receipts]
 
     def count_receipts_in_range(
@@ -548,6 +582,275 @@ class AstraStore:
         )
 
 
+class PostgresStore:
+    """Store em Postgres (Supabase).
+
+    Devolve dicionários no mesmo formato que os outros stores — inclusive o
+    `_id` e os campos derivados `amount_display`/`trip_date_display` — para o
+    resto do app não precisar saber de onde os dados vieram.
+    """
+
+    kind = "postgres"
+    label = "Postgres"
+
+    # Colunas do motorista, já com o alias que o app espera.
+    _DRIVER_COLS = """
+        id as _id, email, password_hash, password_changed_at, full_name, cpf,
+        whatsapp, city, plate, vehicle_model, taxi_prefix, license_number,
+        plan, stripe_customer_id, stripe_subscription_id, subscription_status,
+        created_at, updated_at
+    """
+
+    _RECEIPT_COLS = """
+        rid, rid as _id, driver_id, is_guest, passenger, passenger_email,
+        passenger_whatsapp, trip_date, trip_time, origin, destination,
+        amount, payment_method, notes, driver_snapshot, created_at
+    """
+
+    def __init__(self, dsn: str) -> None:
+        if ConnectionPool is None:
+            raise RuntimeError(
+                "A dependência 'psycopg' não está instalada. "
+                "Rode 'pip install -r requirements.txt'."
+            )
+        # prepare_threshold=None: o Supavisor em transaction mode não suporta
+        # prepared statements, e o psycopg 3 os cria sozinho depois de 5
+        # execuções da mesma query — o erro só apareceria depois, em produção.
+        self.pool = ConnectionPool(
+            dsn,
+            min_size=0,
+            max_size=int(os.environ.get("DB_POOL_MAX", "4")),
+            kwargs={"row_factory": dict_row, "prepare_threshold": None},
+            open=True,
+        )
+        # Em serverless o pool sobrevive entre invocações (Fluid Compute);
+        # no fim do processo, fechar evita threads penduradas.
+        atexit.register(self.pool.close)
+
+    # ── conversões ──────────────────────────────────────────────────────────
+    @staticmethod
+    def _driver_out(row: dict | None) -> dict | None:
+        if not row:
+            return None
+        out = dict(row)
+        # O resto do app trata _id como string: ele vai para a sessão, para o
+        # token de reset (que é JSON) e para comparações com driver_id.
+        out["_id"] = str(out["_id"])
+        for campo in ("created_at", "updated_at", "password_changed_at"):
+            valor = out.get(campo)
+            out[campo] = to_utc_iso(valor) if valor else ""
+        return out
+
+    @staticmethod
+    def _receipt_out(row: dict | None) -> dict | None:
+        if not row:
+            return None
+        out = dict(row)
+        amount = out.pop("amount", None)
+        if amount is not None:
+            out["amount_value"] = str(amount)
+            out["amount_display"] = f"{amount:.2f}".replace(".", ",")
+        trip_date = out.get("trip_date")
+        out["trip_date"] = trip_date.isoformat() if trip_date else ""
+        out["trip_date_display"] = format_date_br(out["trip_date"])
+        out["driver_id"] = str(out["driver_id"]) if out.get("driver_id") else None
+        out["created_at"] = to_utc_iso(out["created_at"]) if out.get("created_at") else ""
+        return out
+
+    # ── motoristas ──────────────────────────────────────────────────────────
+    def create_user(self, payload: dict) -> dict:
+        with self.pool.connection() as conn:
+            try:
+                row = conn.execute(
+                    f"""insert into public.drivers
+                        (email, password_hash, full_name, cpf, whatsapp, city,
+                         plate, vehicle_model, taxi_prefix, license_number, plan)
+                        values (%(email)s, %(password_hash)s, %(full_name)s, %(cpf)s,
+                                %(whatsapp)s, %(city)s, %(plate)s, %(vehicle_model)s,
+                                %(taxi_prefix)s, %(license_number)s, %(plan)s)
+                        returning {self._DRIVER_COLS}""",
+                    payload,
+                ).fetchone()
+            except psycopg.errors.UniqueViolation as exc:
+                raise ValueError("Já existe uma conta com este e-mail.") from exc
+        return self._driver_out(row)
+
+    def update_user(self, user_id: str, updates: dict) -> None:
+        if not updates:
+            return
+        # Só colunas conhecidas entram no UPDATE.
+        permitidas = {
+            "email", "password_hash", "password_changed_at", "full_name", "cpf",
+            "whatsapp", "city", "plate", "vehicle_model", "taxi_prefix",
+            "license_number", "plan", "stripe_customer_id",
+            "stripe_subscription_id", "subscription_status",
+        }
+        campos = {k: v for k, v in updates.items() if k in permitidas}
+        if not campos:
+            return
+        sets = ", ".join(f"{k} = %({k})s" for k in campos)
+        campos["_uid"] = user_id
+        with self.pool.connection() as conn:
+            conn.execute(
+                f"update public.drivers set {sets}, updated_at = now() where id = %(_uid)s",
+                campos,
+            )
+
+    def get_user_by_email(self, email: str) -> dict | None:
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"select {self._DRIVER_COLS} from public.drivers where lower(email) = lower(%s)",
+                (email,),
+            ).fetchone()
+        return self._driver_out(row)
+
+    def get_user_by_id(self, user_id: str | None) -> dict | None:
+        if not user_id:
+            return None
+        with self.pool.connection() as conn:
+            try:
+                row = conn.execute(
+                    f"select {self._DRIVER_COLS} from public.drivers where id = %s",
+                    (user_id,),
+                ).fetchone()
+            except psycopg.errors.InvalidTextRepresentation:
+                return None  # id que não é uuid
+        return self._driver_out(row)
+
+    def get_user_by_stripe_customer(self, customer_id: str | None) -> dict | None:
+        if not customer_id:
+            return None
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"select {self._DRIVER_COLS} from public.drivers where stripe_customer_id = %s",
+                (customer_id,),
+            ).fetchone()
+        return self._driver_out(row)
+
+    def delete_user(self, user_id: str) -> None:
+        with self.pool.connection() as conn:
+            conn.execute("delete from public.drivers where id = %s", (user_id,))
+
+    def delete_receipts_by_driver(self, driver_id: str) -> None:
+        with self.pool.connection() as conn:
+            conn.execute("delete from public.receipts where driver_id = %s", (driver_id,))
+
+    # ── recibos ─────────────────────────────────────────────────────────────
+    def create_receipt(self, payload: dict, quota_limit: int | None = None) -> dict | None:
+        """Cria o recibo. Com quota_limit, consome a cota na MESMA transação.
+
+        Devolve None se a cota do mês já acabou. Cota e insert juntos evitam
+        as duas janelas: furar o teto, e queimar cota sem gravar o recibo.
+        """
+        dados = dict(payload)
+        dados.setdefault("is_guest", False)
+        dados["driver_id"] = dados.get("driver_id") or None
+        dados["amount"] = dados.pop("amount_value", "0")
+        dados.pop("amount_display", None)
+        dados.pop("trip_date_display", None)
+        dados.pop("_id", None)
+        dados["driver_snapshot"] = Json(dados.get("driver_snapshot") or {})
+        dados["trip_time"] = dados.get("trip_time") or ""
+
+        # created_at explícito é usado por testes e importação; sem ele, o
+        # default now() da coluna vale.
+        created_at = dados.pop("created_at", None)
+        col_created = ", created_at" if created_at else ""
+        val_created = ", %(created_at)s" if created_at else ""
+        if created_at:
+            dados["created_at"] = created_at
+
+        with self.pool.connection() as conn:
+            if quota_limit is not None and dados["driver_id"]:
+                liberado = conn.execute(
+                    "select public.consume_receipt_quota(%s, %s)",
+                    (dados["driver_id"], quota_limit),
+                ).fetchone()["consume_receipt_quota"]
+                if not liberado:
+                    return None
+
+            row = conn.execute(
+                f"""insert into public.receipts
+                    (rid, driver_id, is_guest, passenger, passenger_email,
+                     passenger_whatsapp, trip_date, trip_time, origin, destination,
+                     amount, payment_method, notes, driver_snapshot{col_created})
+                    values (%(rid)s, %(driver_id)s, %(is_guest)s, %(passenger)s,
+                            %(passenger_email)s, %(passenger_whatsapp)s, %(trip_date)s,
+                            %(trip_time)s, %(origin)s, %(destination)s, %(amount)s,
+                            %(payment_method)s, %(notes)s, %(driver_snapshot)s{val_created})
+                    returning {self._RECEIPT_COLS}""",
+                dados,
+            ).fetchone()
+        return self._receipt_out(row)
+
+    def get_receipt(self, rid: str) -> dict | None:
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"select {self._RECEIPT_COLS} from public.receipts where rid = %s",
+                (rid,),
+            ).fetchone()
+        return self._receipt_out(row)
+
+    def list_receipts_by_driver(self, driver_id: str, limit: int | None = None) -> list[dict]:
+        sql = f"""select {self._RECEIPT_COLS} from public.receipts
+                  where driver_id = %s order by created_at desc"""
+        params: tuple = (driver_id,)
+        if limit is not None:
+            sql += " limit %s"
+            params = (driver_id, limit)
+        with self.pool.connection() as conn:
+            linhas = conn.execute(sql, params).fetchall()
+        return [self._receipt_out(l) for l in linhas]
+
+    def count_receipts_in_range(
+        self, driver_id: str, start_iso: str, end_iso: str, cap: int
+    ) -> int:
+        with self.pool.connection() as conn:
+            return conn.execute(
+                """select count(*) as n from public.receipts
+                   where driver_id = %s and created_at >= %s and created_at < %s""",
+                (driver_id, start_iso, end_iso),
+            ).fetchone()["n"]
+
+    # ── contadores e limpeza ────────────────────────────────────────────────
+    def bump_counter(self, key: str) -> int:
+        with self.pool.connection() as conn:
+            return conn.execute(
+                "select public.bump_counter(%s) as n", (key,)
+            ).fetchone()["n"]
+
+    def purge_guest_receipts_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
+        with self.pool.connection() as conn:
+            apagados = conn.execute(
+                """delete from public.receipts where rid in (
+                     select rid from public.receipts
+                      where is_guest and created_at < %s limit %s)
+                   returning rid""",
+                (cutoff_iso, limit),
+            ).fetchall()
+            sobrou = conn.execute(
+                """select exists(select 1 from public.receipts
+                                  where is_guest and created_at < %s) as e""",
+                (cutoff_iso,),
+            ).fetchone()["e"]
+        return len(apagados), bool(sobrou)
+
+    def purge_counters_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
+        with self.pool.connection() as conn:
+            apagados = conn.execute(
+                """delete from public.rate_limits where key in (
+                     select key from public.rate_limits
+                      where created_at < %s limit %s)
+                   returning key""",
+                (cutoff_iso, limit),
+            ).fetchall()
+            sobrou = conn.execute(
+                "select exists(select 1 from public.rate_limits where created_at < %s) as e",
+                (cutoff_iso,),
+            ).fetchone()["e"]
+        return len(apagados), bool(sobrou)
+
+
 # ── Store singleton ──────────────────────────────────────────────────────────
 
 _STORE = None
@@ -556,6 +859,16 @@ _STORE = None
 def get_store():
     global _STORE
     if _STORE is not None:
+        return _STORE
+
+    # Postgres tem prioridade: é para onde a migração está indo.
+    # SUPABASE_DB_URL vence DATABASE_URL, para produção não cair no banco local.
+    dsn = (
+        os.environ.get("SUPABASE_DB_URL", "").strip()
+        or os.environ.get("DATABASE_URL", "").strip()
+    )
+    if dsn:
+        _STORE = PostgresStore(dsn)
         return _STORE
 
     api_endpoint = os.environ.get("ASTRA_DB_API_ENDPOINT", "").strip()
@@ -1088,19 +1401,6 @@ def recibo_criar():
         flash(erro_tamanho, "danger")
         return redirect(url_for("dashboard"))
 
-    if g.user.get("plan", "free") not in PAID_PLANS:
-        month_start, month_end = month_range_utc()
-        used = get_store().count_receipts_in_range(
-            g.user["_id"], month_start, month_end, FREE_MONTHLY_LIMIT
-        )
-        if used >= FREE_MONTHLY_LIMIT:
-            flash(
-                f"Você atingiu o limite de {FREE_MONTHLY_LIMIT} recibos deste mês do "
-                "plano Grátis. Faça upgrade para emitir recibos ilimitados.",
-                "warning",
-            )
-            return redirect(url_for("planos"))
-
     passenger = request.form.get("passageiro", "").strip()
     trip_date = request.form.get("data", "").strip()
     origin = request.form.get("origem", "").strip()
@@ -1117,7 +1417,7 @@ def recibo_criar():
         flash(str(exc), "danger")
         return redirect(url_for("dashboard"))
 
-    rid = uuid4().hex[:10].upper()
+    rid = uuid4().hex[:RID_LENGTH].upper()
     receipt = {
         "_id": rid,
         "rid": rid,
@@ -1147,7 +1447,17 @@ def recibo_criar():
         },
     }
 
-    get_store().create_receipt(receipt)
+    # Cota e gravação na mesma operação: sem a janela entre contar e inserir,
+    # duas emissões simultâneas não furam mais o teto do plano Grátis.
+    quota = None if g.user.get("plan", "free") in PAID_PLANS else FREE_MONTHLY_LIMIT
+    if get_store().create_receipt(receipt, quota_limit=quota) is None:
+        flash(
+            f"Você atingiu o limite de {FREE_MONTHLY_LIMIT} recibos deste mês do "
+            "plano Grátis. Faça upgrade para emitir recibos ilimitados.",
+            "warning",
+        )
+        return redirect(url_for("planos"))
+
     flash("Recibo gerado e salvo na sua conta!", "success")
     return redirect(url_for("recibo_view", rid=rid, created="1"))
 
@@ -1205,7 +1515,7 @@ def gerador():
                 "gerador.html", form=request.form, today=today_br()
             ), 429
 
-        rid = uuid4().hex[:10].upper()
+        rid = uuid4().hex[:RID_LENGTH].upper()
         receipt = {
             "_id": rid,
             "rid": rid,

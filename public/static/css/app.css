@@ -1335,6 +1335,148 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
 }
 
 /* ── Print ──────────────────────────────────────────────────────────────── */
+/* ── Auth helpers ───────────────────────────────────────────────────────── */
+.auth-helper-link { color: var(--coral); font-weight: 700; font-size: .76rem; text-decoration: none; }
+.auth-helper-link:hover { color: var(--rust); text-decoration: underline; }
+
+/* ── Plan usage ─────────────────────────────────────────────────────────── */
+.stat-limit { font-size: .95rem; font-weight: 600; color: rgba(255,244,236,.45); }
+
+.upgrade-banner-blocked {
+  background-color: rgba(236,85,67,.12);
+  border-color: rgba(236,85,67,.28);
+  color: var(--apricot);
+}
+
+/* ── Danger zone ────────────────────────────────────────────────────────── */
+.danger-card { border: 1px solid rgba(236,85,67,.35); }
+.danger-title { color: var(--rust) !important; }
+.danger-body { margin-top: .4rem; }
+.danger-text { font-size: .86rem; color: var(--muted); line-height: 1.6; margin-bottom: 1rem; }
+
+.btn-danger-toggle {
+  font-size: .82rem; font-weight: 800; padding: .55rem 1.1rem;
+  border-radius: var(--r-sm); color: var(--rust);
+  background-color: rgba(236,85,67,.08);
+  border: 1px solid rgba(236,85,67,.3);
+}
+.btn-danger-toggle:hover { color: #fff; background-color: var(--rust); border-color: var(--rust); }
+
+.danger-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+@media (max-width: 575.98px) { .danger-fields { grid-template-columns: 1fr; } }
+
+.btn-danger-confirm {
+  font-size: .86rem; font-weight: 800; padding: .7rem 1.2rem;
+  border-radius: var(--r-sm); color: #fff;
+  background-color: var(--rust); border: 1px solid var(--rust);
+}
+.btn-danger-confirm:hover { color: #fff; background-color: #7d2e22; border-color: #7d2e22; }
+
+/* ── Legal pages ────────────────────────────────────────────────────────── */
+.legal-section { padding: 3rem 0 5rem; }
+
+.legal-header { text-align: center; margin-bottom: 2.25rem; }
+.legal-eyebrow {
+  display: inline-block; font-size: .72rem; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .08em; color: var(--apricot);
+  padding: .35rem .85rem; border-radius: 999px;
+  background-color: rgba(243,165,106,.12); border: 1px solid rgba(243,165,106,.22);
+}
+.legal-title {
+  font-family: "Sora", sans-serif; font-size: clamp(1.9rem, 4vw, 2.6rem);
+  font-weight: 700; color: var(--paper); margin: .9rem 0 .4rem;
+}
+.legal-updated { font-size: .82rem; color: rgba(255,244,236,.5); margin: 0; }
+
+.legal-card {
+  background: linear-gradient(170deg, #fffbf8, #fdf0e5);
+  border-radius: var(--r-xl); padding: clamp(1.5rem, 4vw, 2.75rem);
+  color: var(--ink); box-shadow: var(--shadow-soft);
+  border: 1px solid rgba(255,244,236,.3);
+}
+
+.legal-h2 {
+  font-family: "Sora", sans-serif; font-size: 1.12rem; font-weight: 700;
+  color: var(--coal); margin: 2.2rem 0 .7rem; padding-top: 1.4rem;
+  border-top: 1px solid var(--line);
+}
+.legal-card > .legal-h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 1.6rem; }
+
+.legal-h3 {
+  font-size: .94rem; font-weight: 800; color: var(--rust); margin: 1.4rem 0 .5rem;
+}
+
+.legal-card p { font-size: .89rem; line-height: 1.75; color: var(--muted); margin-bottom: .9rem; }
+.legal-card a { color: var(--coral); font-weight: 700; }
+.legal-card a:hover { color: var(--rust); }
+.legal-card strong { color: var(--ink); }
+.legal-card code {
+  font-size: .82em; padding: .12rem .4rem; border-radius: 5px;
+  background-color: rgba(29,19,18,.06); color: var(--rust);
+}
+
+.legal-list { padding-left: 1.15rem; margin-bottom: 1rem; }
+.legal-list li { font-size: .89rem; line-height: 1.7; color: var(--muted); margin-bottom: .45rem; }
+
+.legal-note {
+  font-size: .83rem !important; font-style: italic;
+  padding-left: .9rem; border-left: 3px solid var(--paper-deep);
+}
+
+.legal-placeholder {
+  background-color: rgba(236,85,67,.12); color: var(--rust);
+  font-weight: 700; padding: .1rem .4rem; border-radius: 5px;
+}
+
+.legal-callout {
+  display: flex; gap: .8rem; align-items: flex-start;
+  padding: 1rem 1.15rem; border-radius: var(--r-md); margin-bottom: 1.4rem;
+  background-color: rgba(29,19,18,.045); border: 1px solid var(--line);
+  font-size: .85rem; line-height: 1.65; color: var(--muted);
+}
+.legal-callout i { color: var(--muted); font-size: 1rem; flex-shrink: 0; margin-top: .12rem; }
+.legal-callout-warning {
+  background-color: rgba(236,85,67,.09); border-color: rgba(236,85,67,.25);
+}
+.legal-callout-warning i { color: var(--coral); }
+.legal-callout-action {
+  background-color: rgba(243,165,106,.12); border-color: rgba(243,165,106,.3);
+  margin: 1.2rem 0;
+}
+.legal-callout-action i { color: var(--orange); }
+
+.legal-table-wrap { overflow-x: auto; margin-bottom: 1.2rem; }
+.legal-table { width: 100%; min-width: 480px; border-collapse: collapse; font-size: .83rem; }
+.legal-table th {
+  text-align: left; font-weight: 800; color: var(--coal);
+  padding: .6rem .75rem; border-bottom: 2px solid var(--line);
+  background-color: rgba(29,19,18,.035);
+}
+.legal-table td {
+  padding: .6rem .75rem; border-bottom: 1px solid var(--line);
+  color: var(--muted); line-height: 1.55; vertical-align: top;
+}
+.legal-table tr:last-child td { border-bottom: 0; }
+
+.legal-footer-nav {
+  display: flex; flex-wrap: wrap; gap: .75rem;
+  margin-top: 2.2rem; padding-top: 1.4rem; border-top: 1px solid var(--line);
+}
+.legal-nav-link {
+  font-size: .82rem; font-weight: 800; color: var(--coal) !important;
+  padding: .5rem 1rem; border-radius: var(--r-sm);
+  background-color: rgba(29,19,18,.05); border: 1px solid var(--line);
+  text-decoration: none;
+}
+.legal-nav-link:hover { background-color: rgba(29,19,18,.09); }
+
+
+.soon-tag {
+  font-size: .62rem; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .05em; padding: .1rem .4rem; margin-left: .35rem;
+  border-radius: 5px; background-color: rgba(243,165,106,.18); color: var(--orange);
+}
+
 @media print {
   body { background: #fff !important; color: #111 !important; }
   body::before, .site-nav, .site-footer, .flash-stack,

@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}Política de Privacidade{% endblock %}
+
+{% block content %}
+<section class="legal-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-9 col-xl-8">
+
+        <div class="legal-header">
+          <span class="legal-eyebrow"><i class="bi bi-shield-lock-fill me-1"></i>Privacidade</span>
+          <h1 class="legal-title">Política de Privacidade</h1>
+          <p class="legal-updated">Última atualização: {{ updated_at }}</p>
+        </div>
+
+        <div class="legal-card">
+
+          <div class="legal-callout">
+            <i class="bi bi-info-circle-fill"></i>
+            <div>
+              <strong>Controlador dos dados:</strong>
+              <span class="legal-placeholder">[RAZÃO SOCIAL], CNPJ [00.000.000/0001-00], [endereço completo]</span>.
+              Encarregado de dados (DPO): <a href="mailto:privacidade@recibotaxi.com.br">privacidade@recibotaxi.com.br</a>.
+            </div>
+          </div>
+
+          <h2 class="legal-h2">1. Quem somos e o que esta política cobre</h2>
+          <p>
+            O {{ app_name }} é um serviço que permite a motoristas de táxi emitir e compartilhar
+            recibos digitais de corridas. Esta política explica quais dados pessoais tratamos,
+            por que tratamos, com quem compartilhamos e quais são os seus direitos, conforme a
+            Lei Geral de Proteção de Dados (Lei nº 13.709/2018 — LGPD).
+          </p>
+          <p>
+            Ela se aplica ao site, ao gerador de recibos sem cadastro e aos aplicativos móveis do
+            {{ app_name }}.
+          </p>
+
+          <h2 class="legal-h2">2. Dados que coletamos</h2>
+
+          <h3 class="legal-h3">2.1 Dados do motorista (conta cadastrada)</h3>
+          <ul class="legal-list">
+            <li><strong>Identificação:</strong> nome completo, CPF, e-mail e WhatsApp.</li>
+            <li><strong>Dados profissionais:</strong> cidade, placa do veículo, modelo, prefixo do táxi e número do alvará.</li>
+            <li><strong>Credenciais:</strong> senha, armazenada apenas como hash criptográfico — nunca em texto legível.</li>
+            <li><strong>Assinatura:</strong> plano contratado e identificadores de cliente e assinatura na Stripe.</li>
+          </ul>
+
+          <h3 class="legal-h3">2.2 Dados das corridas e dos passageiros</h3>
+          <ul class="legal-list">
+            <li>Nome do passageiro, e-mail e WhatsApp, quando informados pelo motorista.</li>
+            <li>Data, hora, origem, destino, valor, forma de pagamento e observações da corrida.</li>
+          </ul>
+          <p class="legal-note">
+            Esses dados são inseridos <strong>pelo motorista</strong>. Cabe a ele informar o
+            passageiro e ter base legal para registrar esses dados no recibo.
+          </p>
+
+          <h3 class="legal-h3">2.3 Gerador sem cadastro</h3>
+          <p>
+            No gerador público, o recibo é salvo com os dados que você digitar, mas não é vinculado
+            a nenhuma conta. Por isso ele não aparece em nenhum histórico e só pode ser acessado por
+            quem tiver o link.
+          </p>
+
+          <h3 class="legal-h3">2.4 Dados que <em>não</em> coletamos</h3>
+          <ul class="legal-list">
+            <li>Não coletamos sua localização em tempo real nem rastreamos seus trajetos.</li>
+            <li>Não recebemos nem armazenamos dados de cartão de crédito — eles vão direto para a Stripe.</li>
+            <li>Não usamos seus dados para treinar modelos de inteligência artificial.</li>
+            <li>Não vendemos seus dados a terceiros, em nenhuma hipótese.</li>
+          </ul>
+
+          <h2 class="legal-h2">3. Por que tratamos cada dado</h2>
+          <div class="legal-table-wrap">
+            <table class="legal-table">
+              <thead>
+                <tr><th>Finalidade</th><th>Dados usados</th><th>Base legal (LGPD)</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Criar e manter sua conta</td>
+                  <td>Nome, e-mail, senha, CPF, WhatsApp</td>
+                  <td>Execução de contrato (art. 7º, V)</td>
+                </tr>
+                <tr>
+                  <td>Emitir, salvar e compartilhar recibos</td>
+                  <td>Dados da corrida, do motorista e do passageiro</td>
+                  <td>Execução de contrato (art. 7º, V)</td>
+                </tr>
+                <tr>
+                  <td>Cobrar assinaturas</td>
+                  <td>E-mail, identificadores Stripe</td>
+                  <td>Execução de contrato (art. 7º, V)</td>
+                </tr>
+                <tr>
+                  <td>Recuperação de senha e avisos de serviço</td>
+                  <td>E-mail</td>
+                  <td>Execução de contrato (art. 7º, V)</td>
+                </tr>
+                <tr>
+                  <td>Conter abuso do gerador público</td>
+                  <td>Endereço IP, de forma agregada e temporária</td>
+                  <td>Legítimo interesse (art. 7º, IX)</td>
+                </tr>
+                <tr>
+                  <td>Cumprir obrigações legais e fiscais</td>
+                  <td>Dados de pagamento e cadastro</td>
+                  <td>Obrigação legal (art. 7º, II)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 class="legal-h2">4. Com quem compartilhamos</h2>
+          <p>Compartilhamos o mínimo necessário com operadores que sustentam o serviço:</p>
+          <ul class="legal-list">
+            <li><strong>Stripe</strong> — processamento de pagamentos e assinaturas.</li>
+            <li><strong>DataStax (Astra DB)</strong> — banco de dados onde contas e recibos ficam armazenados.</li>
+            <li><strong>Vercel</strong> — hospedagem e entrega da aplicação.</li>
+            <li><strong>Google Fonts e jsDelivr</strong> — entregam as fontes e as bibliotecas de
+              interface. Ao carregar uma página, seu navegador se conecta a esses serviços, que
+              recebem seu endereço IP e o tipo de navegador. Não enviamos a eles nenhum dado da
+              sua conta nem dos seus recibos.</li>
+            <li><strong>Autoridades públicas</strong> — apenas mediante ordem judicial ou requisição legal.</li>
+          </ul>
+          <p class="legal-note">
+            Esses fornecedores podem processar dados fora do Brasil. A transferência internacional
+            ocorre com as garantias do art. 33 da LGPD, por meio de cláusulas contratuais padrão.
+          </p>
+
+          <h2 class="legal-h2">5. Quem consegue ver um recibo</h2>
+          <p>
+            Cada recibo tem um endereço público com um código aleatório (por exemplo,
+            <code>/recibo/A1B2C3D4E5</code>). Quem tiver o link consegue abrir o recibo, sem precisar
+            de senha — é assim que o passageiro recebe o documento por WhatsApp ou e-mail.
+          </p>
+          <p>
+            A página pública mostra os dados da corrida, o nome do motorista, a placa e, se preenchidos,
+            o WhatsApp e o número do alvará. <strong>O e-mail e o WhatsApp do passageiro não aparecem
+            na página pública</strong> — eles ficam visíveis apenas para quem emitiu o recibo,
+            dentro da própria conta ou sessão. Trate o link como um documento: quem recebe pode
+            repassar.
+          </p>
+
+          <h2 class="legal-h2">6. Por quanto tempo guardamos</h2>
+          <ul class="legal-list">
+            <li><strong>Conta ativa:</strong> enquanto você mantiver a conta.</li>
+            <li><strong>Após a exclusão da conta:</strong> seus dados e todos os seus recibos são apagados imediatamente e de forma definitiva.</li>
+            <li><strong>Recibos do gerador sem cadastro:</strong> mantidos por até 12 meses e
+              depois removidos automaticamente por rotina diária.</li>
+            <li><strong>Contadores de uso do gerador:</strong> guardamos por 7 dias um contador por
+              endereço IP, só para limitar abuso, e depois ele é apagado.</li>
+            <li><strong>Registros de conexão:</strong> não mantemos registros de acesso próprios.
+              A infraestrutura de hospedagem (Vercel) mantém logs operacionais por período curto,
+              sob a política dela.</li>
+            <li><strong>Dados fiscais de pagamento:</strong> pelo prazo exigido pela legislação tributária.</li>
+          </ul>
+
+          <h2 class="legal-h2">7. Seus direitos</h2>
+          <p>A LGPD (art. 18) garante a você o direito de:</p>
+          <ul class="legal-list">
+            <li>Confirmar que tratamos seus dados e acessá-los;</li>
+            <li>Corrigir dados incompletos, inexatos ou desatualizados;</li>
+            <li>Solicitar anonimização, bloqueio ou eliminação de dados desnecessários;</li>
+            <li>Solicitar a portabilidade dos seus dados;</li>
+            <li>Ser informado sobre com quem compartilhamos seus dados;</li>
+            <li>Revogar consentimento e solicitar a eliminação dos dados tratados com base nele.</li>
+          </ul>
+          <div class="legal-callout legal-callout-action">
+            <i class="bi bi-trash3-fill"></i>
+            <div>
+              <strong>Excluir sua conta agora:</strong> entre no seu painel, role até o fim e use
+              <em>"Excluir minha conta"</em>. A exclusão é imediata, apaga todos os seus recibos e
+              cancela a assinatura ativa. Também aceitamos pedidos por
+              <a href="mailto:privacidade@recibotaxi.com.br">privacidade@recibotaxi.com.br</a>,
+              respondidos em até 15 dias.
+            </div>
+          </div>
+
+          <h2 class="legal-h2">8. Segurança</h2>
+          <ul class="legal-list">
+            <li>Todo o tráfego é criptografado em trânsito (HTTPS/TLS).</li>
+            <li>Senhas são guardadas apenas como hash, com algoritmo de derivação com sal.</li>
+            <li>Sessões usam cookies <code>HttpOnly</code>, <code>Secure</code> e <code>SameSite</code>.</li>
+            <li>O acesso ao banco de dados é restrito e autenticado por token.</li>
+          </ul>
+          <p class="legal-note">
+            Nenhum sistema é totalmente imune. Se ocorrer um incidente de segurança com risco
+            relevante, comunicaremos você e a ANPD nos prazos legais.
+          </p>
+
+          <h2 class="legal-h2">9. Cookies</h2>
+          <p>
+            Usamos apenas cookies essenciais, necessários para manter você conectado e proteger o
+            formulário. Não usamos cookies de publicidade nem de rastreamento entre sites.
+          </p>
+
+          <h2 class="legal-h2">10. Menores de idade</h2>
+          <p>
+            O {{ app_name }} é destinado a motoristas profissionais e não se dirige a menores de 18
+            anos. Não coletamos intencionalmente dados de crianças ou adolescentes.
+          </p>
+
+          <h2 class="legal-h2">11. Mudanças nesta política</h2>
+          <p>
+            Podemos atualizar esta política. Alterações relevantes serão avisadas por e-mail ou por
+            aviso destacado no aplicativo, com pelo menos 15 dias de antecedência.
+          </p>
+
+          <h2 class="legal-h2">12. Contato</h2>
+          <p>
+            Dúvidas sobre privacidade ou exercício de direitos:
+            <a href="mailto:privacidade@recibotaxi.com.br">privacidade@recibotaxi.com.br</a>.
+            Você também pode apresentar reclamação à Autoridade Nacional de Proteção de Dados (ANPD).
+          </p>
+
+          <div class="legal-footer-nav">
+            <a href="{{ url_for('termos') }}" class="legal-nav-link">
+              <i class="bi bi-file-text me-1"></i>Ver Termos de Uso
+            </a>
+            <a href="{{ url_for('index') }}" class="legal-nav-link">
+              <i class="bi bi-house me-1"></i>Voltar ao início
+            </a>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

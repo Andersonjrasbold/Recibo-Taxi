@@ -2,10 +2,19 @@
 .git 2
 .DS_Store
 assets
-static
+/static
 dockerfile
 fly.toml
 app 2.py
 requirements 2.txt
 dockerfile 2
 fly 2.toml
+
+# Segredos: o .vercelignore substitui o .gitignore nos deploys por CLI,
+# então o .env precisa ser excluído aqui explicitamente.
+.env
+.env.*
+!.env.example
+
+# Testes não vão para o bundle da função
+test_app.py

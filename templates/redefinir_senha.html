@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Nova senha{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-md-10 col-lg-8 col-xl-6">
+        <div class="auth-card">
+          <div class="auth-card-header">
+            <div class="auth-logo">
+              <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+            </div>
+            <h1 class="auth-title">Criar nova senha</h1>
+            <p class="auth-subtitle">Escolha uma senha de pelo menos 8 caracteres.</p>
+          </div>
+
+          <form action="{{ url_for('redefinir_senha', token=token) }}" method="post" class="auth-form" novalidate>
+            <div class="form-group-auth">
+              <label for="senha" class="form-label-auth">Nova senha</label>
+              <div class="input-icon-wrap">
+                <i class="bi bi-lock input-icon"></i>
+                <input
+                  type="password" id="senha" name="senha" class="form-control form-control-auth"
+                  placeholder="Mínimo 8 caracteres" autocomplete="new-password"
+                  minlength="8" required autofocus
+                >
+              </div>
+            </div>
+
+            <div class="form-group-auth">
+              <label for="confirmar_senha" class="form-label-auth">Repita a nova senha</label>
+              <div class="input-icon-wrap">
+                <i class="bi bi-lock-fill input-icon"></i>
+                <input
+                  type="password" id="confirmar_senha" name="confirmar_senha"
+                  class="form-control form-control-auth" placeholder="Digite a senha novamente"
+                  autocomplete="new-password" minlength="8" required
+                >
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-auth-submit w-100">
+              <i class="bi bi-shield-check me-2"></i>Salvar nova senha
+            </button>
+          </form>
+
+          <div class="text-center mt-3">
+            <p class="auth-switch-text">
+              <a href="{{ url_for('login') }}" class="auth-switch-link">Voltar para o login</a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

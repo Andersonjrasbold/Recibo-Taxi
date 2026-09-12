@@ -33,7 +33,7 @@
       <div class="stat-card">
         <div class="stat-icon stat-icon-coral"><i class="bi bi-calendar-month"></i></div>
         <div class="stat-body">
-          <div class="stat-value">{{ receipts_this_month }}</div>
+          <div class="stat-value">{{ receipts_this_month }}{% if monthly_limit %}<span class="stat-limit">/{{ monthly_limit }}</span>{% endif %}</div>
           <div class="stat-label">Este mês</div>
         </div>
       </div>
@@ -62,10 +62,16 @@
 <!-- ── Main content ───────────────────────────────────────────────────────── -->
 <div class="container mt-4 mb-5">
 
-  {% if user_plan == 'free' and receipts|length >= 25 %}
+  {% if monthly_limit and receipts_this_month >= monthly_limit %}
+  <div class="upgrade-banner upgrade-banner-blocked mb-4">
+    <i class="bi bi-lock-fill me-2"></i>
+    Você usou os {{ monthly_limit }} recibos deste mês do plano Grátis. O limite reinicia no dia 1º.
+    <a href="{{ url_for('planos') }}" class="upgrade-banner-link ms-2">Liberar recibos ilimitados →</a>
+  </div>
+  {% elif monthly_limit and receipts_this_month >= monthly_limit - 5 %}
   <div class="upgrade-banner mb-4">
     <i class="bi bi-exclamation-triangle-fill me-2"></i>
-    Você está próximo do limite de 30 recibos/mês do plano grátis.
+    Você já usou {{ receipts_this_month }} dos {{ monthly_limit }} recibos deste mês do plano Grátis.
     <a href="{{ url_for('planos') }}" class="upgrade-banner-link ms-2">Fazer upgrade agora →</a>
   </div>
   {% endif %}
@@ -251,5 +257,66 @@
       </div>
     </div>
   </div>
+
+  <!-- ── Excluir conta ──────────────────────────────────────────────────── -->
+  <div class="db-card danger-card mt-4">
+    <div class="db-card-header">
+      <h2 class="db-card-title danger-title">
+        <i class="bi bi-exclamation-octagon-fill me-2"></i>Excluir minha conta
+      </h2>
+    </div>
+    <div class="danger-body">
+      <p class="danger-text">
+        A exclusão é <strong>imediata e definitiva</strong>. Removemos seu cadastro e
+        <strong>todos os {{ receipts|length }} recibo(s)</strong> da sua conta — inclusive os
+        links já enviados a passageiros, que deixarão de funcionar.
+        {% if user_plan != 'free' %}Sua assinatura {{ user_plan|capitalize }} também será cancelada.{% endif %}
+        Não é possível desfazer.
+      </p>
+
+      <button class="btn btn-danger-toggle" type="button"
+              data-bs-toggle="collapse" data-bs-target="#danger-confirm"
+              aria-expanded="false" aria-controls="danger-confirm">
+        <i class="bi bi-trash3 me-1"></i>Quero excluir minha conta
+      </button>
+
+      <div class="collapse mt-3" id="danger-confirm">
+        <form action="{{ url_for('excluir_conta') }}" method="post" class="danger-form"
+              id="formExcluirConta">
+          <div class="danger-fields">
+            <div>
+              <label class="form-label-db" for="senha_exclusao">Confirme sua senha</label>
+              <input type="password" id="senha_exclusao" name="senha"
+                     class="form-control form-control-db" autocomplete="current-password" required>
+            </div>
+            <div>
+              <label class="form-label-db" for="confirmacao">Digite EXCLUIR para confirmar</label>
+              <input type="text" id="confirmacao" name="confirmacao"
+                     class="form-control form-control-db mono" placeholder="EXCLUIR"
+                     autocomplete="off" required>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-danger-confirm w-100 mt-3">
+            <i class="bi bi-trash3-fill me-1"></i>Excluir conta e todos os recibos
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+  var formExcluir = document.getElementById('formExcluirConta');
+  if (formExcluir) {
+    formExcluir.addEventListener('submit', function (event) {
+      var ok = window.confirm(
+        'Confirma a exclusão definitiva da conta e de todos os recibos? ' +
+        'Esta ação não pode ser desfeita.'
+      );
+      if (!ok) event.preventDefault();
+    });
+  }
+</script>
 {% endblock %}

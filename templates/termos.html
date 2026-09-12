@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Termos de Uso{% endblock %}
+
+{% block content %}
+<section class="legal-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-9 col-xl-8">
+
+        <div class="legal-header">
+          <span class="legal-eyebrow"><i class="bi bi-file-text-fill me-1"></i>Termos</span>
+          <h1 class="legal-title">Termos de Uso</h1>
+          <p class="legal-updated">Última atualização: {{ updated_at }}</p>
+        </div>
+
+        <div class="legal-card">
+
+          <div class="legal-callout">
+            <i class="bi bi-info-circle-fill"></i>
+            <div>
+              Serviço operado por
+              <span class="legal-placeholder">[RAZÃO SOCIAL], CNPJ [00.000.000/0001-00], [endereço completo]</span>.
+              Contato: <a href="mailto:suporte@recibotaxi.com.br">suporte@recibotaxi.com.br</a>.
+            </div>
+          </div>
+
+          <h2 class="legal-h2">1. Aceitação</h2>
+          <p>
+            Ao criar uma conta, gerar um recibo ou usar de qualquer forma o {{ app_name }}, você
+            concorda com estes Termos de Uso e com a
+            <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>. Se não concordar,
+            não utilize o serviço.
+          </p>
+
+          <h2 class="legal-h2">2. O que o {{ app_name }} é</h2>
+          <p>
+            O {{ app_name }} é uma ferramenta que gera <strong>recibos de corrida</strong> em formato
+            digital, com link compartilhável por WhatsApp ou e-mail. Ele organiza e apresenta as
+            informações que <em>você</em> digita.
+          </p>
+
+          <div class="legal-callout legal-callout-warning">
+            <i class="bi bi-exclamation-triangle-fill"></i>
+            <div>
+              <strong>O recibo emitido não é documento fiscal.</strong> Ele não substitui nota
+              fiscal, cupom fiscal, NFS-e nem qualquer obrigação tributária ou documento exigido
+              pelo órgão municipal que regula o serviço de táxi na sua cidade. Cabe exclusivamente a
+              você cumprir suas obrigações fiscais e regulatórias.
+            </div>
+          </div>
+
+          <h2 class="legal-h2">3. Sua conta</h2>
+          <ul class="legal-list">
+            <li>Você precisa ter 18 anos ou mais e ser motorista de táxi habilitado.</li>
+            <li>As informações do cadastro devem ser verdadeiras, completas e atualizadas.</li>
+            <li>A senha é pessoal e intransferível. Você responde pelo que for feito na sua conta.</li>
+            <li>Avise imediatamente em caso de suspeita de acesso indevido.</li>
+            <li>Uma conta por motorista. Contas compartilhadas podem ser suspensas.</li>
+          </ul>
+
+          <h2 class="legal-h2">4. Responsabilidade pelo conteúdo dos recibos</h2>
+          <p>
+            Todos os dados de um recibo — passageiro, trajeto, valor, forma de pagamento — são
+            informados por você. Você declara que:
+          </p>
+          <ul class="legal-list">
+            <li>As informações correspondem a uma corrida efetivamente realizada;</li>
+            <li>Você tem autorização para registrar os dados do passageiro no recibo;</li>
+            <li>Não usará o serviço para emitir recibos falsos ou fraudulentos.</li>
+          </ul>
+          <p class="legal-note">
+            Não verificamos nem validamos o conteúdo dos recibos. A responsabilidade pela veracidade
+            é integralmente sua.
+          </p>
+
+          <h2 class="legal-h2">5. Uso proibido</h2>
+          <p>É vedado usar o {{ app_name }} para:</p>
+          <ul class="legal-list">
+            <li>Emitir recibos de corridas inexistentes ou com valores adulterados;</li>
+            <li>Registrar dados de terceiros sem autorização ou base legal;</li>
+            <li>Tentar acessar contas, recibos ou sistemas de outras pessoas;</li>
+            <li>Automatizar, raspar ou sobrecarregar o serviço;</li>
+            <li>Revender ou sublicenciar o acesso sem autorização por escrito;</li>
+            <li>Qualquer finalidade ilícita.</li>
+          </ul>
+
+          <h2 class="legal-h2">6. Planos, cobrança e renovação</h2>
+
+          <h3 class="legal-h3">6.1 Planos disponíveis</h3>
+          <div class="legal-table-wrap">
+            <table class="legal-table">
+              <thead>
+                <tr><th>Plano</th><th>Preço</th><th>Limite de recibos</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Grátis</td><td>R$ 0,00</td><td>Até 30 recibos salvos por mês</td></tr>
+                <tr><td>Pro</td><td>R$ 19,90/mês</td><td>Ilimitado</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="legal-note">
+            O limite do plano Grátis é contado por mês-calendário, no fuso de Brasília, e reinicia
+            no primeiro dia de cada mês.
+          </p>
+
+          <div class="legal-callout">
+            <i class="bi bi-info-circle-fill"></i>
+            <div>
+              <strong>Plano Business descontinuado.</strong> Ele saiu de venda e não aceita novas
+              assinaturas. Quem já assinava mantém o acesso e o preço contratado até cancelar; o
+              cancelamento é definitivo e não permite voltar ao plano.
+            </div>
+          </div>
+
+          <h3 class="legal-h3">6.2 Renovação automática</h3>
+          <ul class="legal-list">
+            <li>A assinatura Pro é <strong>mensal e de renovação automática</strong>.</li>
+            <li>A cobrança ocorre no ato da contratação e se repete a cada mês, na mesma data, até o cancelamento.</li>
+            <li>O pagamento é processado pela Stripe. Não armazenamos dados do seu cartão.</li>
+            <li>Preços são em reais (BRL) e já incluem os tributos aplicáveis.</li>
+          </ul>
+
+          <h3 class="legal-h3">6.3 Cancelamento</h3>
+          <ul class="legal-list">
+            <li>Você pode cancelar a qualquer momento pelo painel, em <em>"Gerenciar plano"</em>.</li>
+            <li>O cancelamento encerra as cobranças futuras. Não há multa nem fidelidade.</li>
+            <li>Você mantém os recursos pagos até o fim do período já pago; depois, a conta volta ao plano Grátis.</li>
+            <li>Não há reembolso proporcional de período já iniciado, salvo o caso do item 6.4.</li>
+          </ul>
+
+          <h3 class="legal-h3">6.4 Direito de arrependimento</h3>
+          <p>
+            Conforme o art. 49 do Código de Defesa do Consumidor, você pode desistir da contratação
+            em até <strong>7 dias corridos</strong> contados do pagamento, com devolução integral do
+            valor. Basta solicitar por
+            <a href="mailto:suporte@recibotaxi.com.br">suporte@recibotaxi.com.br</a>.
+          </p>
+
+          <h3 class="legal-h3">6.5 Falha no pagamento</h3>
+          <p>
+            Se uma cobrança não for aprovada, a Stripe fará novas tentativas. Persistindo a falha, a
+            assinatura é encerrada e a conta volta automaticamente ao plano Grátis, com os limites
+            correspondentes. Seus recibos já emitidos continuam acessíveis.
+          </p>
+
+          <h3 class="legal-h3">6.6 Mudança de preço</h3>
+          <p>
+            Podemos alterar os preços com aviso de pelo menos 30 dias por e-mail. O novo valor só
+            vale para as renovações seguintes ao aviso, e você pode cancelar antes disso.
+          </p>
+
+          <h2 class="legal-h2">7. Encerramento da conta</h2>
+          <ul class="legal-list">
+            <li>Você pode excluir sua conta a qualquer momento pelo painel, em <em>"Excluir minha conta"</em>.</li>
+            <li>A exclusão apaga definitivamente seu cadastro e <strong>todos os seus recibos</strong>, inclusive os links já compartilhados com passageiros. Essa ação não pode ser desfeita.</li>
+            <li>Se houver assinatura ativa, ela é cancelada junto.</li>
+            <li>Podemos suspender ou encerrar contas que violem estes Termos, com aviso prévio sempre que possível.</li>
+          </ul>
+
+          <h2 class="legal-h2">8. Disponibilidade</h2>
+          <p>
+            O serviço é oferecido "no estado em que se encontra". Buscamos alta disponibilidade, mas
+            não garantimos operação ininterrupta ou livre de falhas. Podemos fazer manutenções,
+            alterar ou descontinuar funcionalidades, avisando com antecedência razoável quando a
+            mudança for relevante.
+          </p>
+
+          <h2 class="legal-h2">9. Limitação de responsabilidade</h2>
+          <p>
+            Na máxima extensão permitida pela lei, não respondemos por lucros cessantes, perda de
+            negócios ou danos indiretos decorrentes do uso do serviço. Nossa responsabilidade total,
+            em qualquer hipótese, fica limitada ao valor que você pagou nos 12 meses anteriores ao
+            evento.
+          </p>
+          <p class="legal-note">
+            Nada nestes Termos afasta direitos que o Código de Defesa do Consumidor garante a você.
+          </p>
+
+          <h2 class="legal-h2">10. Propriedade intelectual</h2>
+          <p>
+            A marca, o código, o design e os textos do {{ app_name }} nos pertencem. Os dados que
+            você insere continuam seus — você apenas nos concede a licença necessária para
+            armazenar, processar e exibir os recibos que você cria.
+          </p>
+
+          <h2 class="legal-h2">11. Alterações destes Termos</h2>
+          <p>
+            Podemos atualizar estes Termos. Mudanças relevantes serão comunicadas por e-mail ou
+            aviso no aplicativo com pelo menos 15 dias de antecedência. Continuar usando o serviço
+            após a vigência significa aceitar a nova versão.
+          </p>
+
+          <h2 class="legal-h2">12. Lei aplicável e foro</h2>
+          <p>
+            Estes Termos são regidos pelas leis brasileiras. Fica eleito o foro do domicílio do
+            consumidor para dirimir controvérsias, conforme o Código de Defesa do Consumidor.
+          </p>
+
+          <div class="legal-footer-nav">
+            <a href="{{ url_for('privacidade') }}" class="legal-nav-link">
+              <i class="bi bi-shield-lock me-1"></i>Ver Política de Privacidade
+            </a>
+            <a href="{{ url_for('index') }}" class="legal-nav-link">
+              <i class="bi bi-house me-1"></i>Voltar ao início
+            </a>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

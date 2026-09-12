@@ -29,7 +29,10 @@
             </div>
 
             <div class="form-group-auth">
-              <label for="senha" class="form-label-auth">Senha</label>
+              <div class="d-flex justify-content-between align-items-baseline">
+                <label for="senha" class="form-label-auth">Senha</label>
+                <a href="{{ url_for('recuperar_senha') }}" class="auth-helper-link">Esqueci minha senha</a>
+              </div>
               <div class="input-icon-wrap">
                 <i class="bi bi-lock input-icon"></i>
                 <input

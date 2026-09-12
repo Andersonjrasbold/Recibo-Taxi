@@ -113,7 +113,14 @@
           {% else %}
           <a href="{{ url_for('login') }}" class="footer-link">Entrar</a>
           <a href="{{ url_for('cadastro') }}" class="footer-link">Cadastrar</a>
+          <a href="{{ url_for('recuperar_senha') }}" class="footer-link">Esqueci minha senha</a>
           {% endif %}
+        </div>
+        <div class="footer-links-col">
+          <strong class="footer-col-title">Legal</strong>
+          <a href="{{ url_for('privacidade') }}" class="footer-link">Política de Privacidade</a>
+          <a href="{{ url_for('termos') }}" class="footer-link">Termos de Uso</a>
+          <a href="mailto:suporte@recibotaxi.com.br" class="footer-link">Suporte</a>
         </div>
       </div>
       <div class="footer-bottom">

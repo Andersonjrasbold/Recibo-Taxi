@@ -140,7 +140,7 @@
 
     <div class="row g-4 justify-content-center mt-2">
       <!-- Free -->
-      <div class="col-sm-10 col-md-4">
+      <div class="col-sm-10 col-md-5">
         <div class="pricing-card">
           <div class="pricing-plan-name">Grátis</div>
           <div class="pricing-price-wrap">
@@ -162,7 +162,7 @@
       </div>
 
       <!-- Pro -->
-      <div class="col-sm-10 col-md-4">
+      <div class="col-sm-10 col-md-5">
         <div class="pricing-card pricing-featured">
           <div class="pricing-popular-badge">Mais popular</div>
           <div class="pricing-plan-name">Pro</div>
@@ -179,7 +179,7 @@
             <li class="on"><i class="bi bi-check-lg"></i>WhatsApp e e-mail</li>
             <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>
             <li class="on"><i class="bi bi-check-lg"></i>Recibo com seus dados profissionais</li>
-            <li class="on"><i class="bi bi-check-lg"></i>Suporte por WhatsApp</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Suporte por e-mail</li>
           </ul>
           {% if current_user %}
           <form action="{{ url_for('assinar', plan='pro') }}" method="post">
@@ -191,34 +191,6 @@
         </div>
       </div>
 
-      <!-- Business -->
-      <div class="col-sm-10 col-md-4">
-        <div class="pricing-card">
-          <div class="pricing-plan-name">Business</div>
-          <div class="pricing-price-wrap">
-            <span class="pricing-currency">R$</span>
-            <span class="pricing-amount">39</span>
-            <span class="pricing-cents">,90</span>
-            <span class="pricing-period">/mês</span>
-          </div>
-          <p class="pricing-tagline">Para frotas e cooperativas</p>
-          <ul class="pricing-features">
-            <li class="on"><i class="bi bi-check-lg"></i>Tudo do plano Pro</li>
-            <li class="on"><i class="bi bi-check-lg"></i>Relatórios mensais em PDF</li>
-            <li class="on"><i class="bi bi-check-lg"></i>Múltiplos veículos/perfis</li>
-            <li class="on"><i class="bi bi-check-lg"></i>Logo personalizada no recibo</li>
-            <li class="on"><i class="bi bi-check-lg"></i>Exportação de dados (CSV)</li>
-            <li class="on"><i class="bi bi-check-lg"></i>Suporte prioritário</li>
-          </ul>
-          {% if current_user %}
-          <form action="{{ url_for('assinar', plan='business') }}" method="post">
-            <button type="submit" class="btn btn-pricing-ghost w-100">Assinar Business</button>
-          </form>
-          {% else %}
-          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar com Business</a>
-          {% endif %}
-        </div>
-      </div>
     </div>
 
     <p class="pricing-note text-center mt-4">

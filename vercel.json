@@ -19,5 +19,11 @@
       "src": "/(.*)",
       "dest": "app.py"
     }
+  ],
+  "crons": [
+    {
+      "path": "/tarefas/limpeza",
+      "schedule": "0 4 * * *"
+    }
   ]
 }

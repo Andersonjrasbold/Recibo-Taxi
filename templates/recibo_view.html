@@ -134,7 +134,7 @@
 
         <div class="receipt-doc-footer">
           <span class="receipt-doc-footer-text">Documento gerado em {{ dados.created_at[:10] }} via Recibo Táxi</span>
-          <button class="btn btn-print" onclick="window.print()">
+          <button class="btn btn-print" id="btnPrint" type="button">
             <i class="bi bi-printer-fill me-1"></i>Imprimir
           </button>
         </div>
@@ -173,7 +173,7 @@
           <span class="share-link-label"><i class="bi bi-link-45deg me-1"></i>Link do recibo</span>
           <div class="share-link-box">
             <input type="text" class="share-link-input" value="{{ dados.public_url }}" readonly id="receiptLink">
-            <button class="btn btn-copy" onclick="copyLink()" title="Copiar link">
+            <button class="btn btn-copy" id="btnCopy" type="button" title="Copiar link">
               <i class="bi bi-clipboard-fill"></i>
             </button>
           </div>
@@ -199,27 +199,35 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-  // QR Code
+<script nonce="{{ csp_nonce }}">
+  // QR Code — tojson escapa a URL corretamente para dentro do JS
   var qr = qrcode(0, 'M');
-  qr.addData('{{ dados.public_url }}');
+  qr.addData({{ dados.public_url|tojson }});
   qr.make();
   var el = document.getElementById('qrcode');
   if (el) el.innerHTML = qr.createImgTag(4, 8);
 
-  // Copy link
-  function copyLink() {
-    var inp = document.getElementById('receiptLink');
-    inp.select();
-    inp.setSelectionRange(0, 99999);
-    navigator.clipboard.writeText(inp.value).catch(function() {
-      document.execCommand('copy');
+  // Copiar link
+  var btnCopy = document.getElementById('btnCopy');
+  if (btnCopy) {
+    btnCopy.addEventListener('click', function () {
+      var inp = document.getElementById('receiptLink');
+      inp.select();
+      inp.setSelectionRange(0, 99999);
+      navigator.clipboard.writeText(inp.value).catch(function () {
+        document.execCommand('copy');
+      });
+      btnCopy.innerHTML = '<i class="bi bi-check-lg"></i>';
+      setTimeout(function () {
+        btnCopy.innerHTML = '<i class="bi bi-clipboard-fill"></i>';
+      }, 2000);
     });
-    var btn = document.querySelector('.btn-copy');
-    btn.innerHTML = '<i class="bi bi-check-lg"></i>';
-    setTimeout(function() {
-      btn.innerHTML = '<i class="bi bi-clipboard-fill"></i>';
-    }, 2000);
+  }
+
+  // Imprimir
+  var btnPrint = document.getElementById('btnPrint');
+  if (btnPrint) {
+    btnPrint.addEventListener('click', function () { window.print(); });
   }
 </script>
 {% endblock %}

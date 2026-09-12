@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Recuperar senha{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-md-10 col-lg-8 col-xl-6">
+        <div class="auth-card">
+          <div class="auth-card-header">
+            <div class="auth-logo">
+              <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+            </div>
+            <h1 class="auth-title">Esqueceu a senha?</h1>
+            <p class="auth-subtitle">
+              Informe o e-mail da sua conta e enviamos um link para você criar uma nova senha.
+            </p>
+          </div>
+
+          <form action="{{ url_for('recuperar_senha') }}" method="post" class="auth-form" novalidate>
+            <div class="form-group-auth">
+              <label for="email" class="form-label-auth">E-mail da conta</label>
+              <div class="input-icon-wrap">
+                <i class="bi bi-envelope input-icon"></i>
+                <input
+                  type="email" id="email" name="email" class="form-control form-control-auth"
+                  placeholder="seu@email.com" autocomplete="email" required autofocus
+                >
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-auth-submit w-100">
+              <i class="bi bi-send-fill me-2"></i>Enviar link de redefinição
+            </button>
+          </form>
+
+          <div class="auth-divider"><span>ou</span></div>
+
+          <div class="text-center">
+            <p class="auth-switch-text">
+              Lembrou a senha?
+              <a href="{{ url_for('login') }}" class="auth-switch-link">Entrar na conta</a>
+            </p>
+            <p class="auth-switch-text mt-2">
+              Ainda não tem conta?
+              <a href="{{ url_for('cadastro') }}" class="auth-switch-link">Criar conta grátis</a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

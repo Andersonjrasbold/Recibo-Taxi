@@ -3,6 +3,7 @@ import hashlib
 import json
 import hmac
 import os
+import re
 import secrets
 import smtplib
 import urllib.error
@@ -83,6 +84,10 @@ MAX_RECEIPT_AMOUNT = Decimal("99999.99")
 # 1 milhão de recibos, e uma colisão derruba a emissão com erro 500.
 RID_LENGTH = 14
 
+# Origens do WebView do Capacitor. Só a /api/* responde a elas, e só com
+# Bearer token — nunca com cookie, para não abrir caminho de CSRF.
+ORIGENS_APP = ("capacitor://localhost", "https://localhost", "http://localhost")
+
 # Sem teto por campo, um POST de 200 KB por campo passava direto para o banco.
 # (rótulo, tamanho máximo) — o rótulo entra na mensagem de erro.
 RECEIPT_FIELD_LIMITS = {
@@ -149,7 +154,9 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Permissions-Policy": "geolocation=(), camera=(), microphone=(), payment=()",
+    # camera=(self) porque o app vai fotografar comprovante; microfone e
+    # pagamento seguem desligados — o app não usa nenhum dos dois.
+    "Permissions-Policy": "geolocation=(self), camera=(self), microphone=(), payment=()",
 }
 
 STRIPE_PRICE_IDS = {
@@ -498,6 +505,28 @@ class PostgresStore:
             ).fetchone()
         return self._receipt_out(row)
 
+    def create_receipt_idempotente(
+        self, payload: dict, quota_limit: int | None
+    ) -> tuple[dict | None, bool]:
+        """Cria o recibo com um rid escolhido pelo CLIENTE.
+
+        Devolve (recibo, criado_agora). Se o rid já existe e é do mesmo
+        motorista, devolve o existente com criado_agora=False e **não gasta
+        cota** — é retentativa da fila offline, não recibo novo.
+
+        Devolve (None, False) quando a cota do mês acabou.
+        """
+        rid = payload["rid"]
+        existente = self.get_receipt(rid)
+        if existente:
+            mesmo_dono = str(existente.get("driver_id") or "") == str(
+                payload.get("driver_id") or ""
+            )
+            return (existente, False) if mesmo_dono else (None, False)
+
+        criado = self.create_receipt(payload, quota_limit=quota_limit)
+        return (criado, criado is not None)
+
     def get_receipt(self, rid: str) -> dict | None:
         with self.pool.connection() as conn:
             row = conn.execute(
@@ -609,6 +638,10 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=bool(os.environ.get("VERCEL")),
+    # Sem PERMANENT_SESSION_LIFETIME o cookie sai sem Expires e vira cookie de
+    # sessão do navegador: some quando o processo fecha. Num WebView isso
+    # significa deslogar o motorista toda vez que ele abre o app.
+    PERMANENT_SESSION_LIFETIME=timedelta(days=90),
     # Nenhum formulário do app precisa de mais que isto.
     MAX_CONTENT_LENGTH=1 * 1024 * 1024,
 )
@@ -714,6 +747,39 @@ def auth_conferir_senha(email: str, password: str) -> str | None:
         )
     except Exception:
         return None  # credencial inválida é o caso comum; não faz log
+    return str(resposta.user.id) if resposta and resposta.user else None
+
+
+def auth_entrar_com_token(email: str, password: str) -> dict | None:
+    """Login para o app nativo: devolve os tokens, não cria sessão de cookie.
+
+    O WebView do Capacitor roda em capacitor://localhost, uma origem diferente
+    da API — o cookie de sessão não viajaria. Por isso o app guarda o token.
+    """
+    try:
+        resposta = supabase_public().auth.sign_in_with_password(
+            {"email": email, "password": password}
+        )
+    except Exception:
+        return None
+    if not resposta or not resposta.session or not resposta.user:
+        return None
+    return {
+        "user_id": str(resposta.user.id),
+        "access_token": resposta.session.access_token,
+        "refresh_token": resposta.session.refresh_token,
+        "expires_at": resposta.session.expires_at,
+    }
+
+
+def auth_usuario_do_token(token: str) -> str | None:
+    """Valida o JWT no Supabase e devolve o id do usuário."""
+    if not token:
+        return None
+    try:
+        resposta = supabase_admin().auth.get_user(token)
+    except Exception:
+        return None
     return str(resposta.user.id) if resposta and resposta.user else None
 
 
@@ -868,6 +934,28 @@ def load_reset_token(token: str) -> dict | None:
     return user
 
 
+def api_login_required(view):
+    """Aceita sessão de cookie (navegador) ou Bearer token (app nativo)."""
+
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        if g.get("user"):
+            return view(*args, **kwargs)
+
+        cabecalho = request.headers.get("Authorization", "")
+        if cabecalho.startswith("Bearer "):
+            user_id = auth_usuario_do_token(cabecalho[7:].strip())
+            if user_id:
+                usuario = get_store().get_user_by_id(user_id)
+                if usuario:
+                    g.user = usuario
+                    return view(*args, **kwargs)
+
+        return jsonify({"erro": "nao_autenticado"}), 401
+
+    return wrapped_view
+
+
 def login_required(view):
     @wraps(view)
     def wrapped_view(*args, **kwargs):
@@ -881,6 +969,22 @@ def login_required(view):
 @app.before_request
 def assign_csp_nonce() -> None:
     g.csp_nonce = secrets.token_urlsafe(16)
+    # Vale para toda resposta: o cookie ganha Expires e sobrevive ao reinício
+    # do app. Sem isto, PERMANENT_SESSION_LIFETIME não é aplicado.
+    session.permanent = True
+
+
+@app.after_request
+def apply_cors_do_app(response):
+    """CORS restrito à /api/*, só para as origens do app nativo."""
+    origem = request.headers.get("Origin", "")
+    if origem in ORIGENS_APP and request.path.startswith("/api/"):
+        response.headers["Access-Control-Allow-Origin"] = origem
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Vary"] = "Origin"
+        # Sem Allow-Credentials de propósito: o app usa Bearer, não cookie.
+    return response
 
 
 @app.after_request
@@ -939,6 +1043,18 @@ def health():
 @app.get("/favicon.ico")
 def favicon():
     return redirect(url_for("public_static", filename="img/RECIBO.png"), code=307)
+
+
+@app.get("/app/")
+@app.get("/app/<path:filename>")
+def app_offline(filename: str = "index.html"):
+    """Serve o bundle do app nativo, para testar no navegador.
+
+    No Capacitor estes mesmos arquivos vão empacotados no aparelho — este
+    caminho existe só para desenvolvimento.
+    """
+    pasta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mobile", "www")
+    return send_from_directory(pasta, filename)
 
 
 @app.get("/static/<path:filename>")
@@ -1601,6 +1717,201 @@ def stripe_webhook():
                 })
 
     return jsonify({"ok": True})
+
+
+# ── API do app (fila offline) ─────────────────────────────────────────────────
+
+@app.route("/api/<path:_qualquer>", methods=["OPTIONS"])
+def api_preflight(_qualquer: str):
+    """Responde ao preflight do navegador. O CORS vem do after_request."""
+    return ("", 204)
+
+
+@app.post("/api/login")
+def api_login():
+    """Login do app nativo. Devolve tokens em vez de criar cookie."""
+    dados = request.get_json(silent=True) or {}
+    tokens = auth_entrar_com_token(
+        normalize_email(str(dados.get("email", ""))), str(dados.get("senha", ""))
+    )
+    if not tokens:
+        return jsonify({"erro": "credenciais_invalidas"}), 401
+
+    usuario = get_store().get_user_by_id(tokens["user_id"])
+    if not usuario:
+        return jsonify({"erro": "perfil_ausente"}), 401
+
+    return jsonify(tokens)
+
+
+@app.post("/api/cadastro")
+def api_cadastro():
+    """Cadastro pelo app nativo. Devolve os tokens já logado.
+
+    Existe porque mandar o motorista para o site abriria o Safari — além da
+    experiência ruim, é um dos padrões que a Apple rejeita (Guideline 4.2).
+    """
+    dados = request.get_json(silent=True) or {}
+
+    campos = {k: str(dados.get(k, "") or "").strip() for k in (
+        "nome_completo", "email", "senha", "whatsapp", "cpf", "cidade",
+        "placa", "modelo_veiculo", "prefixo_taxi", "numero_alvara")}
+    campos["email"] = normalize_email(campos["email"])
+    campos["placa"] = campos["placa"].upper()
+
+    for nome, (rotulo, maximo) in SIGNUP_FIELD_LIMITS.items():
+        if len(campos.get(nome, "")) > maximo:
+            return jsonify({"erro": "campo_longo", "campo": nome, "maximo": maximo}), 400
+
+    obrigatorios = ["nome_completo", "email", "senha", "whatsapp", "cpf", "cidade", "placa"]
+    faltando = [c for c in obrigatorios if not campos[c]]
+    if faltando:
+        return jsonify({"erro": "campos_obrigatorios", "campos": faltando}), 400
+
+    if len(campos["senha"]) < 8:
+        return jsonify({"erro": "senha_curta", "minimo": 8}), 400
+
+    try:
+        auth_criar_usuario(
+            campos["email"],
+            campos["senha"],
+            {k: campos[k] for k in (
+                "nome_completo", "cpf", "whatsapp", "cidade", "placa",
+                "modelo_veiculo", "prefixo_taxi", "numero_alvara")}
+            | {"full_name": campos["nome_completo"], "city": campos["cidade"],
+               "plate": campos["placa"], "vehicle_model": campos["modelo_veiculo"],
+               "taxi_prefix": campos["prefixo_taxi"],
+               "license_number": campos["numero_alvara"]},
+        )
+    except ValueError as exc:
+        return jsonify({"erro": "email_em_uso", "mensagem": str(exc)}), 409
+    except RuntimeError:
+        return jsonify({"erro": "indisponivel"}), 503
+
+    tokens = auth_entrar_com_token(campos["email"], campos["senha"])
+    if not tokens:
+        return jsonify({"erro": "criado_sem_login"}), 500
+    return jsonify(tokens), 201
+
+
+@app.get("/api/sessao")
+@api_login_required
+def api_sessao():
+    """Quem sou eu — o app usa para saber se a sessão ainda vale."""
+    mes_inicio, mes_fim = month_range_utc()
+    plano = g.user.get("plan", "free")
+    return jsonify(
+        {
+            "id": g.user["_id"],
+            "nome": g.user.get("full_name", ""),
+            "email": g.user.get("email", ""),
+            "plano": plano,
+            "limite_mensal": None if plano in PAID_PLANS else FREE_MONTHLY_LIMIT,
+            "usados_no_mes": get_store().count_receipts_in_range(
+                g.user["_id"], mes_inicio, mes_fim, 10_000
+            ),
+            "motorista": {
+                "full_name": g.user.get("full_name", ""),
+                "email": g.user.get("email", ""),
+                "whatsapp": g.user.get("whatsapp", ""),
+                "city": g.user.get("city", ""),
+                "plate": g.user.get("plate", ""),
+                "vehicle_model": g.user.get("vehicle_model", ""),
+                "taxi_prefix": g.user.get("taxi_prefix", ""),
+                "license_number": g.user.get("license_number", ""),
+            },
+        }
+    )
+
+
+@app.post("/api/recibos")
+@api_login_required
+def api_criar_recibo():
+    """Recebe um recibo emitido OFFLINE, com rid escolhido pelo aparelho.
+
+    É idempotente de propósito: a fila do app reenvia o que não teve resposta
+    confirmada, e sem isso uma resposta perdida viraria recibo duplicado.
+    """
+    dados = request.get_json(silent=True) or {}
+
+    rid = str(dados.get("rid", "")).strip().upper()
+    if not re.fullmatch(r"[0-9A-F]{%d}" % RID_LENGTH, rid):
+        return jsonify({"erro": "rid_invalido"}), 400
+
+    campos = {
+        "passageiro": dados.get("passageiro", ""),
+        "data": dados.get("data", ""),
+        "origem": dados.get("origem", ""),
+        "destino": dados.get("destino", ""),
+        "valor": dados.get("valor", ""),
+        "forma_pagamento": dados.get("forma_pagamento", ""),
+        "observacoes": dados.get("observacoes", ""),
+        "email_passageiro": dados.get("email_passageiro", ""),
+        "whatsapp_passageiro": dados.get("whatsapp_passageiro", ""),
+        "hora": dados.get("hora", ""),
+    }
+    for nome, (rotulo, maximo) in RECEIPT_FIELD_LIMITS.items():
+        if len(str(campos.get(nome, "") or "")) > maximo:
+            return jsonify({"erro": "campo_longo", "campo": nome, "maximo": maximo}), 400
+
+    if not all([campos["passageiro"], campos["data"], campos["origem"], campos["destino"]]):
+        return jsonify({"erro": "campos_obrigatorios"}), 400
+
+    try:
+        amount_value, amount_display = normalize_money(str(campos["valor"]))
+    except ValueError as exc:
+        return jsonify({"erro": "valor_invalido", "mensagem": str(exc)}), 400
+
+    receipt = {
+        "_id": rid,
+        "rid": rid,
+        "driver_id": g.user["_id"],
+        "is_guest": False,
+        "passenger": str(campos["passageiro"]).strip(),
+        "passenger_email": normalize_email(str(campos["email_passageiro"])),
+        "passenger_whatsapp": str(campos["whatsapp_passageiro"]).strip(),
+        "trip_date": str(campos["data"]).strip(),
+        "trip_time": str(campos["hora"]).strip(),
+        "origin": str(campos["origem"]).strip(),
+        "destination": str(campos["destino"]).strip(),
+        "amount_value": amount_value,
+        "amount_display": amount_display,
+        "payment_method": str(campos["forma_pagamento"]).strip() or "Pix",
+        "notes": str(campos["observacoes"]).strip(),
+        "driver_snapshot": {
+            "full_name": g.user["full_name"],
+            "email": g.user["email"],
+            "whatsapp": g.user.get("whatsapp", ""),
+            "city": g.user.get("city", ""),
+            "plate": g.user.get("plate", ""),
+            "vehicle_model": g.user.get("vehicle_model", ""),
+            "taxi_prefix": g.user.get("taxi_prefix", ""),
+            "license_number": g.user.get("license_number", ""),
+        },
+    }
+    if dados.get("created_at"):
+        receipt["created_at"] = str(dados["created_at"])
+
+    quota = None if g.user.get("plan", "free") in PAID_PLANS else FREE_MONTHLY_LIMIT
+    salvo, criado_agora = get_store().create_receipt_idempotente(receipt, quota)
+
+    if salvo is None:
+        # Ou a cota acabou, ou o rid pertence a outro motorista.
+        existente = get_store().get_receipt(rid)
+        if existente:
+            return jsonify({"erro": "rid_de_outro_motorista"}), 409
+        return jsonify({"erro": "limite_mensal", "limite": FREE_MONTHLY_LIMIT}), 402
+
+    return (
+        jsonify(
+            {
+                "rid": salvo["rid"],
+                "url": public_receipt_url(salvo["rid"]),
+                "criado_agora": criado_agora,
+            }
+        ),
+        201 if criado_agora else 200,
+    )
 
 
 # ── Manutenção ────────────────────────────────────────────────────────────────

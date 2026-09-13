@@ -18,3 +18,8 @@ fly 2.toml
 
 # Testes não vão para o bundle da função
 test_app.py
+
+# O projeto nativo não vai para a função serverless
+mobile/node_modules
+mobile/ios
+mobile/android

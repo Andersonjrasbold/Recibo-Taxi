@@ -1,0 +1,17 @@
+{
+  "appId": "br.com.recibotaxi.app",
+  "appName": "Recibo Táxi",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "always",
+    "backgroundColor": "#100d0d"
+  },
+  "android": {
+    "backgroundColor": "#100d0d"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": false
+    }
+  }
+}

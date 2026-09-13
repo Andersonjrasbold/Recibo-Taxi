@@ -179,6 +179,37 @@ function textoParaCompartilhar(recibo) {
   return linhas.join('\n');
 }
 
+async function atualizarSugestoesDeLocal() {
+  /* Monta a lista de lugares a partir do que o motorista já digitou.
+     Vale mais que uma API de lugares para este uso: taxista repete os mesmos
+     endereços o dia todo, e isto funciona sem sinal. Ordena por frequência e,
+     no empate, pelo mais recente. */
+  const contagem = new Map();
+  const recencia = new Map();
+
+  for (const r of await listarRecibos()) {
+    for (const local of [r.dados.origem, r.dados.destino]) {
+      const limpo = (local || '').trim();
+      if (limpo.length < 3) continue;
+      const chave = limpo.toLocaleUpperCase('pt-BR');
+      contagem.set(chave, (contagem.get(chave) || 0) + 1);
+      if (!recencia.has(chave) || r.criado_em > recencia.get(chave)) {
+        recencia.set(chave, r.criado_em);
+      }
+      if (!rotuloOriginal.has(chave)) rotuloOriginal.set(chave, limpo);
+    }
+  }
+
+  const ordenados = [...contagem.entries()]
+    .sort((a, b) => b[1] - a[1] || (recencia.get(b[0]) || '').localeCompare(recencia.get(a[0]) || ''))
+    .slice(0, 40)
+    .map(([chave]) => rotuloOriginal.get(chave) || chave);
+
+  $('locais').innerHTML = ordenados.map((l) => `<option value="${l.replace(/"/g, '&quot;')}">`).join('');
+}
+
+const rotuloOriginal = new Map();
+
 async function atualizarAvisoFila() {
   const n = (await pendentes()).length;
   const aviso = $('aviso-fila');
@@ -286,7 +317,7 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   await salvarRecibo(recibo);        // primeiro guarda, depois tenta enviar
   vibrar('HEAVY');
   $('form-recibo').reset();
-  $('data').value = new Date().toISOString().slice(0, 10);
+  preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
   $('recibo').innerHTML = montarRecibo(recibo);
   $('btn-compartilhar').dataset.rid = rid;
@@ -336,7 +367,12 @@ $('btn-compartilhar').addEventListener('click', async () => {
   window.open(`https://wa.me/${fone}?text=${encodeURIComponent(texto)}`, '_blank');
 });
 
-$('btn-novo').addEventListener('click', () => { atualizarAvisoFila(); mostrar('tela-emitir'); });
+$('btn-novo').addEventListener('click', async () => {
+  preencherDataEHora();
+  await atualizarSugestoesDeLocal();   // aprende o local que acabou de ser usado
+  await atualizarAvisoFila();
+  mostrar('tela-emitir');
+});
 $('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
 $('btn-sair').addEventListener('click', () => {
   Guardado.del('access_token'); Guardado.del('motorista'); mostrar('tela-login');
@@ -372,10 +408,27 @@ if (P().Network) {
 }
 
 // ── Início ─────────────────────────────────────────────────────────────────
+function agoraLocal() {
+  // toISOString devolve UTC; para a hora do relógio do motorista, monta local.
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return {
+    data: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
+    hora: `${p(d.getHours())}:${p(d.getMinutes())}`,
+  };
+}
+
+function preencherDataEHora() {
+  const agora = agoraLocal();
+  $('data').value = agora.data;
+  $('hora').value = agora.hora;
+}
+
 async function iniciar() {
-  $('data').value = new Date().toISOString().slice(0, 10);
+  preencherDataEHora();
   if (!token()) { mostrar('tela-login'); return; }
   mostrar('tela-emitir');
+  await atualizarSugestoesDeLocal();
   await atualizarAvisoFila();
   sincronizar().then(atualizarAvisoFila);
 }

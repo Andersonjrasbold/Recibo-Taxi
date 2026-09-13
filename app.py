@@ -154,9 +154,9 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    # camera=(self) porque o app vai fotografar comprovante; microfone e
-    # pagamento seguem desligados — o app não usa nenhum dos dois.
-    "Permissions-Policy": "geolocation=(self), camera=(self), microphone=(), payment=()",
+    # Tudo desligado: o app não usa nenhuma dessas APIs. Menos permissão
+    # declarada é menos coisa a justificar na revisão das lojas.
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=(), payment=()",
 }
 
 STRIPE_PRICE_IDS = {
@@ -1807,6 +1807,13 @@ def api_sessao():
             "email": g.user.get("email", ""),
             "plano": plano,
             "limite_mensal": None if plano in PAID_PLANS else FREE_MONTHLY_LIMIT,
+            # O app precisa saber a origem: quem assinou pela Stripe no site
+            # gerencia lá; quem assinou pelo app gerencia na loja.
+            "origem_assinatura": (
+                "stripe" if g.user.get("stripe_customer_id")
+                else "loja" if plano in PAID_PLANS
+                else None
+            ),
             "usados_no_mes": get_store().count_receipts_in_range(
                 g.user["_id"], mes_inicio, mes_fim, 10_000
             ),
@@ -1912,6 +1919,67 @@ def api_criar_recibo():
         ),
         201 if criado_agora else 200,
     )
+
+
+# ── Webhook do RevenueCat (assinatura pelo app) ───────────────────────────────
+#
+# Três fontes podem conceder o Pro: Stripe (site), App Store e Google Play
+# (app). Todas convergem para a mesma coluna `plan` — o app e o site só olham
+# para ela, e nunca precisam saber de onde a assinatura veio.
+
+# Eventos que concedem acesso, e os que tiram.
+RC_EVENTOS_ATIVA = {
+    "INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION",
+    "PRODUCT_CHANGE", "SUBSCRIPTION_EXTENDED", "TRANSFER",
+}
+RC_EVENTOS_ENCERRA = {"EXPIRATION", "SUBSCRIPTION_PAUSED"}
+
+
+@app.post("/webhook/revenuecat")
+def webhook_revenuecat():
+    """Recebe mudanças de assinatura feitas dentro do app."""
+    segredo = os.environ.get("REVENUECAT_WEBHOOK_SECRET", "").strip()
+    if not segredo:
+        app.logger.warning("REVENUECAT_WEBHOOK_SECRET ausente — webhook desativado.")
+        abort(503)
+
+    enviado = request.headers.get("Authorization", "").encode("utf-8", "replace")
+    if not hmac.compare_digest(enviado, f"Bearer {segredo}".encode("utf-8")):
+        abort(401)
+
+    evento = (request.get_json(silent=True) or {}).get("event") or {}
+    tipo = str(evento.get("type", ""))
+
+    # app_user_id é o id do motorista: o app faz logIn no RevenueCat com ele.
+    user_id = str(evento.get("app_user_id") or "").strip()
+    if not user_id:
+        return jsonify({"ok": True, "ignorado": "sem_app_user_id"})
+
+    store = get_store()
+    usuario = store.get_user_by_id(user_id)
+    if not usuario:
+        app.logger.warning("RevenueCat: motorista %s não encontrado.", user_id)
+        return jsonify({"ok": True, "ignorado": "motorista_desconhecido"})
+
+    if tipo == "CANCELLATION":
+        # Cancelou, mas segue com acesso até o fim do período pago. Quem tira o
+        # acesso é o EXPIRATION, depois.
+        store.update_user(user_id, {"subscription_status": "canceled_pendente"})
+
+    elif tipo in RC_EVENTOS_ATIVA:
+        store.update_user(user_id, {
+            "plan": "pro",
+            "subscription_status": "active",
+            "stripe_subscription_id": None,
+        })
+
+    elif tipo in RC_EVENTOS_ENCERRA:
+        # Só rebaixa se o Pro veio do app. Quem assinou pela Stripe no site
+        # continua — são assinaturas independentes (Guideline 3.1.3b).
+        if not usuario.get("stripe_customer_id"):
+            store.update_user(user_id, {"plan": "free", "subscription_status": tipo.lower()})
+
+    return jsonify({"ok": True, "evento": tipo})
 
 
 # ── Manutenção ────────────────────────────────────────────────────────────────

@@ -104,10 +104,15 @@
     </div>
 
     <label for="origem">Origem *</label>
-    <input type="text" id="origem" maxlength="200" required>
+    <input type="text" id="origem" maxlength="200" required
+           list="locais" autocomplete="off" autocorrect="off">
 
     <label for="destino">Destino *</label>
-    <input type="text" id="destino" maxlength="200" required>
+    <input type="text" id="destino" maxlength="200" required
+           list="locais" autocomplete="off" autocorrect="off">
+
+    <!-- Preenchida do histórico local: funciona sem sinal e aprende com o uso -->
+    <datalist id="locais"></datalist>
 
     <div class="linha">
       <div>

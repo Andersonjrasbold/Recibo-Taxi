@@ -531,6 +531,34 @@ check("rid tem 14 caracteres", len(rid14) == 14, f"{rid14} ({len(rid14)})")
 check("rid e hexadecimal maiusculo", all(c in "0123456789ABCDEF" for c in rid14), rid14)
 
 
+print("\n-- Envio de e-mail (Resend) --")
+_chave = os.environ.get("RESEND_API_KEY", "").strip()
+if _chave:
+    with A.app.app_context():
+        # delivered@resend.dev e o endereco de teste oficial: aceita e descarta.
+        check("send_email entrega pelo Resend",
+              A.send_email("delivered@resend.dev", "Teste automatizado",
+                           "Corpo com acentuacao: acao, coracao."))
+        check("remetente definido", "@" in A.remetente_padrao(), A.remetente_padrao())
+
+    # Sem provedor nenhum, nao pode estourar — so registrar e devolver False.
+    _guard = {k: os.environ.pop(k, "") for k in ("RESEND_API_KEY", "SMTP_HOST")}
+    try:
+        with A.app.app_context():
+            check("sem provedor, degrada em vez de estourar",
+                  A.send_email("x@teste.invalid", "s", "b") is False)
+    finally:
+        for k, v in _guard.items():
+            if v: os.environ[k] = v
+
+    # O User-Agent proprio existe porque o Cloudflare do Resend devolve 403
+    # "error code: 1010" para o padrao do urllib. Sem ele, quebra em producao.
+    _fonte = io.open("app.py", encoding="utf-8").read()
+    check("envio manda User-Agent proprio", '"User-Agent"' in _fonte)
+else:
+    print("  (pulado: RESEND_API_KEY ausente)")
+
+
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")
 

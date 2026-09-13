@@ -5,6 +5,8 @@ import hmac
 import os
 import secrets
 import smtplib
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
@@ -732,12 +734,69 @@ def auth_excluir_usuario(user_id: str) -> None:
 
 # ── E-mail transacional ──────────────────────────────────────────────────────
 
+def remetente_padrao() -> str:
+    """Endereço do remetente. onboarding@resend.dev é o domínio compartilhado
+    do Resend — serve para desenvolvimento, mas só entrega para o dono da conta.
+    """
+    return os.environ.get("EMAIL_FROM", "").strip() or "onboarding@resend.dev"
+
+
+def enviar_por_resend(to_address: str, subject: str, body: str) -> bool:
+    """Envia pela API HTTP do Resend.
+
+    HTTP em vez do relay SMTP de propósito: numa função serverless, o handshake
+    do SMTP (EHLO, STARTTLS, AUTH, MAIL FROM, RCPT TO, DATA) são várias idas e
+    voltas; aqui é um POST só.
+    """
+    chave = os.environ.get("RESEND_API_KEY", "").strip()
+    if not chave:
+        return False
+
+    payload = json.dumps(
+        {
+            "from": f"{APP_NAME} <{remetente_padrao()}>",
+            "to": [to_address],
+            "subject": subject,
+            "text": body,
+        }
+    ).encode("utf-8")
+
+    requisicao = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {chave}",
+            "Content-Type": "application/json",
+            # Sem User-Agent próprio o Cloudflare do Resend devolve 403 com
+            # "error code: 1010" — bloqueia o padrão do urllib.
+            "User-Agent": f"{APP_NAME.replace(' ', '-')}/1.0",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(requisicao, timeout=15) as resposta:
+            return 200 <= resposta.status < 300
+    except urllib.error.HTTPError as exc:
+        detalhe = (exc.read() or b"")[:200].decode("utf-8", "replace")
+        app.logger.error(
+            "Resend recusou o e-mail para %s (HTTP %s): %s", to_address, exc.code, detalhe
+        )
+        return False
+    except Exception as exc:
+        app.logger.error("Falha ao chamar o Resend para %s: %s", to_address, exc)
+        return False
+
+
 def send_email(to_address: str, subject: str, body: str) -> bool:
-    """Envia via SMTP. Sem SMTP_HOST configurado, apenas registra no log."""
+    """Envia por Resend; se não houver chave, cai para SMTP; sem nenhum, só loga."""
+    if os.environ.get("RESEND_API_KEY", "").strip():
+        return enviar_por_resend(to_address, subject, body)
+
     host = os.environ.get("SMTP_HOST", "").strip()
     if not host:
         app.logger.warning(
-            "SMTP não configurado — e-mail '%s' para %s não foi enviado.",
+            "Nenhum provedor de e-mail configurado — '%s' para %s não foi enviado.",
             subject,
             to_address,
         )

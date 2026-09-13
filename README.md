@@ -85,7 +85,9 @@ reservadas para documentação.
 | `STRIPE_PUBLISHABLE_KEY` | para cobrar | — |
 | `STRIPE_WEBHOOK_SECRET` | para cobrar | Valida a assinatura do webhook |
 | `STRIPE_PRO_PRICE_ID` | para cobrar | Preço do plano Pro |
-| `SMTP_HOST` e `SMTP_*` | para o reset de senha | Vazio: o link só aparece no log |
+| `RESEND_API_KEY` | para o reset de senha | Vazio: cai para SMTP |
+| `EMAIL_FROM` | recomendada | Remetente. Exige domínio verificado no Resend |
+| `SMTP_HOST` e `SMTP_*` | alternativa ao Resend | Ignorado se houver `RESEND_API_KEY` |
 | `CRON_SECRET` | para a limpeza | Vazio: `/tarefas/limpeza` responde 503 |
 
 ## Banco
@@ -173,6 +175,19 @@ sobrou trabalho — a execução seguinte continua de onde parou.
 - Senhas com hash `werkzeug` (PBKDF2 com sal)
 - Token de reset ligado ao hash da senha atual, o que o torna de uso único
 - Rate limit por IP no gerador público (best-effort; para abuso sério, WAF da Vercel)
+
+## E-mail
+
+Envio pelo **Resend**, via API HTTP. Numa função serverless o handshake do SMTP
+são cinco ou seis idas e voltas (EHLO, STARTTLS, AUTH, MAIL FROM, RCPT TO,
+DATA); pela API é um POST só. O caminho SMTP continua no código como alternativa.
+
+> A requisição manda um `User-Agent` próprio de propósito: o Cloudflare do
+> Resend devolve `403 error code: 1010` para o padrão do `urllib`.
+
+O remetente precisa de domínio verificado no Resend. Sem isso, só
+`onboarding@resend.dev` funciona — e ele entrega apenas para o e-mail dono
+da conta.
 - Teto de tamanho por campo em todo formulário que escreve no banco, mais
   `MAX_CONTENT_LENGTH` de 1 MB no corpo da requisição
 - Alterar dados da conta em `/perfil` exige a senha atual

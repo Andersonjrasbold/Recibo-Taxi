@@ -1,8 +1,9 @@
 /* Paleta do site, adaptada para uso com uma mão só dentro do carro:
    alvos grandes, contraste alto, nada de hover. */
 :root {
-  --coal:#100d0d; --coal-soft:#1d1717; --coral:#ec5543; --orange:#ef8f59;
-  --paper:#fff4ec; --ink:#1d1312; --muted:#8a7068; --linha:rgba(255,244,236,.12);
+  --coal:#0E1013; --coal-soft:#171A1F; --ambar:#FFC531;
+  --coral:#E0392C; --orange:#F7A83E;
+  --paper:#F7F5F2; --ink:#17191D; --muted:#6E675E; --linha:rgba(247,245,242,.12);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body {
@@ -20,7 +21,7 @@ body {
 .pilula {
   font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em;
   padding:.25rem .6rem; border-radius:999px;
-  background:rgba(236,85,67,.18); color:var(--orange);
+  background:rgba(255,197,49,.16); color:var(--ambar);
 }
 .tela { padding:1.15rem; max-width:560px; margin:0 auto; }
 h1 { font-size:1.35rem; margin:.25rem 0 1rem; }
@@ -34,24 +35,24 @@ input, select {
   color:var(--paper); background:var(--coal-soft);
   border:1px solid var(--linha); border-radius:14px;
 }
-input:focus, select:focus { outline:2px solid var(--orange); outline-offset:1px; }
+input:focus, select:focus { outline:2px solid var(--ambar); outline-offset:1px; }
 .linha { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }
 
 button { font:inherit; border:0; border-radius:14px; cursor:pointer; }
 .primario {
   width:100%; min-height:56px; margin-top:1.4rem; font-weight:800; font-size:1.02rem;
-  color:#fff; background:linear-gradient(135deg,var(--coral),var(--orange));
+  color:var(--ink); background:var(--ambar);
 }
 .secundario {
   width:100%; min-height:52px; margin-top:.6rem; font-weight:700;
   color:var(--paper); background:transparent; border:1px solid var(--linha);
 }
-.texto { background:none; color:var(--orange); font-weight:800; font-size:.86rem; padding:.5rem; }
+.texto { background:none; color:var(--ambar); font-weight:800; font-size:.86rem; padding:.5rem; }
 
 .aviso {
   padding:.8rem 1rem; border-radius:14px; font-size:.86rem; font-weight:600;
-  background:rgba(239,143,89,.14); color:var(--orange);
-  border:1px solid rgba(239,143,89,.28); margin-bottom:1rem;
+  background:rgba(255,197,49,.13); color:var(--ambar);
+  border:1px solid rgba(255,197,49,.26); margin-bottom:1rem;
 }
 
 .recibo {

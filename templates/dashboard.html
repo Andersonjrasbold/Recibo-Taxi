@@ -68,7 +68,7 @@
     Você usou os {{ monthly_limit }} recibos deste mês do plano Grátis. O limite reinicia no dia 1º.
     <a href="{{ url_for('planos') }}" class="upgrade-banner-link ms-2">Liberar recibos ilimitados →</a>
   </div>
-  {% elif monthly_limit and receipts_this_month >= monthly_limit - 5 %}
+  {% elif monthly_limit and receipts_this_month >= monthly_limit - 2 %}
   <div class="upgrade-banner mb-4">
     <i class="bi bi-exclamation-triangle-fill me-2"></i>
     Você já usou {{ receipts_this_month }} dos {{ monthly_limit }} recibos deste mês do plano Grátis.

@@ -70,7 +70,7 @@ APP_NAME = "Recibo Táxi"
 # Brasil não adota horário de verão desde 2019, então o offset é fixo.
 BR_TZ = timezone(timedelta(hours=-3))
 
-FREE_MONTHLY_LIMIT = 30
+FREE_MONTHLY_LIMIT = 5
 # "business" segue aqui de propósito: o plano saiu de venda, mas quem já assina
 # mantém o acesso ilimitado até cancelar. Só STRIPE_PRICE_IDS perdeu a entrada,
 # o que faz /assinar/business responder 400 para assinaturas novas.

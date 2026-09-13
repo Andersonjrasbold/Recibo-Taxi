@@ -134,28 +134,29 @@ html = r.get_data(as_text=True)
 check("rodapé linka Privacidade", "/privacidade" in html)
 check("rodapé linka Termos", "/termos" in html)
 
-print("\n── Limite de 30 recibos do plano Grátis ──")
+print(f"\n── Limite de {A.FREE_MONTHLY_LIMIT} recibos do plano Grátis ──")
 c = novo_cliente("limite@teste.invalid")
 criados = 0
-for i in range(35):
+for i in range(A.FREE_MONTHLY_LIMIT + 5):
     r = c.post("/recibo", data={"passageiro":f"P{i}","data":"2026-09-12","origem":"A","destino":"B","valor":"10"})
     if "/recibo/" in r.headers.get("Location", ""): criados += 1
-check("para exatamente em 30 recibos", criados == 30, f"criou {criados}")
+check(f"para exatamente em {A.FREE_MONTHLY_LIMIT} recibos", criados == A.FREE_MONTHLY_LIMIT, f"criou {criados}")
 r = c.post("/recibo", data={"passageiro":"X","data":"2026-09-12","origem":"A","destino":"B","valor":"10"})
-check("31º redireciona para /planos", r.headers.get("Location","").endswith("/planos"), r.headers.get("Location"))
+check("o seguinte redireciona para /planos", r.headers.get("Location","").endswith("/planos"), r.headers.get("Location"))
 r = c.get("/dashboard"); html = r.get_data(as_text=True)
-check("painel mostra 30/30", "30<span class=\"stat-limit\">/30</span>" in html.replace("\n","").replace("  ",""), "contador")
-check("painel mostra banner de bloqueio", "usou os 30 recibos deste mês" in html)
+L = A.FREE_MONTHLY_LIMIT
+check(f"painel mostra {L}/{L}", f'{L}<span class="stat-limit">/{L}</span>' in html.replace("\n","").replace("  ",""), "contador")
+check("painel mostra banner de bloqueio", f"usou os {A.FREE_MONTHLY_LIMIT} recibos deste mês" in html)
 
 print("\n── Plano pago não tem limite ──")
 cp = novo_cliente("pro@teste.invalid")
 store = A.get_store()
 uid = store.get_user_by_email("pro@teste.invalid")["_id"]
 store.update_user(uid, {"plan": "pro"})
-criados = sum(1 for i in range(40)
+criados = sum(1 for i in range(A.FREE_MONTHLY_LIMIT + 10)
     if "/recibo/" in cp.post("/recibo", data={"passageiro":f"P{i}","data":"2026-09-12",
         "origem":"A","destino":"B","valor":"10"}).headers.get("Location",""))
-check("plano Pro cria 40 sem bloqueio", criados == 40, f"criou {criados}")
+check("plano pago não tem teto", criados == A.FREE_MONTHLY_LIMIT + 10, f"criou {criados}")
 
 print("\n── Contagem mensal respeita o fuso de Brasília ──")
 start, end = A.month_range_utc(A.datetime(2026, 9, 15, 12, tzinfo=A.BR_TZ))
@@ -390,10 +391,10 @@ r = cb.post("/assinar/business")
 check("checkout de Business e recusado (400)", r.status_code == 400, r.status_code)
 
 # assinante antigo mantem recibos ilimitados
-criados = sum(1 for i in range(35)
+criados = sum(1 for i in range(A.FREE_MONTHLY_LIMIT + 5)
     if "/recibo/" in cb.post("/recibo", data={"passageiro":f"P{i}","data":"2026-09-12",
         "origem":"A","destino":"B","valor":"10"}).headers.get("Location",""))
-check("assinante antigo do Business segue ilimitado", criados == 35, f"criou {criados}")
+check("assinante antigo do Business segue ilimitado", criados == A.FREE_MONTHLY_LIMIT + 5, f"criou {criados}")
 
 print("\n-- Header Authorization esquisito nao vira 500 --")
 os.environ["CRON_SECRET"] = "segredo-de-teste"
@@ -503,7 +504,7 @@ if A.get_store().kind == "postgres":
     cc = novo_cliente("corrida@teste.invalid")
     uidc = A.get_store().get_user_by_email("corrida@teste.invalid")["_id"]
     # 28 recibos ja usados no mes
-    for i in range(28):
+    for i in range(A.FREE_MONTHLY_LIMIT - 2):
         A.get_store().create_receipt(
             recibo_bruto(f"C{i:013X}", A.now_iso(), driver_id=uidc, is_guest=False),
             quota_limit=A.FREE_MONTHLY_LIMIT)
@@ -515,10 +516,10 @@ if A.get_store().kind == "postgres":
 
     with _cf.ThreadPoolExecutor(max_workers=10) as ex:
         res = list(ex.map(emitir, range(10)))
-    check("10 emissoes simultaneas partindo de 28 liberam exatamente 2",
+    check(f"10 emissoes simultaneas no teto liberam exatamente 2",
           sum(res) == 2, f"liberou {sum(res)}")
     total = len(A.get_store().list_receipts_by_driver(uidc))
-    check("total no mes para em 30", total == 30, total)
+    check(f"total no mes para em {A.FREE_MONTHLY_LIMIT}", total == A.FREE_MONTHLY_LIMIT, total)
 else:
     print("  (pulado: so faz sentido no Postgres)")
 

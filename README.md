@@ -104,7 +104,7 @@ Duas funções carregam a lógica que precisa ser atômica:
 
 - `bump_counter(key)` — incremento do rate limit numa ida só ao banco
 - `consume_receipt_quota(driver, limite)` — consome a cota com `where used < limite`.
-  É o que fecha a corrida: sem ela, duas emissões simultâneas furavam o teto de 30.
+  É o que fecha a corrida: sem ela, duas emissões simultâneas furavam o teto.
 
 ### Conexão na Vercel
 
@@ -148,7 +148,7 @@ A digital de uso único, que antes vinha do hash da senha, agora vem do
 
 | Plano | Preço | Limite |
 |---|---|---|
-| Grátis | R$ 0,00 | 30 recibos por mês-calendário (fuso de Brasília) |
+| Grátis | R$ 0,00 | 5 recibos por mês-calendário (fuso de Brasília) |
 | Pro | R$ 19,90/mês | Ilimitado |
 
 O limite é aplicado em `recibo_criar`. O webhook da Stripe rebaixa a conta para

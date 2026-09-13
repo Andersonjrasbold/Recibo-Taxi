@@ -2,12 +2,12 @@
 
 Aplicação Flask para taxistas emitirem e compartilharem recibos digitais.
 
-- Cadastro e login do motorista, com edição dos próprios dados em `/perfil`
+- Cadastro e login pelo **Supabase Auth**, com edição dos próprios dados em `/perfil`
 - Emissão de recibos, com histórico por conta
 - Gerador público, sem cadastro, para experimentar
 - Compartilhamento por WhatsApp ou e-mail, com link público e QR Code
 - Assinatura Pro via Stripe
-- Persistência em Postgres (Supabase). O Astra DB segue como caminho legado durante a migração
+- Persistência em Postgres (Supabase)
 - Deploy na Vercel
 
 ## Rodar localmente
@@ -49,23 +49,25 @@ passar batido, porque os dados não persistiriam.
 ## Testes
 
 ```bash
-python test_app.py
+PERMITIR_TESTE_REMOTO=1 python test_app.py
 ```
 
-Roda em memória, sem rede e sem dependências além das do `requirements.txt`.
-Sai com código 1 se algo falhar. Cobre limite de plano, ciclo da assinatura,
-redefinição de senha, exclusão de conta, cabeçalhos de segurança, rate limit e
-a rotina de retenção.
+A suíte roda **contra o Supabase**, não contra um banco local. Não é escolha:
+desde que a autenticação passou para o Supabase Auth, `drivers.id` é chave
+estrangeira de `auth.users`. Um usuário criado no Auth da nuvem não pode ter
+perfil num Postgres local — a FK não fecha.
 
-A suíte roda contra o store configurado e **se recusa a rodar** se o
-`DATABASE_URL` apontar para fora da máquina — ela cria dezenas de contas de teste.
+Por isso ela exige opt-in explícito. Toda conta que cria usa o domínio
+`@teste.invalid` (TLD reservada pela RFC 2606) e é apagada no início e no fim,
+junto com os recibos de convidado e os contadores de rate limit das faixas
+reservadas para documentação.
 
-Rode nos dois backends antes de publicar:
+> **Sem dublês onde o real importa.** A versão anterior stubava o
+> `construct_event` da Stripe com um fake que devolvia `dict`. Isso escondeu um
+> bug em que todo webhook dava 500 em produção, porque o SDK devolve um
+> `StripeObject`, que não tem `.get()`. A suíte agora assina os webhooks de
+> verdade.
 
-```bash
-python test_app.py                 # Postgres local
-DATABASE_URL="" python test_app.py # store em memória
-```
 
 ## Variáveis de ambiente
 
@@ -113,10 +115,32 @@ query, e o Supavisor em transaction mode não os suporta. Por isso o pool é cri
 com `prepare_threshold=None` — sem isso o erro só apareceria em produção, depois
 de algum tempo no ar.
 
-### Astra DB (legado)
+## Autenticação
 
-Continua funcionando enquanto a migração não termina: com `ASTRA_DB_*` definidos
-e nenhum `DATABASE_URL`/`SUPABASE_DB_URL`, o app usa o `AstraStore`.
+A senha vive no **Supabase Auth**; `drivers` é só o perfil, com a mesma chave
+primária de `auth.users`. O trigger `on_auth_user_created` cria o perfil a
+partir do `raw_user_meta_data`.
+
+A **sessão continua sendo a do Flask**, já assinada pela `SECRET_KEY`. Assim uma
+página comum não paga ida à rede — só cadastro, login e troca de senha falam com
+o Auth.
+
+O cadastro usa `admin.create_user` em vez de `sign_up`: não dispara e-mail de
+confirmação (o fluxo loga direto) e não passa pelo limite de 30 cadastros a cada
+5 minutos.
+
+### Redefinição de senha
+
+Continua sendo o fluxo do app — token `itsdangerous` de uso único — e só a
+gravação vai para `admin.update_user_by_id`.
+
+O motivo é concreto: verifiquei no fonte do `supabase-py` 2.31.0 que
+`reset_password_for_email` **não honra PKCE**. O link do e-mail entrega os
+tokens no *fragmento* da URL, que o navegador não envia ao servidor. Um app
+server-rendered não consegue lê-los.
+
+A digital de uso único, que antes vinha do hash da senha, agora vem do
+`password_changed_at`.
 
 ## Planos
 

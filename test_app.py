@@ -1,34 +1,104 @@
 """Testes de regressao do Recibo Taxi.
 
-Roda com o store em memoria, sem rede e sem dependencias extras:
+    PERMITIR_TESTE_REMOTO=1 python test_app.py
 
-    python test_app.py
+A suite roda contra o Supabase, e nao contra um banco local. Nao e escolha:
+desde que a autenticacao passou para o Supabase Auth, `drivers.id` e chave
+estrangeira de `auth.users`. Um usuario criado no Auth da nuvem nao pode ter
+perfil num Postgres local — a FK nao fecha.
+
+Por isso a suite exige opt-in explicito: ela cria dezenas de contas e nao pode
+rodar por acidente. Toda conta que ela cria usa o dominio @teste.invalid
+(TLD reservada pela RFC 2606) e e apagada no inicio e no fim.
 
 Sai com codigo 1 se algum teste falhar.
 """
+import hashlib
+import hmac as _hmac
 import io
+import json
 import os
 import sys
-
-# Desliga tudo que sai da maquina: Astra, SMTP e, principalmente, o Supabase
-# de producao — get_store() prefere SUPABASE_DB_URL, e a suite cria dezenas de
-# contas de teste. Isto nao pode nunca apontar para a nuvem.
-# Vazio, nao removido: o app chama load_dotenv() no import, e o load_dotenv
-# repoe o que foi REMOVIDO mas respeita o que ja existe — mesmo vazio.
-for key in ("ASTRA_DB_API_ENDPOINT", "ASTRA_DB_APPLICATION_TOKEN",
-            "SMTP_HOST", "SUPABASE_DB_URL"):
-    os.environ[key] = ""
-
-# Trava: se o DATABASE_URL nao for local, a suite se recusa a rodar.
-_dsn = os.environ.get("DATABASE_URL", "")
-if _dsn and not any(h in _dsn for h in ("127.0.0.1", "localhost", "::1")):
-    raise SystemExit(
-        f"DATABASE_URL aponta para fora desta maquina.\n"
-        f"A suite cria dezenas de contas de teste — recusando rodar."
-    )
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Vazio, nao removido: o app chama load_dotenv() no import, e o load_dotenv
+# repoe o que foi REMOVIDO mas respeita o que ja existe — mesmo vazio.
+for key in ("ASTRA_DB_API_ENDPOINT", "ASTRA_DB_APPLICATION_TOKEN", "SMTP_HOST"):
+    os.environ[key] = ""
+# O Auth vive na nuvem: o banco tem de ser o mesmo, senao a FK nao fecha.
+os.environ["DATABASE_URL"] = ""
+
+if os.environ.get("PERMITIR_TESTE_REMOTO") != "1":
+    raise SystemExit(
+        "Esta suite escreve no Supabase — inclusive criando e apagando contas.\n"
+        "Rode com PERMITIR_TESTE_REMOTO=1 se for isso mesmo que voce quer."
+    )
+
 import app as A
+
+DOMINIO_TESTE = "@teste.invalid"
+
+
+def limpar_contas_de_teste():
+    """Apaga o rastro da suite. Contra a nuvem, o estado sobrevive entre execucoes.
+
+    Tres coisas precisam sair, e so a primeira tem cascade:
+      1. contas @teste.invalid  -> cascade leva perfil, recibos e cotas
+      2. recibos de convidado   -> driver_id NULL, ninguem os leva junto
+      3. contadores de rate limit -> senao a segunda execucao ja nasce no teto
+    """
+    removidas = 0
+    for u in A.supabase_admin().auth.admin.list_users():
+        if (u.email or "").endswith(DOMINIO_TESTE):
+            A.supabase_admin().auth.admin.delete_user(str(u.id))
+            removidas += 1
+
+    store = A.get_store()
+    if getattr(store, "kind", "") == "postgres":
+        with store.pool.connection() as conn:
+            # Recibos de convidado dos testes: o gerador publico grava 'Ze' como
+            # motorista, e os recibos montados a mao usam 'Teste' como passageiro.
+            conn.execute("""
+                delete from public.receipts
+                 where is_guest
+                   and (driver_snapshot->>'full_name' = 'Ze' or passenger = 'Teste')
+            """)
+            # Faixas reservadas para documentacao (RFC 5737) — so a suite usa.
+            conn.execute("""
+                delete from public.rate_limits
+                 where key like 'gerar:203.0.113.%%'
+                    or key like 'gerar:198.51.100.%%'
+                    or key like 'gerar:192.0.2.%%'
+                    or key like 'teste:%%'
+            """)
+    return removidas
+
+
+_antes = limpar_contas_de_teste()
+if _antes:
+    print(f"  (limpeza inicial: {_antes} conta(s) de execucao anterior removida(s))")
+
+
+def webhook_stripe(cliente, tipo, obj):
+    """Chama /webhook/stripe com assinatura Stripe DE VERDADE.
+
+    A versao anterior stubava construct_event com um fake que devolvia dict.
+    Isso escondeu um bug real: o construct_event devolve StripeObject, que nao
+    tem .get(), e todo webhook dava 500 em producao. Assinar de verdade custa
+    tres linhas e testa o caminho que roda.
+    """
+    corpo = json.dumps({"type": tipo, "data": {"object": obj}})
+    ts = int(time.time())
+    segredo = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    assinatura = _hmac.new(
+        segredo.encode(), f"{ts}.{corpo}".encode(), hashlib.sha256
+    ).hexdigest()
+    return cliente.post(
+        "/webhook/stripe", data=corpo, content_type="application/json",
+        headers={"Stripe-Signature": f"t={ts},v1={assinatura}"},
+    )
 
 fails = []
 def check(label, cond, extra=""):
@@ -47,7 +117,7 @@ def recibo_bruto(rid, created_at, driver_id=None, is_guest=True):
     }
 
 
-def novo_cliente(email="a@t.com"):
+def novo_cliente(email="a@teste.invalid"):
     c = A.app.test_client()
     c.post("/cadastro", data={"nome_completo":"Ana Souza","email":email,"senha":"senha12345",
         "whatsapp":"11999998888","cpf":"12345678900","cidade":"SP","placa":"abc1d23"})
@@ -65,7 +135,7 @@ check("rodapé linka Privacidade", "/privacidade" in html)
 check("rodapé linka Termos", "/termos" in html)
 
 print("\n── Limite de 30 recibos do plano Grátis ──")
-c = novo_cliente("limite@t.com")
+c = novo_cliente("limite@teste.invalid")
 criados = 0
 for i in range(35):
     r = c.post("/recibo", data={"passageiro":f"P{i}","data":"2026-09-12","origem":"A","destino":"B","valor":"10"})
@@ -78,9 +148,9 @@ check("painel mostra 30/30", "30<span class=\"stat-limit\">/30</span>" in html.r
 check("painel mostra banner de bloqueio", "usou os 30 recibos deste mês" in html)
 
 print("\n── Plano pago não tem limite ──")
-cp = novo_cliente("pro@t.com")
+cp = novo_cliente("pro@teste.invalid")
 store = A.get_store()
-uid = store.get_user_by_email("pro@t.com")["_id"]
+uid = store.get_user_by_email("pro@teste.invalid")["_id"]
 store.update_user(uid, {"plan": "pro"})
 criados = sum(1 for i in range(40)
     if "/recibo/" in cp.post("/recibo", data={"passageiro":f"P{i}","data":"2026-09-12",
@@ -96,8 +166,8 @@ _, e12 = A.month_range_utc(A.datetime(2026, 12, 20, tzinfo=A.BR_TZ))
 check("virada de ano em dezembro", e12 == "2027-01-01T03:00:00Z", e12)
 
 print("\n── Redefinição de senha ──")
-cr = novo_cliente("reset@t.com")
-user = A.get_store().get_user_by_email("reset@t.com")
+cr = novo_cliente("reset@teste.invalid")
+user = A.get_store().get_user_by_email("reset@teste.invalid")
 with A.app.test_request_context():
     token = A.build_reset_token(user)
 c2 = A.app.test_client()
@@ -106,66 +176,59 @@ check("link válido abre o formulário", r.status_code == 200, r.status_code)
 r = c2.post(f"/redefinir-senha/{token}", data={"senha":"novasenha1","confirmar_senha":"novasenha1"})
 check("redefine e manda para /login", r.headers.get("Location","").endswith("/login"), r.headers.get("Location"))
 c3 = A.app.test_client()
-r = c3.post("/login", data={"email":"reset@t.com","senha":"novasenha1"})
+r = c3.post("/login", data={"email":"reset@teste.invalid","senha":"novasenha1"})
 check("entra com a nova senha", r.status_code == 302)
 c3b = A.app.test_client()
-r = c3b.post("/login", data={"email":"reset@t.com","senha":"senha12345"})
+r = c3b.post("/login", data={"email":"reset@teste.invalid","senha":"senha12345"})
 check("senha antiga não funciona mais", r.status_code == 401, r.status_code)
 c4 = A.app.test_client()
 r = c4.get(f"/redefinir-senha/{token}", follow_redirects=False)
 check("token é de uso único", r.status_code == 302 and "recuperar-senha" in r.headers.get("Location",""), r.status_code)
 r = c4.get("/redefinir-senha/token-falso-123", follow_redirects=False)
 check("token inválido é rejeitado", r.status_code == 302)
-r = c0.post("/recuperar-senha", data={"email":"naoexiste@t.com"})
+r = c0.post("/recuperar-senha", data={"email":"naoexiste@teste.invalid"})
 check("e-mail inexistente não vaza cadastro", r.headers.get("Location","").endswith("/login"))
 
 print("\n── Exclusão de conta ──")
-cd = novo_cliente("delete@t.com")
+cd = novo_cliente("delete@teste.invalid")
 cd.post("/recibo", data={"passageiro":"M","data":"2026-09-12","origem":"A","destino":"B","valor":"30"})
-uid = A.get_store().get_user_by_email("delete@t.com")["_id"]
+uid = A.get_store().get_user_by_email("delete@teste.invalid")["_id"]
 check("recibo existe antes", len(A.get_store().list_receipts_by_driver(uid)) == 1)
 r = cd.post("/excluir-conta", data={"senha":"senha12345","confirmacao":"talvez"})
-check("recusa sem a palavra EXCLUIR", A.get_store().get_user_by_email("delete@t.com") is not None)
+check("recusa sem a palavra EXCLUIR", A.get_store().get_user_by_email("delete@teste.invalid") is not None)
 r = cd.post("/excluir-conta", data={"senha":"senha-errada","confirmacao":"EXCLUIR"})
-check("recusa com senha errada", A.get_store().get_user_by_email("delete@t.com") is not None)
+check("recusa com senha errada", A.get_store().get_user_by_email("delete@teste.invalid") is not None)
 r = cd.post("/excluir-conta", data={"senha":"senha12345","confirmacao":"excluir"})
-check("aceita 'excluir' minúsculo", A.get_store().get_user_by_email("delete@t.com") is None)
+check("aceita 'excluir' minúsculo", A.get_store().get_user_by_email("delete@teste.invalid") is None)
 check("recibos foram apagados", len(A.get_store().list_receipts_by_driver(uid)) == 0)
 r = cd.get("/dashboard")
 check("sessão encerrada após exclusão", r.status_code == 302)
 
 print("\n── Ciclo de vida da assinatura (webhook) ──")
-cs = novo_cliente("sub@t.com")
-uid = A.get_store().get_user_by_email("sub@t.com")["_id"]
+cs = novo_cliente("sub@teste.invalid")
+uid = A.get_store().get_user_by_email("sub@teste.invalid")["_id"]
 store = A.get_store()
 store.update_user(uid, {"plan":"pro","stripe_customer_id":"cus_123","stripe_subscription_id":"sub_1"})
 check("acha usuário pelo customer_id", store.get_user_by_stripe_customer("cus_123")["_id"] == uid)
 
-class FakeStripe:
-    class Webhook:
-        @staticmethod
-        def construct_event(payload, sig, secret):
-            import json; return json.loads(payload)
-orig_get_stripe = A.get_stripe
-A.get_stripe = lambda: FakeStripe
-os.environ["STRIPE_SECRET_KEY"] = "sk_test_x"
-
-import json
-def webhook(evt_type, obj):
-    return c0.post("/webhook/stripe", data=json.dumps({"type":evt_type,"data":{"object":obj}}),
-                   content_type="application/json")
-
-webhook("customer.subscription.updated", {"customer":"cus_123","status":"past_due"})
+# Sem dubles: assinatura Stripe de verdade, pelo caminho que roda em producao.
+r = webhook_stripe(c0, "customer.subscription.updated", {"customer":"cus_123","status":"past_due"})
+check("webhook com assinatura válida é aceito", r.status_code == 200, r.status_code)
 check("past_due mantém o plano Pro", store.get_user_by_id(uid)["plan"] == "pro", store.get_user_by_id(uid)["plan"])
-webhook("customer.subscription.updated", {"customer":"cus_123","status":"unpaid"})
+webhook_stripe(c0, "customer.subscription.updated", {"customer":"cus_123","status":"unpaid"})
 check("unpaid rebaixa para free", store.get_user_by_id(uid)["plan"] == "free", store.get_user_by_id(uid)["plan"])
 store.update_user(uid, {"plan":"business"})
-webhook("customer.subscription.deleted", {"customer":"cus_123","status":"canceled"})
+webhook_stripe(c0, "customer.subscription.deleted", {"customer":"cus_123","status":"canceled"})
 u = store.get_user_by_id(uid)
 check("cancelamento rebaixa para free", u["plan"] == "free", u["plan"])
 check("limpa o id da assinatura", u.get("stripe_subscription_id") is None, u.get("stripe_subscription_id"))
 check("registra o status", u.get("subscription_status") == "canceled", u.get("subscription_status"))
-A.get_stripe = orig_get_stripe
+
+r = c0.post("/webhook/stripe", data='{"type":"x","data":{"object":{}}}',
+            content_type="application/json", headers={"Stripe-Signature": "t=1,v1=forjada"})
+check("webhook com assinatura forjada é recusado", r.status_code == 400, r.status_code)
+r = c0.post("/webhook/stripe", data="{}", content_type="application/json")
+check("webhook sem assinatura é recusado", r.status_code == 400, r.status_code)
 
 print("\n-- Cabecalhos de seguranca e CSP --")
 import re as _re
@@ -182,7 +245,7 @@ check("object-src none", "object-src 'none'" in csp)
 check("form-action libera a Stripe", "checkout.stripe.com" in csp)
 
 # o nonce do cabecalho tem de ser o mesmo dos <script> inline da pagina, e mudar por requisicao
-cn = novo_cliente("csp@t.com")
+cn = novo_cliente("csp@teste.invalid")
 rr = cn.post("/recibo", data={"passageiro":"M","data":"2026-09-12","origem":"A","destino":"B","valor":"30"})
 rid = rr.headers["Location"].split("/recibo/")[1].split("?")[0]
 r1 = cn.get(f"/recibo/{rid}")
@@ -196,18 +259,17 @@ check("nenhum handler inline nos templates",
       not any("onclick=" in io.open(f, encoding="utf-8").read() or "onsubmit=" in io.open(f, encoding="utf-8").read()
               for f in __import__("glob").glob("templates/*.html")))
 
-print("\n-- Falha explicita sem Astra em producao --")
+print("\n-- Falha explicita sem banco configurado --")
 A._STORE = None
-_db = os.environ.pop("DATABASE_URL", "")
-os.environ["VERCEL"] = "1"
+_guardado = {k: os.environ.pop(k, "") for k in ("DATABASE_URL", "SUPABASE_DB_URL")}
 try:
     A.get_store()
-    check("levanta erro na Vercel sem banco nenhum", False, "nao levantou")
+    check("sem banco nenhum, get_store levanta erro", False, "nao levantou")
 except RuntimeError as exc:
-    check("levanta erro na Vercel sem banco nenhum", "ASTRA_DB_API_ENDPOINT" in str(exc))
+    check("sem banco nenhum, get_store levanta erro", "SUPABASE_DB_URL" in str(exc), str(exc)[:60])
 finally:
-    os.environ.pop("VERCEL", None)
-    if _db: os.environ["DATABASE_URL"] = _db
+    for k, v in _guardado.items():
+        if v: os.environ[k] = v
     A._STORE = None
 
 
@@ -278,17 +340,17 @@ for bom, esperado in [("45,00","45,00"), ("45.50","45,50"), ("1.234,56","1234,56
     except ValueError as e:
         check(f"aceita {bom!r}", False, str(e))
 
-cv = novo_cliente("valor@t.com")
+cv = novo_cliente("valor@teste.invalid")
 r = cv.post("/recibo", data={"passageiro":"M","data":"2026-09-12","origem":"A","destino":"B","valor":"-10"})
 check("POST /recibo com valor negativo nao cria recibo", "/recibo/" not in r.headers.get("Location",""))
 
 print("\n-- Trocar a senha derruba as outras sessoes --")
-cs1 = novo_cliente("sessao@t.com")
+cs1 = novo_cliente("sessao@teste.invalid")
 check("sessao 1 logada", cs1.get("/dashboard").status_code == 200)
 cs2 = A.app.test_client()
-cs2.post("/login", data={"email":"sessao@t.com","senha":"senha12345"})
+cs2.post("/login", data={"email":"sessao@teste.invalid","senha":"senha12345"})
 check("sessao 2 logada", cs2.get("/dashboard").status_code == 200)
-u = A.get_store().get_user_by_email("sessao@t.com")
+u = A.get_store().get_user_by_email("sessao@teste.invalid")
 with A.app.test_request_context():
     tok = A.build_reset_token(u)
 A.app.test_client().post(f"/redefinir-senha/{tok}", data={"senha":"outrasenha9","confirmar_senha":"outrasenha9"})
@@ -296,13 +358,13 @@ check("sessao 1 foi derrubada", cs1.get("/dashboard").status_code == 302)
 check("sessao 2 foi derrubada", cs2.get("/dashboard").status_code == 302)
 cs3 = A.app.test_client()
 check("login com a senha nova funciona",
-      cs3.post("/login", data={"email":"sessao@t.com","senha":"outrasenha9"}).status_code == 302)
+      cs3.post("/login", data={"email":"sessao@teste.invalid","senha":"outrasenha9"}).status_code == 302)
 check("e a sessao nova sobrevive", cs3.get("/dashboard").status_code == 200)
 
 print("\n-- Pagina de planos por plano do usuario --")
 def planos_html(plano):
-    c = novo_cliente(f"pl{plano}@t.com")
-    uid = A.get_store().get_user_by_email(f"pl{plano}@t.com")["_id"]
+    c = novo_cliente(f"pl{plano}@teste.invalid")
+    uid = A.get_store().get_user_by_email(f"pl{plano}@teste.invalid")["_id"]
     if plano != "free":
         A.get_store().update_user(uid, {"plan": plano})
     return c.get("/planos").get_data(as_text=True)
@@ -321,17 +383,11 @@ check("assinante antigo pode migrar para o Pro pelo portal", "Mudar para Pro no 
 check("nenhuma pagina promete recursos inexistentes",
       "API de integração" not in h and "Exportação de dados" not in h)
 
-cb = novo_cliente("bizz@t.com")
-uidb = A.get_store().get_user_by_email("bizz@t.com")["_id"]
+cb = novo_cliente("bizz@teste.invalid")
+uidb = A.get_store().get_user_by_email("bizz@teste.invalid")["_id"]
 A.get_store().update_user(uidb, {"plan": "business"})
-os.environ["STRIPE_SECRET_KEY"] = "sk_test_x"
-class _FakeStripe: pass
-_orig = A.get_stripe
-A.get_stripe = lambda: _FakeStripe
 r = cb.post("/assinar/business")
 check("checkout de Business e recusado (400)", r.status_code == 400, r.status_code)
-A.get_stripe = _orig
-os.environ.pop("STRIPE_SECRET_KEY", None)
 
 # assinante antigo mantem recibos ilimitados
 criados = sum(1 for i in range(35)
@@ -346,7 +402,7 @@ check("responde 401, nao 500", r.status_code == 401, r.status_code)
 os.environ.pop("CRON_SECRET", None)
 
 print("\n-- Contato do passageiro nao vaza no link publico --")
-cp2 = novo_cliente("vaza@t.com")
+cp2 = novo_cliente("vaza@teste.invalid")
 r = cp2.post("/recibo", data={"passageiro":"Maria","data":"2026-09-12","origem":"A","destino":"B",
     "valor":"45,00","whatsapp_passageiro":"11955554444","email_passageiro":"privado@exemplo.com"})
 rid = r.headers["Location"].split("/recibo/")[1].split("?")[0]
@@ -359,7 +415,7 @@ check("anonimo nao ve o e-mail do passageiro", "privado@exemplo.com" not in anon
 
 
 print("\n-- Limite de tamanho por campo --")
-cl = novo_cliente("tam@t.com")
+cl = novo_cliente("tam@teste.invalid")
 grande = "A" * 5000
 r = cl.post("/recibo", data={"passageiro":grande,"data":"2026-09-12","origem":"A",
     "destino":"B","valor":"10"})
@@ -377,10 +433,10 @@ r = cg2.post("/gerar", data={"passageiro":grande,"data":"2026-09-12","origem":"A
 check("gerador publico tambem recusa (400)", r.status_code == 400, r.status_code)
 
 cc = A.app.test_client()
-r = cc.post("/cadastro", data={"nome_completo":grande,"email":"x@t.com","senha":"senha12345",
+r = cc.post("/cadastro", data={"nome_completo":grande,"email":"x@teste.invalid","senha":"senha12345",
     "whatsapp":"11999998888","cpf":"12345678900","cidade":"SP","placa":"abc1d23"})
 check("cadastro recusa nome gigante (400)", r.status_code == 400, r.status_code)
-check("conta nao foi criada", A.get_store().get_user_by_email("x@t.com") is None)
+check("conta nao foi criada", A.get_store().get_user_by_email("x@teste.invalid") is None)
 
 print("\n-- Limpeza em lotes --")
 store = A.get_store()
@@ -401,42 +457,42 @@ os.environ.pop("CRON_SECRET", None)
 
 
 print("\n-- Edicao de cadastro (/perfil) --")
-cpf_ = novo_cliente("perfil@t.com")
+cpf_ = novo_cliente("perfil@teste.invalid")
 r = cpf_.get("/perfil")
 check("pagina abre para quem esta logado", r.status_code == 200, r.status_code)
-check("vem preenchida com os dados atuais", "perfil@t.com" in r.get_data(as_text=True))
+check("vem preenchida com os dados atuais", "perfil@teste.invalid" in r.get_data(as_text=True))
 check("exige login", A.app.test_client().get("/perfil").status_code == 302)
 
-base = {"nome_completo":"Ana Souza Lima","email":"perfil@t.com","whatsapp":"11988887777",
+base = {"nome_completo":"Ana Souza Lima","email":"perfil@teste.invalid","whatsapp":"11988887777",
         "cpf":"12345678900","cidade":"Santos","placa":"xyz9k88","modelo_veiculo":"Corolla"}
 
 r = cpf_.post("/perfil", data={**base, "senha_atual":"errada"})
 check("senha errada nao salva nada", r.status_code == 401, r.status_code)
 check("dados continuam os antigos",
-      A.get_store().get_user_by_email("perfil@t.com")["city"] == "SP")
+      A.get_store().get_user_by_email("perfil@teste.invalid")["city"] == "SP")
 
 r = cpf_.post("/perfil", data={**base, "senha_atual":"senha12345"})
 check("salva com a senha certa", r.status_code == 302, r.status_code)
-u = A.get_store().get_user_by_email("perfil@t.com")
+u = A.get_store().get_user_by_email("perfil@teste.invalid")
 check("cidade atualizada", u["city"] == "Santos", u["city"])
 check("placa normalizada para maiuscula", u["plate"] == "XYZ9K88", u["plate"])
 check("nome atualizado", u["full_name"] == "Ana Souza Lima")
 
 # e-mail duplicado
-outro = novo_cliente("ocupado@t.com")
-r = cpf_.post("/perfil", data={**base, "email":"ocupado@t.com", "senha_atual":"senha12345"})
+outro = novo_cliente("ocupado@teste.invalid")
+r = cpf_.post("/perfil", data={**base, "email":"ocupado@teste.invalid", "senha_atual":"senha12345"})
 check("recusa e-mail ja usado por outra conta", r.status_code == 409, r.status_code)
 
 # troca de e-mail valida mantem o login funcionando
-r = cpf_.post("/perfil", data={**base, "email":"novo-email@t.com", "senha_atual":"senha12345"})
+r = cpf_.post("/perfil", data={**base, "email":"novo-email@teste.invalid", "senha_atual":"senha12345"})
 check("troca de e-mail e aceita", r.status_code == 302, r.status_code)
-check("e-mail antigo nao acha mais a conta", A.get_store().get_user_by_email("perfil@t.com") is None)
-check("e-mail novo acha a conta", A.get_store().get_user_by_email("novo-email@t.com") is not None)
+check("e-mail antigo nao acha mais a conta", A.get_store().get_user_by_email("perfil@teste.invalid") is None)
+check("e-mail novo acha a conta", A.get_store().get_user_by_email("novo-email@teste.invalid") is not None)
 cnovo = A.app.test_client()
 check("login com o e-mail novo funciona",
-      cnovo.post("/login", data={"email":"novo-email@t.com","senha":"senha12345"}).status_code == 302)
+      cnovo.post("/login", data={"email":"novo-email@teste.invalid","senha":"senha12345"}).status_code == 302)
 
-r = cpf_.post("/perfil", data={**base, "email":"novo-email@t.com", "nome_completo":"A"*5000,
+r = cpf_.post("/perfil", data={**base, "email":"novo-email@teste.invalid", "nome_completo":"A"*5000,
                                "senha_atual":"senha12345"})
 check("campo gigante e recusado", r.status_code == 400, r.status_code)
 
@@ -444,8 +500,8 @@ check("campo gigante e recusado", r.status_code == 400, r.status_code)
 print("\n-- Corrida da cota do plano Gratis --")
 if A.get_store().kind == "postgres":
     import concurrent.futures as _cf
-    cc = novo_cliente("corrida@t.com")
-    uidc = A.get_store().get_user_by_email("corrida@t.com")["_id"]
+    cc = novo_cliente("corrida@teste.invalid")
+    uidc = A.get_store().get_user_by_email("corrida@teste.invalid")["_id"]
     # 28 recibos ja usados no mes
     for i in range(28):
         A.get_store().create_receipt(
@@ -467,13 +523,16 @@ else:
     print("  (pulado: so faz sentido no Postgres)")
 
 print("\n-- rid com 14 digitos --")
-cr2 = novo_cliente("rid@t.com")
+cr2 = novo_cliente("rid@teste.invalid")
 r = cr2.post("/recibo", data={"passageiro":"M","data":"2026-09-12","origem":"A",
                               "destino":"B","valor":"30"})
 rid14 = r.headers["Location"].split("/recibo/")[1].split("?")[0]
 check("rid tem 14 caracteres", len(rid14) == 14, f"{rid14} ({len(rid14)})")
 check("rid e hexadecimal maiusculo", all(c in "0123456789ABCDEF" for c in rid14), rid14)
 
+
+_depois = limpar_contas_de_teste()
+print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")
 
 print("\n" + ("="*50))
 print(f"FALHAS: {len(fails)}" + ("" if not fails else " -> " + ", ".join(fails)))

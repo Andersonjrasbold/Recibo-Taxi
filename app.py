@@ -1,5 +1,6 @@
 import atexit
 import hashlib
+import json
 import hmac
 import os
 import secrets
@@ -26,7 +27,12 @@ from flask import (
 )
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.security import check_password_hash, generate_password_hash
+
+try:
+    from supabase import ClientOptions, create_client
+except ImportError:
+    create_client = None
+    ClientOptions = None
 
 try:
     from dotenv import load_dotenv
@@ -45,11 +51,6 @@ except ImportError:  # só necessário quando DATABASE_URL/SUPABASE_DB_URL exist
     ConnectionPool = None
 
 try:
-    from astrapy import DataAPIClient
-except ImportError:
-    DataAPIClient = None
-
-try:
     import stripe as stripe_lib
 except ImportError:
     stripe_lib = None
@@ -62,9 +63,6 @@ if load_dotenv is not None:
 
 
 APP_NAME = "Recibo Táxi"
-DEFAULT_USERS_COLLECTION = "taxistas"
-DEFAULT_RECEIPTS_COLLECTION = "recibos"
-DEFAULT_COUNTERS_COLLECTION = "contadores"
 
 # Brasil não adota horário de verão desde 2019, então o offset é fixo.
 BR_TZ = timezone(timedelta(hours=-3))
@@ -309,278 +307,7 @@ def get_stripe():
     return stripe_lib
 
 
-# ── Stores ──────────────────────────────────────────────────────────────────
-
-class InMemoryStore:
-    kind = "memory"
-    label = "Modo local"
-
-    def __init__(self) -> None:
-        self.users_by_id: dict[str, dict] = {}
-        self.user_ids_by_email: dict[str, str] = {}
-        self.receipts_by_id: dict[str, dict] = {}
-        self.counters: dict[str, dict] = {}
-        self.quotas: dict[tuple[str, str], int] = {}
-
-    def create_user(self, payload: dict) -> dict:
-        email = payload["email"]
-        if email in self.user_ids_by_email:
-            raise ValueError("Já existe uma conta com este e-mail.")
-        self.users_by_id[payload["_id"]] = dict(payload)
-        self.user_ids_by_email[email] = payload["_id"]
-        return dict(payload)
-
-    def update_user(self, user_id: str, updates: dict) -> None:
-        user = self.users_by_id.get(user_id)
-        if not user:
-            return
-        email_antigo = user.get("email")
-        user.update(updates)
-        email_novo = user.get("email")
-        if email_novo != email_antigo:
-            self.user_ids_by_email.pop(email_antigo, None)
-            self.user_ids_by_email[email_novo] = user_id
-
-    def get_user_by_email(self, email: str) -> dict | None:
-        user_id = self.user_ids_by_email.get(email)
-        if not user_id:
-            return None
-        return dict(self.users_by_id[user_id])
-
-    def get_user_by_id(self, user_id: str | None) -> dict | None:
-        if not user_id:
-            return None
-        user = self.users_by_id.get(user_id)
-        return dict(user) if user else None
-
-    def get_user_by_stripe_customer(self, customer_id: str | None) -> dict | None:
-        if not customer_id:
-            return None
-        for user in self.users_by_id.values():
-            if user.get("stripe_customer_id") == customer_id:
-                return dict(user)
-        return None
-
-    def delete_user(self, user_id: str) -> None:
-        user = self.users_by_id.pop(user_id, None)
-        if user:
-            self.user_ids_by_email.pop(user.get("email"), None)
-
-    def delete_receipts_by_driver(self, driver_id: str) -> None:
-        for rid in [
-            rid for rid, r in self.receipts_by_id.items() if r.get("driver_id") == driver_id
-        ]:
-            del self.receipts_by_id[rid]
-
-    def create_receipt(self, payload: dict, quota_limit: int | None = None) -> dict | None:
-        driver_id = payload.get("driver_id")
-        if quota_limit is not None and driver_id:
-            chave = (driver_id, today_br()[:7])
-            usada = self.quotas.get(chave, 0)
-            if usada >= quota_limit:
-                return None
-            self.quotas[chave] = usada + 1
-        self.receipts_by_id[payload["_id"]] = dict(payload)
-        return dict(payload)
-
-    def get_receipt(self, rid: str) -> dict | None:
-        receipt = self.receipts_by_id.get(rid)
-        return dict(receipt) if receipt else None
-
-    def list_receipts_by_driver(self, driver_id: str, limit: int | None = None) -> list[dict]:
-        receipts = [
-            dict(r)
-            for r in self.receipts_by_id.values()
-            if r.get("driver_id") == driver_id
-        ]
-        receipts.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        return receipts[:limit] if limit is not None else receipts
-
-    def count_receipts_in_range(
-        self, driver_id: str, start_iso: str, end_iso: str, cap: int
-    ) -> int:
-        count = 0
-        for receipt in self.receipts_by_id.values():
-            if receipt.get("driver_id") != driver_id:
-                continue
-            if start_iso <= receipt.get("created_at", "") < end_iso:
-                count += 1
-                if count >= cap:
-                    break
-        return count
-
-    def bump_counter(self, key: str) -> int:
-        entry = self.counters.setdefault(key, {"count": 0, "created_at": now_iso()})
-        entry["count"] += 1
-        return entry["count"]
-
-    def purge_guest_receipts_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
-        stale = [
-            rid
-            for rid, r in self.receipts_by_id.items()
-            if r.get("is_guest") and r.get("created_at", "") < cutoff_iso
-        ]
-        lote = stale[:limit]
-        for rid in lote:
-            del self.receipts_by_id[rid]
-        return len(lote), len(stale) > len(lote)
-
-    def purge_counters_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
-        stale = [k for k, v in self.counters.items() if v.get("created_at", "") < cutoff_iso]
-        lote = stale[:limit]
-        for key in lote:
-            del self.counters[key]
-        return len(lote), len(stale) > len(lote)
-
-
-class AstraStore:
-    kind = "astra"
-    label = "Astra DB"
-
-    def __init__(
-        self,
-        api_endpoint: str,
-        token: str,
-        keyspace: str,
-        users_collection: str,
-        receipts_collection: str,
-        counters_collection: str,
-    ) -> None:
-        if DataAPIClient is None:
-            raise RuntimeError(
-                "A dependência 'astrapy' não está instalada. Rode 'pip install -r requirements.txt'."
-            )
-        self.client = DataAPIClient()
-        self.database = self.client.get_database(
-            api_endpoint, token=token, keyspace=keyspace
-        )
-        self.users_collection_name = users_collection
-        self.receipts_collection_name = receipts_collection
-        self.counters_collection_name = counters_collection
-        self._ensure_collections()
-        self.users = self.database.get_collection(users_collection)
-        self.receipts = self.database.get_collection(receipts_collection)
-        self.counters = self.database.get_collection(counters_collection)
-
-    def _ensure_collections(self) -> None:
-        existing = set(self.database.list_collection_names())
-        for name in (
-            self.users_collection_name,
-            self.receipts_collection_name,
-            self.counters_collection_name,
-        ):
-            if name not in existing:
-                self.database.create_collection(name)
-
-    def create_user(self, payload: dict) -> dict:
-        email = payload["email"]
-        if self.get_user_by_email(email):
-            raise ValueError("Já existe uma conta com este e-mail.")
-        self.users.insert_one(payload)
-        return dict(payload)
-
-    def update_user(self, user_id: str, updates: dict) -> None:
-        self.users.find_one_and_update({"_id": user_id}, {"$set": updates})
-
-    def get_user_by_email(self, email: str) -> dict | None:
-        user = self.users.find_one({"email": email})
-        return dict(user) if user else None
-
-    def get_user_by_id(self, user_id: str | None) -> dict | None:
-        if not user_id:
-            return None
-        user = self.users.find_one({"_id": user_id})
-        return dict(user) if user else None
-
-    def get_user_by_stripe_customer(self, customer_id: str | None) -> dict | None:
-        if not customer_id:
-            return None
-        user = self.users.find_one({"stripe_customer_id": customer_id})
-        return dict(user) if user else None
-
-    def delete_user(self, user_id: str) -> None:
-        self.users.delete_one({"_id": user_id})
-
-    def delete_receipts_by_driver(self, driver_id: str) -> None:
-        self.receipts.delete_many({"driver_id": driver_id})
-
-    def create_receipt(self, payload: dict, quota_limit: int | None = None) -> dict | None:
-        # O Data API não tem transação: aqui a cota continua sendo check-then-insert
-        # e a corrida segue existindo. É um dos motivos da migração para Postgres.
-        if quota_limit is not None and payload.get("driver_id"):
-            inicio, fim = month_range_utc()
-            usados = self.count_receipts_in_range(
-                payload["driver_id"], inicio, fim, quota_limit
-            )
-            if usados >= quota_limit:
-                return None
-        self.receipts.insert_one(payload)
-        return dict(payload)
-
-    def get_receipt(self, rid: str) -> dict | None:
-        receipt = self.receipts.find_one({"_id": rid})
-        return dict(receipt) if receipt else None
-
-    def list_receipts_by_driver(self, driver_id: str, limit: int | None = None) -> list[dict]:
-        receipts = self.receipts.find({"driver_id": driver_id}).to_list()
-        receipts.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        receipts = receipts[:limit] if limit is not None else receipts
-        return [dict(r) for r in receipts]
-
-    def count_receipts_in_range(
-        self, driver_id: str, start_iso: str, end_iso: str, cap: int
-    ) -> int:
-        cursor = self.receipts.find(
-            {
-                "driver_id": driver_id,
-                "created_at": {"$gte": start_iso, "$lt": end_iso},
-            },
-            projection={"_id": True},
-            limit=cap,
-        )
-        return sum(1 for _ in cursor)
-
-    def bump_counter(self, key: str) -> int:
-        """Incremento atômico: dois pedidos simultâneos não se sobrescrevem."""
-        doc = self.counters.find_one_and_update(
-            {"_id": key},
-            {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now_iso()}},
-            upsert=True,
-            return_document="after",
-        )
-        return int((doc or {}).get("count", 1))
-
-    def _purge_in_batches(self, collection, filtro: dict, limit: int) -> tuple[int, bool]:
-        """Apaga no máximo `limit` documentos, em lotes pequenos.
-
-        delete_many sem teto pode varrer um backlog grande e estourar o tempo
-        da função. Os ids vão em blocos porque o operador $in tem limite de
-        tamanho no Data API.
-        """
-        ids = [
-            doc["_id"]
-            for doc in collection.find(filtro, projection={"_id": True}, limit=limit + 1)
-        ]
-        sobrou = len(ids) > limit
-        ids = ids[:limit]
-
-        removidos = 0
-        for i in range(0, len(ids), 100):
-            bloco = ids[i : i + 100]
-            resultado = collection.delete_many({"_id": {"$in": bloco}})
-            removidos += int(getattr(resultado, "deleted_count", 0) or 0) or len(bloco)
-        return removidos, sobrou
-
-    def purge_guest_receipts_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
-        return self._purge_in_batches(
-            self.receipts, {"is_guest": True, "created_at": {"$lt": cutoff_iso}}, limit
-        )
-
-    def purge_counters_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
-        return self._purge_in_batches(
-            self.counters, {"created_at": {"$lt": cutoff_iso}}, limit
-        )
-
+# ── Store ───────────────────────────────────────────────────────────────────
 
 class PostgresStore:
     """Store em Postgres (Supabase).
@@ -595,7 +322,7 @@ class PostgresStore:
 
     # Colunas do motorista, já com o alias que o app espera.
     _DRIVER_COLS = """
-        id as _id, email, password_hash, password_changed_at, full_name, cpf,
+        id as _id, email, password_changed_at, full_name, cpf,
         whatsapp, city, plate, vehicle_model, taxi_prefix, license_number,
         plan, stripe_customer_id, stripe_subscription_id, subscription_status,
         created_at, updated_at
@@ -658,29 +385,15 @@ class PostgresStore:
         return out
 
     # ── motoristas ──────────────────────────────────────────────────────────
-    def create_user(self, payload: dict) -> dict:
-        with self.pool.connection() as conn:
-            try:
-                row = conn.execute(
-                    f"""insert into public.drivers
-                        (email, password_hash, full_name, cpf, whatsapp, city,
-                         plate, vehicle_model, taxi_prefix, license_number, plan)
-                        values (%(email)s, %(password_hash)s, %(full_name)s, %(cpf)s,
-                                %(whatsapp)s, %(city)s, %(plate)s, %(vehicle_model)s,
-                                %(taxi_prefix)s, %(license_number)s, %(plan)s)
-                        returning {self._DRIVER_COLS}""",
-                    payload,
-                ).fetchone()
-            except psycopg.errors.UniqueViolation as exc:
-                raise ValueError("Já existe uma conta com este e-mail.") from exc
-        return self._driver_out(row)
+    # Não há create_user: o perfil nasce do trigger on_auth_user_created
+    # quando o usuário é criado no Supabase Auth.
 
     def update_user(self, user_id: str, updates: dict) -> None:
         if not updates:
             return
         # Só colunas conhecidas entram no UPDATE.
         permitidas = {
-            "email", "password_hash", "password_changed_at", "full_name", "cpf",
+            "email", "password_changed_at", "full_name", "cpf",
             "whatsapp", "city", "plate", "vehicle_model", "taxi_prefix",
             "license_number", "plan", "stripe_customer_id",
             "stripe_subscription_id", "subscription_status",
@@ -861,47 +574,18 @@ def get_store():
     if _STORE is not None:
         return _STORE
 
-    # Postgres tem prioridade: é para onde a migração está indo.
-    # SUPABASE_DB_URL vence DATABASE_URL, para produção não cair no banco local.
+    # SUPABASE_DB_URL vence DATABASE_URL para produção não cair no banco local.
     dsn = (
         os.environ.get("SUPABASE_DB_URL", "").strip()
         or os.environ.get("DATABASE_URL", "").strip()
     )
-    if dsn:
-        _STORE = PostgresStore(dsn)
-        return _STORE
-
-    api_endpoint = os.environ.get("ASTRA_DB_API_ENDPOINT", "").strip()
-    token = os.environ.get("ASTRA_DB_APPLICATION_TOKEN", "").strip()
-    keyspace = os.environ.get("ASTRA_DB_KEYSPACE", "default_keyspace").strip()
-    users_col = os.environ.get("ASTRA_DB_COLLECTION_USERS", DEFAULT_USERS_COLLECTION).strip()
-    receipts_col = os.environ.get("ASTRA_DB_COLLECTION_RECEIPTS", DEFAULT_RECEIPTS_COLLECTION).strip()
-    counters_col = os.environ.get("ASTRA_DB_COLLECTION_COUNTERS", DEFAULT_COUNTERS_COLLECTION).strip()
-
-    if not api_endpoint and not token:
-        # Em produção o modo em memória perderia tudo a cada invocação da
-        # função serverless, e o único sinal seria o badge da navbar.
-        if os.environ.get("VERCEL"):
-            raise RuntimeError(
-                "Astra DB não configurado. Defina ASTRA_DB_API_ENDPOINT e "
-                "ASTRA_DB_APPLICATION_TOKEN — sem eles os dados não persistem."
-            )
-        _STORE = InMemoryStore()
-        return _STORE
-
-    if not api_endpoint or not token:
+    if not dsn:
         raise RuntimeError(
-            "Configuração Astra DB incompleta. Defina ASTRA_DB_API_ENDPOINT e ASTRA_DB_APPLICATION_TOKEN."
+            "Nenhum banco configurado. Defina SUPABASE_DB_URL (produção) ou "
+            "DATABASE_URL (desenvolvimento) — sem um deles os dados não persistem."
         )
 
-    _STORE = AstraStore(
-        api_endpoint=api_endpoint,
-        token=token,
-        keyspace=keyspace,
-        users_collection=users_col,
-        receipts_collection=receipts_col,
-        counters_collection=counters_col,
-    )
+    _STORE = PostgresStore(dsn)
     return _STORE
 
 
@@ -926,6 +610,124 @@ app.config.update(
     # Nenhum formulário do app precisa de mais que isto.
     MAX_CONTENT_LENGTH=1 * 1024 * 1024,
 )
+
+
+# ── Supabase Auth ────────────────────────────────────────────────────────────
+#
+# A senha vive no Supabase Auth; `drivers` é só o perfil, ligado por chave
+# estrangeira. A sessão do Flask continua sendo a fonte da verdade de "quem
+# está logado" — ela já é assinada pela SECRET_KEY. Assim uma página comum não
+# paga ida à rede: só cadastro, login e troca de senha falam com o Auth.
+
+_ADMIN_CLIENT = None
+
+
+def supabase_admin():
+    """Client com a chave de serviço. Ignora RLS — nunca exponha em template.
+
+    Fica em cache de módulo porque nunca carrega sessão de usuário. Um client
+    que faz sign_in muta os próprios headers e vazaria a sessão de um usuário
+    para o request de outro; este não faz.
+    """
+    global _ADMIN_CLIENT
+    if _ADMIN_CLIENT is not None:
+        return _ADMIN_CLIENT
+
+    if create_client is None:
+        raise RuntimeError(
+            "A dependência 'supabase' não está instalada. "
+            "Rode 'pip install -r requirements.txt'."
+        )
+
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY", "").strip()
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    )
+    if not url or not key:
+        raise RuntimeError(
+            "Defina SUPABASE_URL e SUPABASE_SECRET_KEY para a autenticação funcionar."
+        )
+
+    # auto_refresh_token cria threading.Timer de renovação; numa função
+    # serverless a thread fica pendurada sem servir para nada.
+    _ADMIN_CLIENT = create_client(
+        url, key, options=ClientOptions(auto_refresh_token=False, persist_session=False)
+    )
+    return _ADMIN_CLIENT
+
+
+def supabase_public():
+    """Client novo a cada uso, com a chave pública.
+
+    Novo de propósito: sign_in_with_password muta os headers do objeto, então
+    um client compartilhado entregaria a sessão de um usuário a outro.
+    """
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()
+    if not url or not key:
+        raise RuntimeError("Defina SUPABASE_URL e SUPABASE_PUBLISHABLE_KEY.")
+    return create_client(
+        url, key, options=ClientOptions(auto_refresh_token=False, persist_session=False)
+    )
+
+
+def auth_criar_usuario(email: str, password: str, metadata: dict) -> str:
+    """Cria o usuário já confirmado e devolve o id.
+
+    Usa a admin API em vez de sign_up por dois motivos: não dispara e-mail de
+    confirmação (o fluxo do app loga direto após o cadastro) e não passa pelo
+    limite de 30 cadastros a cada 5 minutos por IP.
+
+    O perfil em `drivers` nasce pelo trigger on_auth_user_created.
+    """
+    try:
+        resposta = supabase_admin().auth.admin.create_user(
+            {
+                "email": email,
+                "password": password,
+                "email_confirm": True,
+                "user_metadata": metadata,
+            }
+        )
+    except Exception as exc:
+        texto = str(exc).lower()
+        if "already" in texto or "registered" in texto or "exists" in texto:
+            raise ValueError("Já existe uma conta com este e-mail.") from exc
+        app.logger.error("Falha ao criar usuário no Auth: %s", exc)
+        raise RuntimeError("Não foi possível criar a conta agora.") from exc
+
+    if not resposta or not resposta.user:
+        raise RuntimeError("Não foi possível criar a conta agora.")
+    return str(resposta.user.id)
+
+
+def auth_conferir_senha(email: str, password: str) -> str | None:
+    """Devolve o id do usuário se a senha confere, ou None."""
+    if not email or not password:
+        return None
+    try:
+        resposta = supabase_public().auth.sign_in_with_password(
+            {"email": email, "password": password}
+        )
+    except Exception:
+        return None  # credencial inválida é o caso comum; não faz log
+    return str(resposta.user.id) if resposta and resposta.user else None
+
+
+def auth_definir_senha(user_id: str, password: str) -> None:
+    supabase_admin().auth.admin.update_user_by_id(user_id, {"password": password})
+
+
+def auth_definir_email(user_id: str, email: str) -> None:
+    supabase_admin().auth.admin.update_user_by_id(
+        user_id, {"email": email, "email_confirm": True}
+    )
+
+
+def auth_excluir_usuario(user_id: str) -> None:
+    """Apaga no Auth. O cascade leva perfil, recibos e cotas junto."""
+    supabase_admin().auth.admin.delete_user(user_id)
 
 
 # ── E-mail transacional ──────────────────────────────────────────────────────
@@ -972,15 +774,20 @@ def send_email(to_address: str, subject: str, body: str) -> bool:
 
 # ── Token de redefinição de senha ────────────────────────────────────────────
 
-def _password_fingerprint(password_hash: str) -> str:
-    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:16]
+def _password_fingerprint(user: dict) -> str:
+    """Digital que muda quando a senha muda.
+
+    Antes vinha do hash da senha, que morava aqui. Agora a senha vive no
+    Supabase Auth, então a marca é o password_changed_at — atualizado toda vez
+    que a senha é trocada. Continua garantindo token de uso único.
+    """
+    marca = (user.get("password_changed_at") or "") + "|" + str(user.get("_id", ""))
+    return hashlib.sha256(marca.encode("utf-8")).hexdigest()[:16]
 
 
 def build_reset_token(user: dict) -> str:
     serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt=RESET_TOKEN_SALT)
-    return serializer.dumps(
-        {"uid": user["_id"], "fp": _password_fingerprint(user["password_hash"])}
-    )
+    return serializer.dumps({"uid": user["_id"], "fp": _password_fingerprint(user)})
 
 
 def load_reset_token(token: str) -> dict | None:
@@ -995,8 +802,8 @@ def load_reset_token(token: str) -> dict | None:
     if not user:
         return None
 
-    # A digital vem do hash da senha atual: trocar a senha invalida o token.
-    expected = _password_fingerprint(user["password_hash"])
+    # A digital vem do password_changed_at: trocar a senha invalida o token.
+    expected = _password_fingerprint(user)
     if not hmac.compare_digest(expected, str(data.get("fp", ""))):
         return None
     return user
@@ -1098,8 +905,9 @@ def login():
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
         password = request.form.get("senha", "")
-        user = get_store().get_user_by_email(email)
-        if not user or not check_password_hash(user["password_hash"], password):
+        user_id = auth_conferir_senha(email, password)
+        user = get_store().get_user_by_id(user_id) if user_id else None
+        if not user:
             flash("E-mail ou senha inválidos.", "danger")
             return render_template("login.html", form=request.form), 401
         session["user_id"] = user["_id"]
@@ -1140,30 +948,32 @@ def cadastro():
             flash("A senha precisa ter pelo menos 8 caracteres.", "danger")
             return render_template("register.html", form=request.form), 400
 
-        payload = {
-            "_id": uuid4().hex,
-            "full_name": full_name,
-            "email": email,
-            "password_hash": generate_password_hash(password),
-            "whatsapp": whatsapp,
-            "cpf": cpf,
-            "city": city,
-            "plate": plate,
-            "vehicle_model": vehicle_model,
-            "taxi_prefix": taxi_prefix,
-            "license_number": license_number,
-            "plan": "free",
-            "created_at": now_iso(),
-        }
-
+        # O usuário nasce no Supabase Auth; o trigger on_auth_user_created
+        # cria o perfil em `drivers` a partir deste metadata.
         try:
-            created_user = get_store().create_user(payload)
+            user_id = auth_criar_usuario(
+                email,
+                password,
+                {
+                    "full_name": full_name,
+                    "cpf": cpf,
+                    "whatsapp": whatsapp,
+                    "city": city,
+                    "plate": plate,
+                    "vehicle_model": vehicle_model,
+                    "taxi_prefix": taxi_prefix,
+                    "license_number": license_number,
+                },
+            )
         except ValueError as exc:
             flash(str(exc), "danger")
             return render_template("register.html", form=request.form), 409
+        except RuntimeError as exc:
+            flash(str(exc), "danger")
+            return render_template("register.html", form=request.form), 503
 
-        session["user_id"] = created_user["_id"]
-        session["pw_stamp"] = created_user.get("password_changed_at") or ""
+        session["user_id"] = user_id
+        session["pw_stamp"] = ""
         flash("Conta criada! Já pode emitir e salvar seus recibos.", "success")
         return redirect(url_for("dashboard"))
 
@@ -1231,13 +1041,10 @@ def redefinir_senha(token: str):
             flash("As senhas não conferem.", "danger")
             return render_template("redefinir_senha.html", token=token), 400
 
-        get_store().update_user(
-            user["_id"],
-            {
-                "password_hash": generate_password_hash(password),
-                "password_changed_at": now_iso(),
-            },
-        )
+        # A senha vai para o Auth; o carimbo fica no perfil e é o que derruba
+        # as outras sessões e invalida este mesmo token.
+        auth_definir_senha(user["_id"], password)
+        get_store().update_user(user["_id"], {"password_changed_at": now_iso()})
         session.clear()
         flash("Senha redefinida! Entre com a nova senha.", "success")
         return redirect(url_for("login"))
@@ -1257,7 +1064,7 @@ def perfil():
 
         # Alterar dados da conta pede a senha atual: sem isso, uma sessão
         # sequestrada trocaria o e-mail e tomaria a conta em silêncio.
-        if not check_password_hash(g.user["password_hash"], request.form.get("senha_atual", "")):
+        if not auth_conferir_senha(g.user["email"], request.form.get("senha_atual", "")):
             flash("Senha incorreta. Nenhuma alteração foi salva.", "danger")
             return render_template("perfil.html", form=request.form), 401
 
@@ -1277,6 +1084,14 @@ def perfil():
             if existente and existente["_id"] != g.user["_id"]:
                 flash("Já existe uma conta com este e-mail.", "danger")
                 return render_template("perfil.html", form=request.form), 409
+            # O e-mail é o login: tem de mudar no Auth também, senão o
+            # usuário salvaria o perfil e não conseguiria mais entrar.
+            try:
+                auth_definir_email(g.user["_id"], email)
+            except Exception as exc:
+                app.logger.error("Falha ao trocar o e-mail no Auth: %s", exc)
+                flash("Não conseguimos alterar o e-mail agora. Tente mais tarde.", "danger")
+                return render_template("perfil.html", form=request.form), 503
 
         get_store().update_user(
             g.user["_id"],
@@ -1306,7 +1121,7 @@ def excluir_conta():
         flash('Digite EXCLUIR para confirmar a remoção da conta.', "danger")
         return redirect(url_for("dashboard"))
 
-    if not check_password_hash(g.user["password_hash"], request.form.get("senha", "")):
+    if not auth_conferir_senha(g.user["email"], request.form.get("senha", "")):
         flash("Senha incorreta. A conta não foi excluída.", "danger")
         return redirect(url_for("dashboard"))
 
@@ -1335,9 +1150,8 @@ def excluir_conta():
             )
             return redirect(url_for("dashboard"))
 
-    store = get_store()
-    store.delete_receipts_by_driver(g.user["_id"])
-    store.delete_user(g.user["_id"])
+    # Apagar no Auth basta: o cascade leva perfil, recibos e cotas.
+    auth_excluir_usuario(g.user["_id"])
     session.clear()
 
     flash(
@@ -1682,15 +1496,20 @@ def stripe_webhook():
     sig = request.headers.get("Stripe-Signature", "")
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
 
+    # construct_event só para validar a assinatura: o retorno é um StripeObject,
+    # que não tem .get() e mudou de formato entre versões do SDK. O corpo já
+    # chegou como JSON — tratá-lo como dict puro é estável e suficiente.
     try:
-        event = stripe.Webhook.construct_event(payload, sig, secret)
+        stripe.Webhook.construct_event(payload, sig, secret)
+        evento = json.loads(payload)
     except Exception:
         abort(400)
 
-    obj = event["data"]["object"]
+    obj = evento.get("data", {}).get("object") or {}
+    tipo = evento.get("type", "")
     store = get_store()
 
-    if event["type"] == "checkout.session.completed":
+    if tipo == "checkout.session.completed":
         user_id = obj.get("metadata", {}).get("user_id")
         plan = obj.get("metadata", {}).get("plan", "pro")
         if user_id:
@@ -1701,7 +1520,7 @@ def stripe_webhook():
                 "subscription_status": "active",
             })
 
-    elif event["type"] == "customer.subscription.deleted":
+    elif tipo == "customer.subscription.deleted":
         user = store.get_user_by_stripe_customer(obj.get("customer"))
         if user:
             store.update_user(user["_id"], {
@@ -1710,7 +1529,7 @@ def stripe_webhook():
                 "subscription_status": "canceled",
             })
 
-    elif event["type"] == "customer.subscription.updated":
+    elif tipo == "customer.subscription.updated":
         user = store.get_user_by_stripe_customer(obj.get("customer"))
         if user:
             status = obj.get("status") or "inactive"

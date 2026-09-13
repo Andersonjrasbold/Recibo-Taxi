@@ -4,4 +4,4 @@ qrcode==7.4.2
 stripe>=8.0.0
 python-dotenv>=1.0.0
 psycopg[binary,pool]>=3.2,<4
-astrapy>=2.0.0,<3.0.0
+supabase==2.31.0

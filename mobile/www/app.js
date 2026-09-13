@@ -1,0 +1,383 @@
+/* Recibo Táxi — app offline-first.
+ *
+ * A regra que organiza tudo: emitir recibo NUNCA depende de rede. O aparelho
+ * gera o rid, monta o recibo e guarda local. A sincronização é um detalhe que
+ * acontece depois — e, se falhar, tenta de novo sem duplicar nada, porque o
+ * servidor trata o mesmo rid como o mesmo recibo.
+ */
+
+const API = (location.protocol === 'capacitor:' || location.hostname === 'localhost')
+  ? 'https://recibo-taxi.vercel.app'
+  : '';
+
+const RID_TAMANHO = 14;
+
+// Plugins nativos do Capacitor. No navegador não existem, e tudo tem
+// alternativa — o app roda igual nos dois lugares.
+const P = () => (window.Capacitor && window.Capacitor.Plugins) || {};
+const nativo = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+async function temRede() {
+  const net = P().Network;
+  if (net) {
+    try { return (await net.getStatus()).connected; } catch {}
+  }
+  return navigator.onLine;
+}
+
+function vibrar(estilo = 'MEDIUM') {
+  try { P().Haptics?.impact({ style: estilo }); } catch {}
+}
+
+// ── Armazenamento ──────────────────────────────────────────────────────────
+const Guardado = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch {} },
+};
+
+function abrirBanco() {
+  return new Promise((ok, falha) => {
+    const req = indexedDB.open('recibo-taxi', 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('recibos')) {
+        const loja = db.createObjectStore('recibos', { keyPath: 'rid' });
+        loja.createIndex('pendente', 'pendente');
+      }
+    };
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => falha(req.error);
+  });
+}
+
+async function salvarRecibo(recibo) {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const tx = db.transaction('recibos', 'readwrite');
+    tx.objectStore('recibos').put(recibo);
+    tx.oncomplete = () => ok(recibo);
+    tx.onerror = () => falha(tx.error);
+  });
+}
+
+async function listarRecibos() {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const req = db.transaction('recibos', 'readonly').objectStore('recibos').getAll();
+    req.onsuccess = () => ok(req.result.sort((a, b) => b.criado_em.localeCompare(a.criado_em)));
+    req.onerror = () => falha(req.error);
+  });
+}
+
+const pendentes = async () => (await listarRecibos()).filter((r) => r.pendente);
+
+// ── Identificador ──────────────────────────────────────────────────────────
+function novoRid() {
+  // 14 dígitos hex = 2^56. Gerado aqui, não no servidor: é o que permite
+  // emitir sem rede e reenviar sem risco de duplicar.
+  const bytes = new Uint8Array(7);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+// ── Rede ───────────────────────────────────────────────────────────────────
+const token = () => Guardado.get('access_token');
+
+async function api(caminho, opcoes = {}) {
+  const resp = await fetch(API + caminho, {
+    ...opcoes,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
+      ...(opcoes.headers || {}),
+    },
+  });
+  return resp;
+}
+
+async function sincronizar() {
+  if (!(await temRede()) || !token()) {
+    return { enviados: 0, restantes: (await pendentes()).length };
+  }
+
+  let enviados = 0;
+  for (const recibo of await pendentes()) {
+    try {
+      const resp = await api('/api/recibos', {
+        method: 'POST',
+        body: JSON.stringify(recibo.dados),
+      });
+      if (resp.status === 201 || resp.status === 200) {
+        // 200 = o servidor já tinha este rid. Reenvio, não recibo novo.
+        const corpo = await resp.json();
+        await salvarRecibo({ ...recibo, pendente: false, url: corpo.url });
+        enviados++;
+      } else if (resp.status === 402) {
+        // Cota do mês acabou: para de tentar, senão fica em laço.
+        await salvarRecibo({ ...recibo, pendente: false, recusado: 'limite_mensal' });
+      } else if (resp.status === 400 || resp.status === 409) {
+        await salvarRecibo({ ...recibo, pendente: false, recusado: (await resp.json()).erro });
+      } else if (resp.status === 401) {
+        break; // sessão expirou; o próximo login reenvia
+      }
+    } catch {
+      break; // sem rede de verdade: tenta na próxima
+    }
+  }
+  return { enviados, restantes: (await pendentes()).length };
+}
+
+// ── Telas ──────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const telas = ['tela-login', 'tela-cadastro', 'tela-emitir', 'tela-recibo', 'tela-historico'];
+function mostrar(qual) {
+  telas.forEach((t) => { $(t).hidden = t !== qual; });
+  window.scrollTo(0, 0);
+}
+
+function formatarBR(iso) {
+  if (!iso) return '-';
+  const [a, m, d] = iso.split('-');
+  return d && m && a ? `${d}/${m}/${a}` : iso;
+}
+
+function montarRecibo(recibo) {
+  const d = recibo.dados, m = recibo.motorista || {};
+  return `
+    <div class="recibo-topo">
+      <span class="recibo-rotulo">Recibo</span>
+      <span class="recibo-id">#${recibo.rid}</span>
+    </div>
+    <div class="recibo-valor">R$ ${d.valor_exibido}</div>
+    <dl class="recibo-dados">
+      <dt>Passageiro</dt><dd>${d.passageiro}</dd>
+      <dt>Data</dt><dd>${formatarBR(d.data)}${d.hora ? ' às ' + d.hora : ''}</dd>
+      <dt>Origem</dt><dd>${d.origem}</dd>
+      <dt>Destino</dt><dd>${d.destino}</dd>
+      <dt>Pagamento</dt><dd>${d.forma_pagamento}</dd>
+      <dt>Motorista</dt><dd>${m.full_name || ''}</dd>
+      <dt>Placa</dt><dd>${m.plate || ''}</dd>
+    </dl>
+    <p class="recibo-estado">
+      ${recibo.pendente ? '⏳ Aguardando sinal para sincronizar' : '✓ Sincronizado'}
+    </p>`;
+}
+
+function textoParaCompartilhar(recibo) {
+  const d = recibo.dados;
+  const linhas = [
+    `✅ Recibo #${recibo.rid}`,
+    `👤 Passageiro: ${d.passageiro}`,
+    `📅 Data: ${formatarBR(d.data)}`,
+    `📍 Origem: ${d.origem}`,
+    `🏁 Destino: ${d.destino}`,
+    `💰 Valor: R$ ${d.valor_exibido}`,
+    `💳 Pagamento: ${d.forma_pagamento}`,
+  ];
+  if (recibo.url) linhas.push('', `🔗 ${recibo.url}`);
+  return linhas.join('\n');
+}
+
+async function atualizarAvisoFila() {
+  const n = (await pendentes()).length;
+  const aviso = $('aviso-fila');
+  aviso.hidden = n === 0;
+  if (n) aviso.textContent = `${n} recibo(s) aguardando sinal. Serão enviados sozinhos.`;
+  const rede = $('rede');
+  rede.hidden = await temRede();
+  rede.textContent = 'sem sinal';
+}
+
+// ── Ações ──────────────────────────────────────────────────────────────────
+$('form-login').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const erro = $('erro-login');
+  erro.hidden = true;
+  try {
+    const resp = await api('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: $('email').value, senha: $('senha').value }),
+    });
+    if (!resp.ok) { erro.textContent = 'E-mail ou senha inválidos.'; erro.hidden = false; return; }
+    const t = await resp.json();
+    Guardado.set('access_token', t.access_token);
+    const sessao = await (await api('/api/sessao')).json();
+    Guardado.set('motorista', sessao.motorista);
+    await iniciar();
+  } catch {
+    erro.textContent = 'Sem conexão. Tente de novo quando tiver sinal.';
+    erro.hidden = false;
+  }
+});
+
+$('btn-ir-cadastro').addEventListener('click', () => mostrar('tela-cadastro'));
+$('btn-ir-login').addEventListener('click', () => mostrar('tela-login'));
+
+$('form-cadastro').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const erro = $('erro-cadastro');
+  erro.hidden = true;
+
+  const corpo = {
+    nome_completo: $('c-nome').value.trim(),
+    email: $('c-email').value.trim(),
+    senha: $('c-senha').value,
+    whatsapp: $('c-whats').value.trim(),
+    cpf: $('c-cpf').value.trim(),
+    cidade: $('c-cidade').value.trim(),
+    placa: $('c-placa').value.trim(),
+    modelo_veiculo: $('c-modelo').value.trim(),
+  };
+
+  const mensagens = {
+    email_em_uso: 'Já existe uma conta com este e-mail.',
+    senha_curta: 'A senha precisa ter pelo menos 8 caracteres.',
+    campos_obrigatorios: 'Preencha todos os campos marcados com *.',
+    campo_longo: 'Um dos campos ficou longo demais.',
+    indisponivel: 'Serviço indisponível agora. Tente em instantes.',
+  };
+
+  try {
+    const resp = await api('/api/cadastro', { method: 'POST', body: JSON.stringify(corpo) });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      erro.textContent = mensagens[e.erro] || 'Não foi possível criar a conta.';
+      erro.hidden = false;
+      return;
+    }
+    Guardado.set('access_token', (await resp.json()).access_token);
+    const sessao = await (await api('/api/sessao')).json();
+    Guardado.set('motorista', sessao.motorista);
+    vibrar('HEAVY');
+    await iniciar();
+  } catch {
+    // Cadastro é a única coisa que exige rede: sem conta não há o que emitir.
+    erro.textContent = 'Sem conexão. O cadastro precisa de internet — depois o app funciona offline.';
+    erro.hidden = false;
+  }
+});
+
+$('form-recibo').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const valor = $('valor').value.trim();
+  const rid = novoRid();
+  const recibo = {
+    rid,
+    criado_em: new Date().toISOString(),
+    pendente: true,
+    motorista: Guardado.get('motorista') || {},
+    dados: {
+      rid,
+      passageiro: $('passageiro').value.trim(),
+      data: $('data').value,
+      hora: $('hora').value,
+      origem: $('origem').value.trim(),
+      destino: $('destino').value.trim(),
+      valor,
+      valor_exibido: valor.replace('.', ','),
+      data_exibida: formatarBR($('data').value),
+      observacoes: '',
+      forma_pagamento: $('forma').value,
+      whatsapp_passageiro: $('whats').value.trim(),
+    },
+  };
+
+  await salvarRecibo(recibo);        // primeiro guarda, depois tenta enviar
+  vibrar('HEAVY');
+  $('form-recibo').reset();
+  $('data').value = new Date().toISOString().slice(0, 10);
+
+  $('recibo').innerHTML = montarRecibo(recibo);
+  $('btn-compartilhar').dataset.rid = rid;
+  mostrar('tela-recibo');
+
+  sincronizar().then(async () => {
+    const atual = (await listarRecibos()).find((r) => r.rid === rid);
+    if (atual) $('recibo').innerHTML = montarRecibo(atual);
+  });
+});
+
+$('btn-compartilhar').addEventListener('click', async () => {
+  const rid = $('btn-compartilhar').dataset.rid;
+  const recibo = (await listarRecibos()).find((r) => r.rid === rid);
+  if (!recibo) return;
+  vibrar();
+
+  const texto = textoParaCompartilhar(recibo);
+  const { Share, Filesystem } = P();
+
+  // No aparelho, manda o PDF junto: o passageiro recebe um documento, não um
+  // texto solto — e funciona mesmo sem sinal, porque o PDF é gerado local.
+  if (Share && Filesystem) {
+    try {
+      const nomeArquivo = `recibo-${rid}.pdf`;
+      const escrito = await Filesystem.writeFile({
+        path: nomeArquivo,
+        data: pdfDoRecibo(recibo),
+        directory: 'CACHE',
+      });
+      await Share.share({
+        title: `Recibo #${rid}`,
+        text: texto,
+        files: [escrito.uri],
+        dialogTitle: 'Enviar recibo',
+      });
+      return;
+    } catch (e) {
+      // PDF falhou: cai para texto puro em vez de deixar o motorista na mão.
+    }
+  }
+
+  if (Share) { await Share.share({ title: `Recibo #${rid}`, text: texto }); return; }
+  if (navigator.share) { await navigator.share({ title: `Recibo #${rid}`, text: texto }); return; }
+
+  const fone = (recibo.dados.whatsapp_passageiro || '').replace(/\D/g, '');
+  window.open(`https://wa.me/${fone}?text=${encodeURIComponent(texto)}`, '_blank');
+});
+
+$('btn-novo').addEventListener('click', () => { atualizarAvisoFila(); mostrar('tela-emitir'); });
+$('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
+$('btn-sair').addEventListener('click', () => {
+  Guardado.del('access_token'); Guardado.del('motorista'); mostrar('tela-login');
+});
+
+$('btn-historico').addEventListener('click', async () => {
+  const lista = await listarRecibos();
+  $('lista-historico').innerHTML = lista.length
+    ? lista.map((r) => `
+        <div class="item">
+          <div>
+            <strong>${r.dados.passageiro}</strong>
+            <small>${formatarBR(r.dados.data)} · ${r.dados.origem} → ${r.dados.destino}</small>
+          </div>
+          <div class="item-direita">
+            <span class="item-valor">R$ ${r.dados.valor_exibido}</span>
+            <small>${r.pendente ? '⏳ na fila' : r.recusado ? '⚠ ' + r.recusado : '✓ enviado'}</small>
+          </div>
+        </div>`).join('')
+    : '<p class="ajuda">Nenhum recibo ainda.</p>';
+  mostrar('tela-historico');
+});
+
+window.addEventListener('online', async () => { await sincronizar(); atualizarAvisoFila(); });
+window.addEventListener('offline', atualizarAvisoFila);
+
+// No aparelho o evento do plugin é mais confiável que o do navegador.
+if (P().Network) {
+  P().Network.addListener('networkStatusChange', async (st) => {
+    if (st.connected) await sincronizar();
+    atualizarAvisoFila();
+  });
+}
+
+// ── Início ─────────────────────────────────────────────────────────────────
+async function iniciar() {
+  $('data').value = new Date().toISOString().slice(0, 10);
+  if (!token()) { mostrar('tela-login'); return; }
+  mostrar('tela-emitir');
+  await atualizarAvisoFila();
+  sincronizar().then(atualizarAvisoFila);
+}
+
+iniciar();

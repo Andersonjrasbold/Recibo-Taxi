@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Recibo Táxi</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="barra">
+  <span class="marca">Recibo Táxi</span>
+  <span id="rede" class="pilula" hidden></span>
+</header>
+
+<!-- ── Login ───────────────────────────────────────────────────────────── -->
+<section id="tela-login" class="tela" hidden>
+  <h1>Entrar</h1>
+  <p class="ajuda">Você precisa entrar uma vez. Depois o app funciona sem sinal.</p>
+  <form id="form-login">
+    <label for="email">E-mail</label>
+    <input type="email" id="email" autocomplete="email" required>
+    <label for="senha">Senha</label>
+    <input type="password" id="senha" autocomplete="current-password" required>
+    <button type="submit" class="primario">Entrar</button>
+    <p id="erro-login" class="erro" hidden></p>
+  </form>
+  <div class="rodape-tela">
+    <button id="btn-ir-cadastro" class="texto">Não tem conta? Criar agora</button>
+  </div>
+</section>
+
+<!-- ── Cadastro ────────────────────────────────────────────────────────── -->
+<section id="tela-cadastro" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Criar conta</h1>
+    <button id="btn-ir-login" class="texto">Já tenho</button>
+  </div>
+  <form id="form-cadastro">
+    <label for="c-nome">Nome completo *</label>
+    <input type="text" id="c-nome" maxlength="120" autocomplete="name" required>
+
+    <label for="c-email">E-mail *</label>
+    <input type="email" id="c-email" autocomplete="email" required>
+
+    <label for="c-senha">Senha * <span class="ajuda">(mínimo 8 caracteres)</span></label>
+    <input type="password" id="c-senha" minlength="8" autocomplete="new-password" required>
+
+    <div class="linha">
+      <div>
+        <label for="c-whats">WhatsApp *</label>
+        <input type="tel" id="c-whats" inputmode="numeric" maxlength="20" required>
+      </div>
+      <div>
+        <label for="c-cpf">CPF *</label>
+        <input type="text" id="c-cpf" inputmode="numeric" maxlength="14" required>
+      </div>
+    </div>
+
+    <div class="linha">
+      <div>
+        <label for="c-cidade">Cidade *</label>
+        <input type="text" id="c-cidade" maxlength="80" required>
+      </div>
+      <div>
+        <label for="c-placa">Placa *</label>
+        <input type="text" id="c-placa" maxlength="10" autocapitalize="characters" required>
+      </div>
+    </div>
+
+    <label for="c-modelo">Modelo do veículo</label>
+    <input type="text" id="c-modelo" maxlength="80">
+
+    <button type="submit" class="primario">Criar conta</button>
+    <p id="erro-cadastro" class="erro" hidden></p>
+    <p class="ajuda" style="margin-top:1rem">
+      Ao criar a conta você concorda com os Termos de Uso e a Política de Privacidade.
+    </p>
+  </form>
+</section>
+
+<!-- ── Emitir ──────────────────────────────────────────────────────────── -->
+<section id="tela-emitir" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Novo recibo</h1>
+    <button id="btn-sair" class="texto">Sair</button>
+  </div>
+
+  <div id="aviso-fila" class="aviso" hidden></div>
+
+  <form id="form-recibo">
+    <label for="passageiro">Passageiro *</label>
+    <input type="text" id="passageiro" maxlength="120" required>
+
+    <div class="linha">
+      <div>
+        <label for="data">Data *</label>
+        <input type="date" id="data" required>
+      </div>
+      <div>
+        <label for="hora">Hora</label>
+        <input type="time" id="hora">
+      </div>
+    </div>
+
+    <label for="origem">Origem *</label>
+    <input type="text" id="origem" maxlength="200" required>
+
+    <label for="destino">Destino *</label>
+    <input type="text" id="destino" maxlength="200" required>
+
+    <div class="linha">
+      <div>
+        <label for="valor">Valor *</label>
+        <input type="text" id="valor" inputmode="decimal" placeholder="45,00" required>
+      </div>
+      <div>
+        <label for="forma">Pagamento</label>
+        <select id="forma">
+          <option>Pix</option><option>Dinheiro</option>
+          <option>Cartão</option><option>Aplicativo</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="whats">WhatsApp do passageiro</label>
+    <input type="tel" id="whats" inputmode="numeric" maxlength="20">
+
+    <button type="submit" class="primario">Gerar recibo</button>
+  </form>
+
+  <div class="rodape-tela">
+    <button id="btn-historico" class="texto">Ver histórico</button>
+  </div>
+</section>
+
+<!-- ── Recibo pronto ───────────────────────────────────────────────────── -->
+<section id="tela-recibo" class="tela" hidden>
+  <div id="recibo" class="recibo"></div>
+  <div class="acoes">
+    <button id="btn-compartilhar" class="primario">Compartilhar</button>
+    <button id="btn-novo" class="secundario">Novo recibo</button>
+  </div>
+</section>
+
+<!-- ── Histórico ───────────────────────────────────────────────────────── -->
+<section id="tela-historico" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Histórico</h1>
+    <button id="btn-voltar" class="texto">Voltar</button>
+  </div>
+  <div id="lista-historico"></div>
+</section>
+
+<script src="pdf.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

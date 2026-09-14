@@ -201,6 +201,39 @@ function foneE164(valor, ddi = '55') {
   return '';
 }
 
+// Por que o numero digitado nao serve para o wa.me. Devolve '' quando serve.
+//
+// Existe porque o botao sumia calado: um numero sem DDD, ou com um digito a
+// menos, e indistinguivel de campo vazio para o foneE164, e o motorista ficava
+// sem entender por que nao dava para enviar. Aconteceu na rua com "499459913".
+function motivoFoneInvalido(valor) {
+  const d = String(valor || '').replace(/\D/g, '');
+  if (!d) return '';                       // vazio e escolha, nao erro
+  if (foneE164(valor)) return '';
+  if (d.length < 10) return 'Faltam dígitos. Use DDD + número: 45 99999-9999.';
+  return 'Número muito longo. Use DDD + número: 45 99999-9999.';
+}
+
+function emailInvalido(valor) {
+  const e = emailLimpo(valor);
+  if (!e) return '';
+  const [usuario, dominio, ...sobra] = e.split('@');
+  const bom = usuario && dominio && !sobra.length && /\.[^.]+$/.test(dominio)
+    && !/\s/.test(e) && e.length <= 254;
+  return bom ? '' : 'E-mail incompleto. Exemplo: nome@empresa.com.br';
+}
+
+function mostrarDica(idCampo, idDica, motivo) {
+  const dica = $(idDica);
+  dica.textContent = motivo(($(idCampo).value));
+  dica.hidden = !dica.textContent;
+}
+
+const revisarWhats = () => mostrarDica('whats', 'dica-whats', motivoFoneInvalido);
+const revisarEmail = () => mostrarDica('email-passageiro', 'dica-email', emailInvalido);
+$('whats').addEventListener('input', revisarWhats);
+$('email-passageiro').addEventListener('input', revisarEmail);
+
 // Pontua CPF e CNPJ. Nao valida digito verificador de proposito: o campo e
 // opcional, e recusar um documento ditado errado trocaria um recibo util por
 // um erro na tela, com o passageiro esperando dentro do carro.
@@ -257,6 +290,13 @@ function motivoRecusa(codigo) {
 
 // Mostra o endereco digitado, para o motorista conferir antes de mandar, e
 // depois vira confirmacao. O e-mail so sai quando ele toca no botao.
+// O recibo ja foi emitido: aqui nao da para corrigir, so explicar por que o
+// botao nao esta ali. Emitir de novo com o numero certo e o caminho.
+function estadoDoWhats(recibo) {
+  const motivo = motivoFoneInvalido(recibo.dados.whatsapp_passageiro);
+  return motivo ? `⚠ WhatsApp ${recibo.dados.whatsapp_passageiro}: ${motivo}` : '';
+}
+
 function estadoDoEmail(recibo) {
   const para = recibo.dados.email_passageiro;
   if (!para) return '';
@@ -294,7 +334,8 @@ function montarRecibo(recibo) {
     </dl>
     ${chamadaDoMotorista(m) ? `<p class="recibo-chamada">${chamadaDoMotorista(m)}</p>` : ''}
     <p class="recibo-estado">${estadoDoRecibo(recibo)}</p>
-    ${estadoDoEmail(recibo) ? `<p class="recibo-estado">${estadoDoEmail(recibo)}</p>` : ''}`;
+    ${estadoDoEmail(recibo) ? `<p class="recibo-estado">${estadoDoEmail(recibo)}</p>` : ''}
+    ${estadoDoWhats(recibo) ? `<p class="recibo-estado">${estadoDoWhats(recibo)}</p>` : ''}`;
 }
 
 // Desenha o recibo e prepara o link do WhatsApp a partir do MESMO objeto.
@@ -606,6 +647,7 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   vibrar('HEAVY');
   $('form-recibo').reset();
   atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
+  revisarWhats(); revisarEmail();
   preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
   abrirRecibo(recibo);

@@ -69,6 +69,9 @@ h1 { font-size:1.35rem; margin:.25rem 0 1rem; }
 .cabecalho-tela { display:flex; align-items:center; justify-content:space-between; }
 .ajuda { color:var(--muted); font-size:.88rem; }
 .erro { color:var(--coral); font-size:.88rem; font-weight:700; }
+/* Avisa sem bloquear: o campo e opcional, e um numero pela metade nao pode
+   sumir com o botao sem explicar. */
+.dica { margin:.4rem 0 0; font-size:.82rem; font-weight:700; color:var(--orange); }
 
 label { display:block; font-size:.78rem; font-weight:800; margin:.9rem 0 .35rem; }
 input, select {

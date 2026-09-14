@@ -44,6 +44,18 @@ npm run android   # abre no Android Studio
 
 ## Publicar no TestFlight
 
+**Use o script, não os comandos soltos:**
+
+```bash
+./mobile/subir_build.sh
+```
+
+Ele faz `cap sync`, arquiva, **abre o pacote e procura sonda de teste e cópia
+duplicada antes de enviar**, e aborta se achar. Também recusa começar se já
+houver outro `xcodebuild` rodando. As duas travas existem porque as duas coisas
+já aconteceram. Os comandos abaixo são o que o script roda, para referência.
+
+
 Tudo por linha de comando, sem abrir o Xcode. Precisa da chave de API da App
 Store Connect com papel **Admin** (`Z53W4BVFVV`, em
 `~/Credenciais/Recibo-Taxi/apple/`). A chave de App Manager não consegue

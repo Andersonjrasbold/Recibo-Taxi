@@ -834,14 +834,25 @@ const MOTIVOS_DE_COMPRA = {
   INVALID_APP_USER_ID: 'Sessão inconsistente. Saia e entre de novo.',
 };
 
+// O plugin do RevenueCat devolve o codigo como NUMERO em texto ("23"), nao o
+// nome. Descobri no aparelho: a tela mostrou "(23)" e nenhuma frase, porque a
+// tabela so conhecia os nomes. Traduz o numero antes de procurar.
+const NOME_DO_CODIGO_RC = {
+  '2': 'STORE_PROBLEM_ERROR', '3': 'PURCHASE_NOT_ALLOWED_ERROR',
+  '5': 'PRODUCT_NOT_AVAILABLE_FOR_PURCHASE', '7': 'RECEIPT_ALREADY_IN_USE_ERROR',
+  '10': 'NETWORK_ERROR', '14': 'INVALID_APP_USER_ID', '20': 'PAYMENT_PENDING_ERROR',
+  '23': 'CONFIGURATION_ERROR', '35': 'OFFLINE_CONNECTION_ERROR',
+};
+
 function mostrarErroDeCompra(erro, e) {
-  const codigo = e?.code || e?.errorCode || '';
+  const bruto = String(e?.code ?? e?.errorCode ?? '');
+  const codigo = NOME_DO_CODIGO_RC[bruto] || bruto;
   const base = MOTIVOS_DE_COMPRA[codigo]
     || (String(e?.message || '').includes('sem oferta')
         ? 'A App Store não devolveu nenhuma assinatura para vender. '
           + 'O produto precisa estar pronto e o contrato de apps pagos ativo.'
         : 'Não foi possível concluir a compra.');
-  erro.textContent = `${base}${codigo ? ` (${codigo})` : ''}`;
+  erro.textContent = `${base}${codigo ? ` (${codigo}${bruto !== codigo ? ' ' + bruto : ''})` : ''}`;
   erro.hidden = false;
 }
 

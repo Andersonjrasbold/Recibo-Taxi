@@ -157,6 +157,16 @@ function foneE164(valor, ddi = '55') {
   return '';
 }
 
+// Pontua CPF e CNPJ. Nao valida digito verificador de proposito: o campo e
+// opcional, e recusar um documento ditado errado trocaria um recibo util por
+// um erro na tela, com o passageiro esperando dentro do carro.
+function documentoBR(valor) {
+  const d = String(valor || '').replace(/\D/g, '');
+  if (d.length === 11) return `${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
+  if (d.length === 14) return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;
+  return String(valor || '').trim();
+}
+
 // Vira anuncio do motorista no recibo: quem recebeu tem como chamar de novo
 // sem procurar o contato.
 function chamadaDoMotorista(m) {
@@ -180,6 +190,7 @@ function montarRecibo(recibo) {
     <div class="recibo-valor">R$ ${d.valor_exibido}</div>
     <dl class="recibo-dados">
       <dt>Passageiro</dt><dd>${d.passageiro}</dd>
+      ${d.documento_passageiro ? `<dt>CPF/CNPJ</dt><dd>${d.documento_passageiro}</dd>` : ''}
       <dt>Data</dt><dd>${formatarBR(d.data)}${d.hora ? ' às ' + d.hora : ''}</dd>
       <dt>Origem</dt><dd>${d.origem}</dd>
       <dt>Destino</dt><dd>${d.destino}</dd>
@@ -213,6 +224,7 @@ function textoParaCompartilhar(recibo) {
   const linhas = [
     `✅ Recibo #${recibo.rid}`,
     `👤 Passageiro: ${d.passageiro}`,
+    ...(d.documento_passageiro ? [`🧾 CPF/CNPJ: ${d.documento_passageiro}`] : []),
     `📅 Data: ${formatarBR(d.data)}`,
     `📍 Origem: ${d.origem}`,
     `🏁 Destino: ${d.destino}`,
@@ -360,6 +372,7 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       observacoes: '',
       forma_pagamento: $('forma').value,
       whatsapp_passageiro: $('whats').value.trim(),
+      documento_passageiro: documentoBR($('documento').value),
     },
   };
 

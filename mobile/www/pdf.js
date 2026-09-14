@@ -49,6 +49,8 @@ function pdfDoRecibo(recibo) {
 
   const campos = [
     ['Passageiro', d.passageiro],
+    // Opcional: quem viaja a trabalho precisa do documento para prestar contas.
+    ...(d.documento_passageiro ? [['CPF/CNPJ', d.documento_passageiro]] : []),
     ['Data', d.data_exibida || d.data],
     ['Hora', d.hora || '-'],
     ['Origem', d.origem],

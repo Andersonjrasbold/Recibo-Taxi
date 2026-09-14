@@ -98,6 +98,7 @@ RECEIPT_FIELD_LIMITS = {
     "forma_pagamento": ("A forma de pagamento", 40),
     "email_passageiro": ("O e-mail do passageiro", 254),
     "whatsapp_passageiro": ("O WhatsApp do passageiro", 20),
+    "documento_passageiro": ("O CPF/CNPJ do passageiro", 18),
     "data": ("A data", 10),
     "hora": ("A hora", 5),
     "nome_motorista": ("O nome do motorista", 120),
@@ -220,6 +221,22 @@ def phone_e164(value: str, ddi: str = "55") -> str:
     if len(digitos) in (12, 13):      # ja veio com o codigo do pais
         return digitos
     return ""                         # curto ou longo demais: nao da link
+
+
+def format_document_br(value: str) -> str:
+    """Pontua CPF e CNPJ; devolve como veio se nao reconhecer o tamanho.
+
+    Nao valida digito verificador de proposito: o campo e opcional e serve para
+    o passageiro prestar contas. Recusar um documento estrangeiro, ou um CPF
+    que o passageiro ditou errado, so trocaria um recibo util por um erro na
+    tela do taxista, com o passageiro esperando dentro do carro.
+    """
+    d = sanitize_phone(value)          # mesma limpeza: so digitos
+    if len(d) == 11:
+        return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:]}"
+    if len(d) == 14:
+        return f"{d[:2]}.{d[2:5]}.{d[5:8]}/{d[8:12]}-{d[12:]}"
+    return (value or "").strip()
 
 
 def format_date_br(date_value: str) -> str:
@@ -367,8 +384,9 @@ class PostgresStore:
 
     _RECEIPT_COLS = """
         rid, rid as _id, driver_id, is_guest, passenger, passenger_email,
-        passenger_whatsapp, trip_date, trip_time, origin, destination,
-        amount, payment_method, notes, driver_snapshot, created_at
+        passenger_whatsapp, passenger_document, trip_date, trip_time,
+        origin, destination, amount, payment_method, notes, driver_snapshot,
+        created_at
     """
 
     def __init__(self, dsn: str) -> None:
@@ -501,6 +519,10 @@ class PostgresStore:
         dados.pop("_id", None)
         dados["driver_snapshot"] = Json(dados.get("driver_snapshot") or {})
         dados["trip_time"] = dados.get("trip_time") or ""
+        # Campo novo: as versoes do app ja instaladas no aparelho do motorista
+        # nao enviam documento. Sem o default, cada recibo dessas versoes
+        # quebraria no insert em vez de gravar sem o campo opcional.
+        dados["passenger_document"] = dados.get("passenger_document") or ""
 
         # created_at explícito é usado por testes e importação; sem ele, o
         # default now() da coluna vale.
@@ -522,10 +544,12 @@ class PostgresStore:
             row = conn.execute(
                 f"""insert into public.receipts
                     (rid, driver_id, is_guest, passenger, passenger_email,
-                     passenger_whatsapp, trip_date, trip_time, origin, destination,
-                     amount, payment_method, notes, driver_snapshot{col_created})
+                     passenger_whatsapp, passenger_document, trip_date, trip_time,
+                     origin, destination, amount, payment_method, notes,
+                     driver_snapshot{col_created})
                     values (%(rid)s, %(driver_id)s, %(is_guest)s, %(passenger)s,
-                            %(passenger_email)s, %(passenger_whatsapp)s, %(trip_date)s,
+                            %(passenger_email)s, %(passenger_whatsapp)s,
+                            %(passenger_document)s, %(trip_date)s,
                             %(trip_time)s, %(origin)s, %(destination)s, %(amount)s,
                             %(payment_method)s, %(notes)s, %(driver_snapshot)s{val_created})
                     returning {self._RECEIPT_COLS}""",
@@ -1442,6 +1466,8 @@ def recibo_criar():
         "passenger": passenger,
         "passenger_email": normalize_email(request.form.get("email_passageiro", "")),
         "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
+        "passenger_document": format_document_br(
+            request.form.get("documento_passageiro", "")),
         "trip_date": trip_date,
         "trip_date_display": format_date_br(trip_date),
         "trip_time": request.form.get("hora", "").strip(),
@@ -1541,6 +1567,8 @@ def gerador():
             "passenger": passenger,
             "passenger_email": normalize_email(request.form.get("email_passageiro", "")),
             "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
+            "passenger_document": format_document_br(
+                request.form.get("documento_passageiro", "")),
             "trip_date": trip_date,
             "trip_date_display": format_date_br(trip_date),
             "trip_time": request.form.get("hora", "").strip(),
@@ -1883,6 +1911,7 @@ def api_criar_recibo():
         "observacoes": dados.get("observacoes", ""),
         "email_passageiro": dados.get("email_passageiro", ""),
         "whatsapp_passageiro": dados.get("whatsapp_passageiro", ""),
+        "documento_passageiro": dados.get("documento_passageiro", ""),
         "hora": dados.get("hora", ""),
     }
     for nome, (rotulo, maximo) in RECEIPT_FIELD_LIMITS.items():
@@ -1905,6 +1934,7 @@ def api_criar_recibo():
         "passenger": str(campos["passageiro"]).strip(),
         "passenger_email": normalize_email(str(campos["email_passageiro"])),
         "passenger_whatsapp": str(campos["whatsapp_passageiro"]).strip(),
+        "passenger_document": format_document_br(str(campos["documento_passageiro"])),
         "trip_date": str(campos["data"]).strip(),
         "trip_time": str(campos["hora"]).strip(),
         "origin": str(campos["origem"]).strip(),

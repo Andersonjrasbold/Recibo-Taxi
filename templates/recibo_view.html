@@ -66,6 +66,12 @@
               <span class="detail-label">Passageiro</span>
               <span class="detail-value">{{ dados.passenger or '—' }}</span>
             </div>
+            {% if dados.passenger_document %}
+            <div class="detail-item">
+              <span class="detail-label">CPF/CNPJ</span>
+              <span class="detail-value mono">{{ dados.passenger_document }}</span>
+            </div>
+            {% endif %}
             <div class="detail-item">
               <span class="detail-label">Data</span>
               <span class="detail-value">{{ dados.trip_date_display }}{% if dados.trip_time %} às {{ dados.trip_time }}{% endif %}</span>

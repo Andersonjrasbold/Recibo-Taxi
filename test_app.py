@@ -560,6 +560,39 @@ else:
     print("  (pulado: RESEND_API_KEY ausente)")
 
 
+# -- CPF/CNPJ do passageiro ----------------------------------------------
+print("\n-- CPF/CNPJ do passageiro --")
+for _entrada, _esperado, _porque in [
+    ("12345678901",       "123.456.789-01",     "CPF so digitos"),
+    ("123.456.789-01",    "123.456.789-01",     "CPF ja pontuado"),
+    ("12345678000190",    "12.345.678/0001-90", "CNPJ so digitos"),
+    ("12.345.678/0001-90","12.345.678/0001-90", "CNPJ ja pontuado"),
+    ("",                  "",                   "vazio, campo e opcional"),
+    # Nao validamos digito verificador: recusar aqui trocaria um recibo util
+    # por um erro na tela, com o passageiro esperando no carro.
+    ("999",               "999",                "tamanho estranho passa como veio"),
+    ("  A1B2  ",          "A1B2",               "documento estrangeiro nao quebra"),
+]:
+    check(f"documento: {_porque}", A.format_document_br(_entrada) == _esperado,
+          f"{_entrada!r} -> {A.format_document_br(_entrada)!r}")
+
+# Ida e volta pelo banco, com e sem o campo. O "sem" importa: as versoes do app
+# ja instaladas nao enviam documento, e um recibo delas nao pode falhar.
+_rid_doc = "DDDDDDDDDDDDDD"
+_bruto = recibo_bruto(_rid_doc, A.now_iso())
+_bruto["passenger_document"] = "123.456.789-01"
+store.create_receipt(_bruto)
+_lido = store.get_receipt(_rid_doc)
+check("documento sobrevive ao banco",
+      (_lido or {}).get("passenger_document") == "123.456.789-01",
+      repr((_lido or {}).get("passenger_document")))
+
+_rid_sem = "EEEEEEEEEEEEEE"
+store.create_receipt(recibo_bruto(_rid_sem, A.now_iso()))   # sem a chave
+_lido2 = store.get_receipt(_rid_sem)
+check("recibo de versao antiga do app nao quebra",
+      _lido2 is not None and _lido2.get("passenger_document") == "")
+
 # -- Telefone para o wa.me ------------------------------------------------
 # Sem codigo do pais o link abre o WhatsApp sem destinatario, e o motorista so
 # consegue enviar se ja tiver o passageiro salvo na agenda.

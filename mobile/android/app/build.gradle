@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+// A chave de upload do Google Play mora fora do repositorio, em
+// ~/Credenciais/Recibo-Taxi/google-play/. O caminho e a senha vem de
+// keystore.properties, que o git ignora. Sem esse arquivo o projeto ainda
+// compila — so nao sai um pacote assinado, pronto para publicar.
+def assinatura = new Properties()
+def arquivoDaChave = rootProject.file('keystore.properties')
+if (arquivoDaChave.exists()) {
+    arquivoDaChave.withInputStream { assinatura.load(it) }
+}
+def temChave = assinatura['storeFile'] != null && file(assinatura['storeFile']).exists()
+
 android {
     namespace = "br.com.recibotaxi.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,7 +18,7 @@ android {
         applicationId "br.com.recibotaxi.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        versionCode 13
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -16,8 +27,19 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (temChave) {
+                storeFile file(assinatura['storeFile'])
+                storePassword assinatura['storePassword']
+                keyAlias assinatura['keyAlias']
+                keyPassword assinatura['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
+            signingConfig temChave ? signingConfigs.release : null
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

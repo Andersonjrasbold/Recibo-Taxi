@@ -696,6 +696,44 @@ _fixos = [f for f in _glob.glob("templates/*.html")
           if _re.search(r"\b5 recibos", io.open(f, encoding="utf-8").read())]
 check("nenhum template com o limite escrito a mao", not _fixos, ", ".join(_fixos))
 
+# -- PDF gerado no aparelho, com a marca ---------------------------------
+# pdf.js escreve o arquivo a mao, deslocamento por deslocamento. Imagem
+# embutida e o jeito mais facil de errar a tabela xref sem perceber: o leitor
+# do iPhone ainda abre, outros reclamam. Gera um PDF de verdade com o node e
+# confere cada deslocamento.
+print("\n-- PDF do aparelho --")
+import subprocess as _sp
+_js = r"""
+global.window = global;
+require(process.cwd() + '/mobile/www/marca.js');
+const { pdfDoRecibo } = require(process.cwd() + '/mobile/www/pdf.js');
+process.stdout.write(pdfDoRecibo({
+  rid: 'ABCDEF01234567',
+  motorista: { full_name: 'M', plate: 'ABC1D23', whatsapp: '45999990000' },
+  dados: { passageiro: 'P', data: '2026-09-14', data_exibida: '14/09/2026', hora: '10:00',
+           origem: 'A', destino: 'B', valor_exibido: '10,00', forma_pagamento: 'Pix', observacoes: '' },
+}));
+"""
+_saida = None
+try:
+    _saida = _sp.run(["node", "-e", _js], capture_output=True, text=True, timeout=60,
+                     cwd=os.path.dirname(os.path.abspath(__file__)))
+    _pdf = base64.b64decode(_saida.stdout) if _saida.returncode == 0 else b""
+except Exception:
+    _pdf = b""
+check("node gera o PDF", bool(_pdf), (_saida.stderr[:200] if _saida else "node ausente"))
+if _pdf:
+    _ini = int(_re.search(rb"startxref\s+(\d+)", _pdf).group(1))
+    _tab = _pdf[_ini:].split(b"\n")
+    _n = int(_tab[1].split()[1])
+    _ruins = [i for i in range(1, _n)
+              if not _pdf[int(_tab[2 + i].split()[0]):].startswith(f"{i} 0 obj".encode())]
+    check("todos os deslocamentos do xref batem", not _ruins, str(_ruins))
+    check("a marca esta embutida como JPEG", b"/Filter/DCTDecode" in _pdf and b"/Im1 Do" in _pdf)
+    _m = _re.search(rb"/Subtype/Image[^>]*?/Length (\d+)>>\nstream\n", _pdf)
+    _fim = _m.end() + int(_m.group(1))
+    check("o tamanho declarado da imagem confere", _pdf[_fim:_fim + 10] == b"\nendstream")
+
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")
 

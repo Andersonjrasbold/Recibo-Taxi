@@ -139,7 +139,11 @@ async function sincronizar() {
   }
 
   let enviados = 0;
-  for (const recibo of await pendentes()) {
+  // Do mais antigo para o mais novo: se a cota do mes acabar no meio da fila,
+  // quem fica de fora e o recibo mais recente, nao o que o passageiro ja
+  // espera desde antes. Aconteceu ao contrario num teste: o ultimo emitido
+  // subiu e o anterior ficou recusado.
+  for (const recibo of (await pendentes()).reverse()) {
     try {
       const resp = await api('/api/recibos', {
         method: 'POST',
@@ -220,12 +224,30 @@ function formatarBR(iso) {
   return d && m && a ? `${d}/${m}/${a}` : iso;
 }
 
+// Por que o servidor recusou, em palavras. O codigo cru ('limite_mensal')
+// aparecia no historico como se fosse defeito do app.
+function motivoRecusa(codigo) {
+  return {
+    limite_mensal: 'limite de recibos do mês',
+    rid_de_outro_motorista: 'código já usado',
+  }[codigo] || codigo;
+}
+
+function estadoDoRecibo(recibo) {
+  if (recibo.pendente) return '⏳ Aguardando sinal para sincronizar';
+  if (recibo.recusado) return `⚠ Não enviado: ${motivoRecusa(recibo.recusado)}`;
+  return '✓ Sincronizado';
+}
+
 function montarRecibo(recibo) {
   const d = recibo.dados, m = recibo.motorista || {};
   return `
     <div class="recibo-topo">
-      <span class="recibo-rotulo">Recibo</span>
-      <span class="recibo-id">#${recibo.rid}</span>
+      <img class="recibo-marca" src="img/marca.jpg" alt="Recibo Táxi">
+      <div class="recibo-topo-id">
+        <span class="recibo-rotulo">Recibo</span>
+        <span class="recibo-id">#${recibo.rid}</span>
+      </div>
     </div>
     <div class="recibo-valor">R$ ${d.valor_exibido}</div>
     <dl class="recibo-dados">
@@ -240,9 +262,7 @@ function montarRecibo(recibo) {
       ${m.whatsapp ? `<dt>WhatsApp</dt><dd>${m.whatsapp}</dd>` : ''}
     </dl>
     ${chamadaDoMotorista(m) ? `<p class="recibo-chamada">${chamadaDoMotorista(m)}</p>` : ''}
-    <p class="recibo-estado">
-      ${recibo.pendente ? '⏳ Aguardando sinal para sincronizar' : '✓ Sincronizado'}
-    </p>`;
+    <p class="recibo-estado">${estadoDoRecibo(recibo)}</p>`;
 }
 
 // Desenha o recibo e prepara o link do WhatsApp a partir do MESMO objeto.
@@ -257,6 +277,14 @@ function mostrarRecibo(recibo) {
     const msg = encodeURIComponent(textoParaCompartilhar(recibo));
     $('btn-whats').href = `https://wa.me/${fone}?text=${msg}`;
   }
+}
+
+// Leva para a tela do recibo, venha ele de ser emitido ou do historico.
+function abrirRecibo(recibo, { doHistorico = false } = {}) {
+  $('btn-compartilhar').dataset.rid = recibo.rid;
+  $('btn-voltar-historico').hidden = !doHistorico;
+  mostrarRecibo(recibo);
+  mostrar('tela-recibo');
 }
 
 // O rid nasce no aparelho e a URL publica e deterministica a partir dele.
@@ -432,9 +460,7 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   $('form-recibo').reset();
   preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
-  $('btn-compartilhar').dataset.rid = rid;
-  mostrarRecibo(recibo);
-  mostrar('tela-recibo');
+  abrirRecibo(recibo);
 
   // Espera a subida antes de liberar o envio — mas so um tempo curto, e so
   // quando ha rede. O link do recibo existe no aparelho desde ja, porem a
@@ -565,6 +591,7 @@ $('btn-assinar').addEventListener('click', async () => {
     if (virou) {
       vibrar('HEAVY');
       await atualizarSessao();
+      sincronizar().then(atualizarAvisoFila);   // o que a cota segurava sobe agora
       mostrar('tela-emitir');
     }
   } catch (e) {
@@ -585,6 +612,7 @@ $('btn-restaurar').addEventListener('click', async () => {
     const r = await Purchases.restorePurchases();
     if (r?.customerInfo?.entitlements?.active?.pro) {
       await atualizarSessao();
+      sincronizar().then(atualizarAvisoFila);   // o que a cota segurava sobe agora
       mostrar('tela-emitir');
     } else {
       erro.textContent = 'Nenhuma assinatura ativa encontrada nesta conta.';
@@ -605,6 +633,22 @@ function encerrarSessao() {
   mostrar('tela-login');
 }
 
+// Recibo recusado por cota ficava recusado para sempre. Era de proposito —
+// reenviar direto seria bater no teto em laco — mas cota e coisa que muda:
+// vira o mes, o motorista assina, o limite do plano sobe. Quando o servidor
+// diz que ha espaco, os recusados voltam para a fila e sobem na proxima
+// sincronizacao. Sem isto, subir o limite nao destravava recibo nenhum.
+async function reabrirRecusadosPorCota(sessao) {
+  const haEspaco = sessao.limite_mensal == null || sessao.usados_no_mes < sessao.limite_mensal;
+  if (!haEspaco) return 0;
+  const recusados = (await listarRecibos()).filter((r) => r.recusado === 'limite_mensal');
+  for (const r of recusados) {
+    const { recusado, ...resto } = r;
+    await salvarRecibo({ ...resto, pendente: true });
+  }
+  return recusados.length;
+}
+
 async function atualizarSessao() {
   try {
     const r = await api('/api/sessao');
@@ -615,6 +659,7 @@ async function atualizarSessao() {
     Guardado.set('motorista_id', s.id);
     Guardado.set('plano', s.plano);
     Guardado.set('limite', s.limite_mensal);
+    await reabrirRecusadosPorCota(s);
     return s;
   } catch { return null; }
 }
@@ -628,22 +673,38 @@ $('btn-novo').addEventListener('click', async () => {
 $('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
 $('btn-sair').addEventListener('click', encerrarSessao);
 
-$('btn-historico').addEventListener('click', async () => {
+async function mostrarHistorico() {
   const lista = await listarRecibos();
   $('lista-historico').innerHTML = lista.length
     ? lista.map((r) => `
-        <div class="item">
+        <div class="item" role="button" data-rid="${r.rid}">
           <div>
             <strong>${r.dados.passageiro}</strong>
             <small>${formatarBR(r.dados.data)} · ${r.dados.origem} → ${r.dados.destino}</small>
           </div>
           <div class="item-direita">
             <span class="item-valor">R$ ${r.dados.valor_exibido}</span>
-            <small>${r.pendente ? '⏳ na fila' : r.recusado ? '⚠ ' + r.recusado : '✓ enviado'}</small>
+            <small>${r.pendente ? '⏳ na fila' : r.recusado ? '⚠ ' + motivoRecusa(r.recusado) : '✓ enviado'}</small>
           </div>
+          <span class="item-seta" aria-hidden="true">›</span>
         </div>`).join('')
     : '<p class="ajuda">Nenhum recibo ainda.</p>';
   mostrar('tela-historico');
+}
+
+$('btn-historico').addEventListener('click', mostrarHistorico);
+$('btn-voltar-historico').addEventListener('click', mostrarHistorico);
+
+// Tocar num recibo do historico abre a mesma tela do recibo recem-emitido,
+// com WhatsApp e PDF. E o reenvio: passageiro que perdeu a mensagem, ou
+// recibo que ficou na fila e o motorista quer conferir.
+$('lista-historico').addEventListener('click', async (ev) => {
+  const item = ev.target.closest('.item[data-rid]');
+  if (!item) return;
+  const recibo = (await listarRecibos()).find((r) => r.rid === item.dataset.rid);
+  if (!recibo) return;
+  vibrar('LIGHT');
+  abrirRecibo(recibo, { doHistorico: true });
 });
 
 window.addEventListener('online', async () => { await sincronizar(); atualizarAvisoFila(); });

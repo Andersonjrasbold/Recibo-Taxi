@@ -17,7 +17,7 @@ body {
   background:var(--coal-soft); border-bottom:1px solid var(--linha);
   position:sticky; top:0; z-index:5;
 }
-.marca { font-weight:800; letter-spacing:-.01em; }
+.marca { display:block; height:44px; width:auto; border-radius:9px; }
 .pilula {
   font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em;
   padding:.25rem .6rem; border-radius:999px;
@@ -69,7 +69,10 @@ button { font:inherit; border:0; border-radius:14px; cursor:pointer; }
   background:linear-gradient(170deg,#fffbf8,#fdf0e5); color:var(--ink);
   border-radius:22px; padding:1.5rem;
 }
-.recibo-topo { display:flex; justify-content:space-between; align-items:baseline; }
+.recibo-topo { display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+.recibo-marca { display:block; width:104px; height:auto; border-radius:8px; }
+.recibo-topo-id { text-align:right; }
+.recibo-topo-id span { display:block; }
 .recibo-rotulo { font-size:.72rem; font-weight:800; text-transform:uppercase; color:var(--muted); }
 .recibo-id { font-family:ui-monospace, monospace; font-size:.82rem; color:var(--muted); }
 .recibo-valor { font-size:2.1rem; font-weight:800; margin:.6rem 0 1.2rem; }
@@ -80,9 +83,12 @@ button { font:inherit; border:0; border-radius:14px; cursor:pointer; }
 .acoes { margin-top:1.2rem; }
 
 .item {
-  display:flex; justify-content:space-between; gap:1rem; padding:.9rem 0;
-  border-bottom:1px solid var(--linha);
+  display:flex; align-items:center; gap:1rem; padding:.9rem 0;
+  border-bottom:1px solid var(--linha); cursor:pointer;
 }
+.item:active { opacity:.6; }
+.item > div:first-child { flex:1; min-width:0; }
+.item-seta { color:var(--muted); font-size:1.5rem; line-height:1; flex-shrink:0; }
 .item small { display:block; color:var(--muted); font-size:.78rem; margin-top:.15rem; }
 .item-direita { text-align:right; flex-shrink:0; }
 .item-valor { font-weight:800; }

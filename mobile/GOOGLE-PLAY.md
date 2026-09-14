@@ -54,6 +54,30 @@ para quem já desinstalou:
 
 A URL a declarar é `https://recibotaxi.com.br/excluir-conta`.
 
+## Verificação de desenvolvedor Android — prazo 30/09/2026
+
+Coisa **separada** de publicar na loja, e com data curta. A partir de 30/09/2026,
+aparelhos Android certificados no **Brasil**, Indonésia, Singapura e Tailândia
+bloqueiam a instalação normal de app cujo desenvolvedor não registrou identidade —
+venha ele da Play ou de qualquer outra loja participante. Apps já publicados na Play
+que não estiverem registrados são **removidos globalmente**.
+
+Ter conta no Play Console **não basta sozinho**: apps distribuídos fora da loja
+precisam de registro manual do par *nome do pacote + chave de assinatura*.
+
+| | |
+|---|---|
+| Nome do pacote | `br.com.recibotaxi.app` |
+| Chave de upload, SHA-256 | `44:5B:A8:B2:68:5F:79:6A:2C:98:D5:37:C6:BA:0C:E7:6B:A3:12:C6:EB:F0:22:D5:1B:BF:95:EA:AC:CA:68:DB` |
+| Chave de upload, SHA-1 | `F0:DC:BF:4F:1C:FB:DD:72:BB:67:A0:8B:7B:A0:F6:9E:A3:B5:D8:2A` |
+
+Essa é a **nossa** chave, a que assina o APK que instalamos direto no aparelho. O que
+sai pela Play é assinado pelo Google (Play App Signing) e entra pelo registro
+automático quando o app existir no console.
+
+Sideload de app não registrado continua possível pelo *advanced flow* e por `adb`,
+mas com atrito — não serve para entregar a taxista.
+
 ## Ficha da loja
 
 | Campo | Limite | Valor |

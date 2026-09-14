@@ -66,6 +66,12 @@
               <span class="detail-label">Passageiro</span>
               <span class="detail-value">{{ dados.passenger or '—' }}</span>
             </div>
+            {% if dados.passenger_document %}
+            <div class="detail-item">
+              <span class="detail-label">CPF/CNPJ</span>
+              <span class="detail-value mono">{{ dados.passenger_document }}</span>
+            </div>
+            {% endif %}
             <div class="detail-item">
               <span class="detail-label">Data</span>
               <span class="detail-value">{{ dados.trip_date_display }}{% if dados.trip_time %} às {{ dados.trip_time }}{% endif %}</span>
@@ -129,6 +135,17 @@
             {% endif %}
           </div>
         </div>
+
+        <div class="receipt-doc-divider"></div>
+
+        {% if dados.driver_snapshot.whatsapp %}
+        <!-- O recibo circula entre passageiros; o telefone aqui traz corrida nova. -->
+        <div class="driver-callout">
+          <i class="bi bi-whatsapp me-2"></i>
+          Precisou de corrida? Me chame no WhatsApp:
+          <strong>{{ dados.driver_snapshot.whatsapp }}</strong>
+        </div>
+        {% endif %}
 
         <div class="receipt-doc-divider"></div>
 

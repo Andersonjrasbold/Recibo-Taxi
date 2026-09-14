@@ -13,6 +13,7 @@ rodar por acidente. Toda conta que ela cria usa o dominio @teste.invalid
 
 Sai com codigo 1 se algum teste falhar.
 """
+import base64
 import hashlib
 import hmac as _hmac
 import io
@@ -559,6 +560,179 @@ if _chave:
 else:
     print("  (pulado: RESEND_API_KEY ausente)")
 
+
+# -- Renovacao de sessao do app ------------------------------------------
+# O access token do Supabase vale uma hora. Sem renovar, passada a hora a fila
+# do app desistia em silencio: o motorista seguia emitindo recibo que nunca
+# subia e o passageiro recebia link que nunca ia funcionar.
+print("\n-- Renovacao de sessao do app --")
+_capp = A.app.test_client()
+_email_app = "renova@teste.invalid"
+_r = _capp.post("/api/cadastro", json={
+    "nome_completo": "Renova Teste", "email": _email_app, "senha": "senha12345",
+    "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel",
+    "placa": "RNV1234"})
+check("cadastro pela API devolve refresh_token",
+      _r.status_code == 201 and bool(_r.get_json().get("refresh_token")),
+      f"{_r.status_code} {str(_r.get_json())[:120]}")
+
+_tokens = _r.get_json() if _r.status_code == 201 else {}
+_refresh = _tokens.get("refresh_token", "")
+
+_r = _capp.post("/api/refresh", json={"refresh_token": _refresh})
+check("refresh devolve access_token novo",
+      _r.status_code == 200 and bool(_r.get_json().get("access_token")),
+      f"{_r.status_code} {str(_r.get_json())[:120]}")
+
+_novo = _r.get_json().get("access_token", "") if _r.status_code == 200 else ""
+_r = _capp.get("/api/sessao", headers={"Authorization": f"Bearer {_novo}"})
+check("token renovado abre a sessao", _r.status_code == 200, str(_r.status_code))
+
+_r = _capp.post("/api/refresh", json={"refresh_token": "invalido"})
+check("refresh invalido devolve 401", _r.status_code == 401, str(_r.status_code))
+
+_r = _capp.post("/api/refresh", json={})
+check("refresh sem token devolve 401", _r.status_code == 401, str(_r.status_code))
+
+# -- CPF/CNPJ do passageiro ----------------------------------------------
+print("\n-- CPF/CNPJ do passageiro --")
+for _entrada, _esperado, _porque in [
+    ("12345678901",       "123.456.789-01",     "CPF so digitos"),
+    ("123.456.789-01",    "123.456.789-01",     "CPF ja pontuado"),
+    ("12345678000190",    "12.345.678/0001-90", "CNPJ so digitos"),
+    ("12.345.678/0001-90","12.345.678/0001-90", "CNPJ ja pontuado"),
+    ("",                  "",                   "vazio, campo e opcional"),
+    # Nao validamos digito verificador: recusar aqui trocaria um recibo util
+    # por um erro na tela, com o passageiro esperando no carro.
+    ("999",               "999",                "tamanho estranho passa como veio"),
+    ("  A1B2  ",          "A1B2",               "documento estrangeiro nao quebra"),
+]:
+    check(f"documento: {_porque}", A.format_document_br(_entrada) == _esperado,
+          f"{_entrada!r} -> {A.format_document_br(_entrada)!r}")
+
+# Ida e volta pelo banco, com e sem o campo. O "sem" importa: as versoes do app
+# ja instaladas nao enviam documento, e um recibo delas nao pode falhar.
+_rid_doc = "DDDDDDDDDDDDDD"
+_bruto = recibo_bruto(_rid_doc, A.now_iso())
+_bruto["passenger_document"] = "123.456.789-01"
+store.create_receipt(_bruto)
+_lido = store.get_receipt(_rid_doc)
+check("documento sobrevive ao banco",
+      (_lido or {}).get("passenger_document") == "123.456.789-01",
+      repr((_lido or {}).get("passenger_document")))
+
+_rid_sem = "EEEEEEEEEEEEEE"
+store.create_receipt(recibo_bruto(_rid_sem, A.now_iso()))   # sem a chave
+_lido2 = store.get_receipt(_rid_sem)
+check("recibo de versao antiga do app nao quebra",
+      _lido2 is not None and _lido2.get("passenger_document") == "")
+
+# -- Telefone para o wa.me ------------------------------------------------
+# Sem codigo do pais o link abre o WhatsApp sem destinatario, e o motorista so
+# consegue enviar se ja tiver o passageiro salvo na agenda.
+print("\n-- Telefone para o wa.me --")
+_casos = [
+    ("11987654321",        "5511987654321", "celular com DDD"),
+    ("(11) 98765-4321",    "5511987654321", "pontuado"),
+    ("011987654321",       "5511987654321", "com zero de interurbano"),
+    ("+55 11 98765-4321",  "5511987654321", "ja internacional"),
+    ("5511987654321",      "5511987654321", "so digitos, com pais"),
+    ("00551198765432",     "551198765432",  "prefixo 00 de discagem"),
+    ("1132654321",         "551132654321",  "fixo com DDD"),
+    # DDD 55 e de Santa Maria/RS. Classificar por prefixo trataria estes 10
+    # digitos como codigo de pais e mandaria para um numero que nao existe.
+    ("5598765432",         "555598765432",  "DDD 55 nao e codigo de pais"),
+    ("98765432",           "",              "sem DDD, nao da link"),
+    ("123",                "",              "curto demais"),
+    ("",                   "",              "vazio"),
+]
+for _entrada, _esperado, _porque in _casos:
+    check(f"telefone: {_porque}", A.phone_e164(_entrada) == _esperado,
+          f"{_entrada!r} -> {A.phone_e164(_entrada)!r}, esperado {_esperado!r}")
+
+# O link so leva destinatario quando o numero e utilizavel.
+_rec = {"rid": "X" * 14, "passenger_whatsapp": "(11) 98765-4321",
+        "passenger": "Teste", "driver_snapshot": {"whatsapp": "(44) 99999-1111"}}
+_link = A.build_whatsapp_link(_rec, "https://recibotaxi.com.br/r/x")
+check("wa.me leva o numero com 55", "wa.me/5511987654321?" in _link, _link[:60])
+check("mensagem traz a chamada do motorista",
+      "(44) 99999-1111" in A.compose_receipt_message(_rec, "https://x"))
+_sem = A.build_whatsapp_link(_rec, "https://x", with_recipient=False)
+check("sem destinatario, nao vaza o numero", "5511987654321" not in _sem)
+
+# -- Chave do RevenueCat --------------------------------------------------
+# A Test Store (prefixo test_) serve para ensaiar a compra sem a Apple, sem
+# contrato e sem cartao. Util no desenvolvimento, desastre se escapar: o app
+# iria para a App Store vendendo numa loja de mentira, e ninguem receberia o
+# que pagou. Esta checagem existe para que esquecer de trocar de volta doa.
+print("\n-- Chave do RevenueCat --")
+_cfg = io.open("mobile/www/config.js", encoding="utf-8").read()
+_m = _re.search(r"RC_CHAVE_PUBLICA\s*=\s*'([^']*)'", _cfg)
+_chave = _m.group(1) if _m else ""
+check("config.js nao carrega chave da Test Store",
+      not _chave.startswith("test_"),
+      f"achou {_chave[:9]}... — troque pela appl_ antes de commitar")
+
+# O bundle iOS e uma copia: se o sync nao rodou, o aparelho testa codigo velho.
+_ios = "mobile/ios/App/App/public/config.js"
+if os.path.exists(_ios):
+    check("bundle iOS esta sincronizado com o www",
+          io.open(_ios, encoding="utf-8").read() == _cfg,
+          "rode: npx cap sync ios")
+
+
+# -- Limite do plano Gratis nos textos do site ---------------------------
+# O numero vive em FREE_MONTHLY_LIMIT e os templates leem de la. Um "5"
+# escrito a mao num template voltaria a divergir na primeira mudanca de plano
+# — e foi assim que o site prometia 5 enquanto a fase de testes libera 100.
+print("\n-- Limite do plano Gratis nos textos do site --")
+_pub = A.app.test_client()
+for _rota in ("/", "/planos", "/termos"):
+    _html = _pub.get(_rota).get_data(as_text=True)
+    check(f"{_rota} mostra 'Ate {A.FREE_MONTHLY_LIMIT} recibos'",
+          f"Até {A.FREE_MONTHLY_LIMIT} recibos" in _html)
+import glob as _glob
+_fixos = [f for f in _glob.glob("templates/*.html")
+          if _re.search(r"\b5 recibos", io.open(f, encoding="utf-8").read())]
+check("nenhum template com o limite escrito a mao", not _fixos, ", ".join(_fixos))
+
+# -- PDF gerado no aparelho, com a marca ---------------------------------
+# pdf.js escreve o arquivo a mao, deslocamento por deslocamento. Imagem
+# embutida e o jeito mais facil de errar a tabela xref sem perceber: o leitor
+# do iPhone ainda abre, outros reclamam. Gera um PDF de verdade com o node e
+# confere cada deslocamento.
+print("\n-- PDF do aparelho --")
+import subprocess as _sp
+_js = r"""
+global.window = global;
+require(process.cwd() + '/mobile/www/marca.js');
+const { pdfDoRecibo } = require(process.cwd() + '/mobile/www/pdf.js');
+process.stdout.write(pdfDoRecibo({
+  rid: 'ABCDEF01234567',
+  motorista: { full_name: 'M', plate: 'ABC1D23', whatsapp: '45999990000' },
+  dados: { passageiro: 'P', data: '2026-09-14', data_exibida: '14/09/2026', hora: '10:00',
+           origem: 'A', destino: 'B', valor_exibido: '10,00', forma_pagamento: 'Pix', observacoes: '' },
+}));
+"""
+_saida = None
+try:
+    _saida = _sp.run(["node", "-e", _js], capture_output=True, text=True, timeout=60,
+                     cwd=os.path.dirname(os.path.abspath(__file__)))
+    _pdf = base64.b64decode(_saida.stdout) if _saida.returncode == 0 else b""
+except Exception:
+    _pdf = b""
+check("node gera o PDF", bool(_pdf), (_saida.stderr[:200] if _saida else "node ausente"))
+if _pdf:
+    _ini = int(_re.search(rb"startxref\s+(\d+)", _pdf).group(1))
+    _tab = _pdf[_ini:].split(b"\n")
+    _n = int(_tab[1].split()[1])
+    _ruins = [i for i in range(1, _n)
+              if not _pdf[int(_tab[2 + i].split()[0]):].startswith(f"{i} 0 obj".encode())]
+    check("todos os deslocamentos do xref batem", not _ruins, str(_ruins))
+    check("a marca esta embutida como JPEG", b"/Filter/DCTDecode" in _pdf and b"/Im1 Do" in _pdf)
+    _m = _re.search(rb"/Subtype/Image[^>]*?/Length (\d+)>>\nstream\n", _pdf)
+    _fim = _m.end() + int(_m.group(1))
+    check("o tamanho declarado da imagem confere", _pdf[_fim:_fim + 10] == b"\nendstream")
 
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")

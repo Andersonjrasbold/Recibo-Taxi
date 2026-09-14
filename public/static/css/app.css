@@ -1500,3 +1500,16 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
   .receipt-section-title { color: #555 !important; }
   .receipt-payment-method { background-color: #f5f5f5 !important; color: #333 !important; border-color: #ccc !important; }
 }
+
+/* Chamada do motorista no recibo publico. O recibo e repassado entre
+   passageiros — o telefone aqui traz corrida nova sem custo de divulgacao. */
+.driver-callout {
+  background: rgba(255, 197, 49, .12);
+  border: 1px solid rgba(255, 197, 49, .35);
+  border-radius: 12px;
+  padding: .85rem 1rem;
+  text-align: center;
+  font-weight: 700;
+  color: var(--ink);
+}
+.driver-callout strong { white-space: nowrap; }

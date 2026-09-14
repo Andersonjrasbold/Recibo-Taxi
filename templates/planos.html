@@ -27,7 +27,7 @@
           <p class="pricing-tagline">Para quem quer experimentar</p>
           <ul class="pricing-features">
             <li class="on"><i class="bi bi-check-lg"></i>Gerar recibos sem cadastro</li>
-            <li class="on"><i class="bi bi-check-lg"></i>Até 5 recibos salvos/mês</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Até {{ free_monthly_limit }} recibos salvos/mês</li>
             <li class="on"><i class="bi bi-check-lg"></i>Compartilhar por WhatsApp e e-mail</li>
             <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>
             <li class="on"><i class="bi bi-check-lg"></i>Link público do recibo</li>
@@ -159,7 +159,7 @@
               </h3>
               <div id="faq4" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
                 <div class="accordion-body faq-body">
-                  No plano Pro sim — seus recibos ficam guardados permanentemente. No plano Grátis, o histórico tem limite de 5 recibos por mês.
+                  No plano Pro sim — seus recibos ficam guardados permanentemente. No plano Grátis, o histórico tem limite de {{ free_monthly_limit }} recibos por mês.
                 </div>
               </div>
             </div>

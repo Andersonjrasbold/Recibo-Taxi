@@ -153,6 +153,13 @@
                       class="form-control form-control-gen" placeholder="(11) 99999-9999"
                       value="{{ (form or {}).get('whatsapp_passageiro', '') }}">
                   </div>
+                  <div class="col-md-6">
+                    <label class="form-label-gen" for="documento_passageiro">CPF ou CNPJ do passageiro <span class="text-muted">(opcional)</span></label>
+                    <input type="text" id="documento_passageiro" name="documento_passageiro"
+                      class="form-control form-control-gen" maxlength="18"
+                      placeholder="000.000.000-00"
+                      value="{{ (form or {}).get('documento_passageiro', '') }}">
+                  </div>
                   <div class="col-12">
                     <label class="form-label-gen" for="observacoes">Observações</label>
                     <textarea id="observacoes" name="observacoes" class="form-control form-control-gen"

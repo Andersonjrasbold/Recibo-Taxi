@@ -40,6 +40,15 @@ function pdfDoRecibo(recibo) {
   };
   const regua = () => { y -= 10; linhas.push(`${L} ${y} m 539 ${y} l S`); };
 
+  // Marca no canto superior direito, na altura do titulo. Depende do marca.js
+  // carregado antes; sem ele o PDF sai igual ao de antes, so sem a marca.
+  const marca = (typeof window !== 'undefined' && window.MARCA_JPEG) || null;
+  if (marca) {
+    const alturaMarca = 60;
+    const larguraMarca = alturaMarca * marca.largura / marca.altura;
+    linhas.push(`q ${larguraMarca.toFixed(2)} 0 0 ${alturaMarca} ${(539 - larguraMarca).toFixed(2)} 752 cm /Im1 Do Q`);
+  }
+
   texto('RECIBO DE CORRIDA', { fonte: 'F2', tam: 18, dy: 10 });
   texto(`#${recibo.rid}`, { tam: 9, dy: 16 });
   regua();
@@ -49,6 +58,8 @@ function pdfDoRecibo(recibo) {
 
   const campos = [
     ['Passageiro', d.passageiro],
+    // Opcional: quem viaja a trabalho precisa do documento para prestar contas.
+    ...(d.documento_passageiro ? [['CPF/CNPJ', d.documento_passageiro]] : []),
     ['Data', d.data_exibida || d.data],
     ['Hora', d.hora || '-'],
     ['Origem', d.origem],
@@ -68,6 +79,14 @@ function pdfDoRecibo(recibo) {
   texto(m.full_name || '-', { tam: 12, dy: 14 });
   texto(`Placa ${m.plate || '-'}${m.city ? ' - ' + m.city : ''}`, { tam: 10, dy: 14 });
   if (m.license_number) texto(`Alvará ${m.license_number}`, { tam: 10, dy: 13 });
+  if (m.whatsapp) texto(`WhatsApp ${m.whatsapp}`, { tam: 10, dy: 13 });
+
+  // O recibo circula entre passageiros; o telefone impresso traz corrida nova.
+  if (m.whatsapp) {
+    regua();
+    texto('Precisou de corrida? Me chame no WhatsApp:', { fonte: 'F2', tam: 10, dy: 22 });
+    texto(m.whatsapp, { fonte: 'F2', tam: 14, dy: 17 });
+  }
 
   y = 70;
   texto('Este recibo não é documento fiscal.', { tam: 8, dy: 0 });
@@ -78,11 +97,22 @@ function pdfDoRecibo(recibo) {
     '<</Type/Catalog/Pages 2 0 R>>',
     '<</Type/Pages/Kids[3 0 R]/Count 1>>',
     '<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]' +
-      '/Resources<</Font<</F1 4 0 R/F2 5 0 R>>>>/Contents 6 0 R>>',
+      `/Resources<</Font<</F1 4 0 R/F2 5 0 R>>${marca ? '/XObject<</Im1 7 0 R>>' : ''}>>` +
+      '/Contents 6 0 R>>',
     '<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>',
     '<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold/Encoding/WinAnsiEncoding>>',
     `<</Length ${fluxo.length}>>\nstream\n${fluxo}\nendstream`,
   ];
+  if (marca) {
+    // JPEG entra no PDF como esta (DCTDecode). atob devolve string binaria,
+    // um caractere por byte — o mesmo formato do resto do arquivo, entao os
+    // deslocamentos do xref continuam contando certo.
+    const jpeg = atob(marca.base64);
+    objetos.push(
+      `<</Type/XObject/Subtype/Image/Width ${marca.largura}/Height ${marca.altura}` +
+      `/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode/Length ${jpeg.length}>>\n` +
+      `stream\n${jpeg}\nendstream`);
+  }
 
   let pdf = '%PDF-1.4\n';
   const offsets = [];

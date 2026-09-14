@@ -70,7 +70,11 @@ APP_NAME = "Recibo Táxi"
 # Brasil não adota horário de verão desde 2019, então o offset é fixo.
 BR_TZ = timezone(timedelta(hours=-3))
 
-FREE_MONTHLY_LIMIT = 5
+# Fase de testes: 100 por mes, para ninguem esbarrar no teto enquanto o app e
+# provado na rua (aconteceu: cinco recibos de teste e a fila parou em 402). O
+# valor definitivo ainda vai ser decidido. Os textos do site leem daqui, via
+# inject_globals, entao mudar este numero basta.
+FREE_MONTHLY_LIMIT = 100
 # "business" segue aqui de propósito: o plano saiu de venda, mas quem já assina
 # mantém o acesso ilimitado até cancelar. Só STRIPE_PRICE_IDS perdeu a entrada,
 # o que faz /assinar/business responder 400 para assinaturas novas.
@@ -98,6 +102,7 @@ RECEIPT_FIELD_LIMITS = {
     "forma_pagamento": ("A forma de pagamento", 40),
     "email_passageiro": ("O e-mail do passageiro", 254),
     "whatsapp_passageiro": ("O WhatsApp do passageiro", 20),
+    "documento_passageiro": ("O CPF/CNPJ do passageiro", 18),
     "data": ("A data", 10),
     "hora": ("A hora", 5),
     "nome_motorista": ("O nome do motorista", 120),
@@ -199,6 +204,45 @@ def sanitize_phone(value: str) -> str:
     return "".join(char for char in (value or "") if char.isdigit())
 
 
+def phone_e164(value: str, ddi: str = "55") -> str:
+    """Telefone no formato que o wa.me exige: so digitos, com codigo do pais.
+
+    Sem o 55 na frente, o link abre o WhatsApp sem destinatario e o motorista
+    precisa ter o passageiro salvo na agenda — exatamente o que este app existe
+    para evitar.
+
+    A classificacao e por tamanho, nao por prefixo, e isso importa: existe o DDD
+    55 (Santa Maria/RS). "5598765432" tem 10 digitos, entao e DDD 55 + fixo, e
+    vira "555598765432". Quem olhasse so o prefixo trataria como codigo de pais
+    e mandaria a mensagem para um numero que nao existe.
+    """
+    digitos = sanitize_phone(value)
+    if digitos.startswith("00"):      # prefixo de discagem internacional
+        digitos = digitos[2:]
+    digitos = digitos.lstrip("0")     # zero de DDD interurbano
+    if len(digitos) in (10, 11):      # DDD + numero, sem pais
+        return ddi + digitos
+    if len(digitos) in (12, 13):      # ja veio com o codigo do pais
+        return digitos
+    return ""                         # curto ou longo demais: nao da link
+
+
+def format_document_br(value: str) -> str:
+    """Pontua CPF e CNPJ; devolve como veio se nao reconhecer o tamanho.
+
+    Nao valida digito verificador de proposito: o campo e opcional e serve para
+    o passageiro prestar contas. Recusar um documento estrangeiro, ou um CPF
+    que o passageiro ditou errado, so trocaria um recibo util por um erro na
+    tela do taxista, com o passageiro esperando dentro do carro.
+    """
+    d = sanitize_phone(value)          # mesma limpeza: so digitos
+    if len(d) == 11:
+        return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:]}"
+    if len(d) == 14:
+        return f"{d[:2]}.{d[2:5]}.{d[5:8]}/{d[8:12]}-{d[12:]}"
+    return (value or "").strip()
+
+
 def format_date_br(date_value: str) -> str:
     if not date_value:
         return "-"
@@ -251,6 +295,11 @@ def compose_receipt_message(receipt: dict, public_url: str) -> str:
         "",
         f"🔗 Acesse o recibo: {public_url}",
     ]
+    # O recibo e repassado entre passageiros; o telefone impresso traz corrida
+    # nova para o motorista sem custo de divulgacao.
+    fone_motorista = (receipt.get("driver_snapshot") or {}).get("whatsapp") or ""
+    if fone_motorista:
+        lines += ["", f"🚕 Precisou de corrida? Me chame no WhatsApp: {fone_motorista}"]
     return "\n".join(lines)
 
 
@@ -260,7 +309,7 @@ def build_whatsapp_link(receipt: dict, public_url: str, with_recipient: bool = T
     with_recipient=False omite o telefone do passageiro: a página do recibo é
     pública e qualquer visitante com o link leria o destinatário no href.
     """
-    phone = sanitize_phone(receipt.get("passenger_whatsapp", "")) if with_recipient else ""
+    phone = phone_e164(receipt.get("passenger_whatsapp", "")) if with_recipient else ""
     message = quote(compose_receipt_message(receipt, public_url))
     if phone:
         return f"https://wa.me/{phone}?text={message}"
@@ -339,8 +388,9 @@ class PostgresStore:
 
     _RECEIPT_COLS = """
         rid, rid as _id, driver_id, is_guest, passenger, passenger_email,
-        passenger_whatsapp, trip_date, trip_time, origin, destination,
-        amount, payment_method, notes, driver_snapshot, created_at
+        passenger_whatsapp, passenger_document, trip_date, trip_time,
+        origin, destination, amount, payment_method, notes, driver_snapshot,
+        created_at
     """
 
     def __init__(self, dsn: str) -> None:
@@ -473,6 +523,10 @@ class PostgresStore:
         dados.pop("_id", None)
         dados["driver_snapshot"] = Json(dados.get("driver_snapshot") or {})
         dados["trip_time"] = dados.get("trip_time") or ""
+        # Campo novo: as versoes do app ja instaladas no aparelho do motorista
+        # nao enviam documento. Sem o default, cada recibo dessas versoes
+        # quebraria no insert em vez de gravar sem o campo opcional.
+        dados["passenger_document"] = dados.get("passenger_document") or ""
 
         # created_at explícito é usado por testes e importação; sem ele, o
         # default now() da coluna vale.
@@ -494,10 +548,12 @@ class PostgresStore:
             row = conn.execute(
                 f"""insert into public.receipts
                     (rid, driver_id, is_guest, passenger, passenger_email,
-                     passenger_whatsapp, trip_date, trip_time, origin, destination,
-                     amount, payment_method, notes, driver_snapshot{col_created})
+                     passenger_whatsapp, passenger_document, trip_date, trip_time,
+                     origin, destination, amount, payment_method, notes,
+                     driver_snapshot{col_created})
                     values (%(rid)s, %(driver_id)s, %(is_guest)s, %(passenger)s,
-                            %(passenger_email)s, %(passenger_whatsapp)s, %(trip_date)s,
+                            %(passenger_email)s, %(passenger_whatsapp)s,
+                            %(passenger_document)s, %(trip_date)s,
                             %(trip_time)s, %(origin)s, %(destination)s, %(amount)s,
                             %(payment_method)s, %(notes)s, %(driver_snapshot)s{val_created})
                     returning {self._RECEIPT_COLS}""",
@@ -772,6 +828,30 @@ def auth_entrar_com_token(email: str, password: str) -> dict | None:
     }
 
 
+def auth_renovar_sessao(refresh_token: str) -> dict | None:
+    """Troca o refresh token por um access token novo.
+
+    O access token do Supabase vale uma hora. Sem esta rota o app parava de
+    sincronizar em silencio depois desse tempo: o 401 fazia a fila desistir, o
+    motorista seguia emitindo recibo que nunca subia, e o passageiro recebia
+    link que nunca ia funcionar. So o botao "Sair", manual, destravava.
+    """
+    if not refresh_token:
+        return None
+    try:
+        resposta = supabase_public().auth.refresh_session(refresh_token)
+    except Exception:
+        return None
+    if not resposta or not resposta.session or not resposta.user:
+        return None
+    return {
+        "user_id": str(resposta.user.id),
+        "access_token": resposta.session.access_token,
+        "refresh_token": resposta.session.refresh_token,
+        "expires_at": resposta.session.expires_at,
+    }
+
+
 def auth_usuario_do_token(token: str) -> str | None:
     """Valida o JWT no Supabase e devolve o id do usuário."""
     if not token:
@@ -1030,6 +1110,7 @@ def inject_globals() -> dict:
         "csp_nonce": g.get("csp_nonce", ""),
         "stripe_configured": bool(os.environ.get("STRIPE_SECRET_KEY")),
         "stripe_pub_key": os.environ.get("STRIPE_PUBLISHABLE_KEY", ""),
+        "free_monthly_limit": FREE_MONTHLY_LIMIT,
     }
 
 
@@ -1414,6 +1495,8 @@ def recibo_criar():
         "passenger": passenger,
         "passenger_email": normalize_email(request.form.get("email_passageiro", "")),
         "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
+        "passenger_document": format_document_br(
+            request.form.get("documento_passageiro", "")),
         "trip_date": trip_date,
         "trip_date_display": format_date_br(trip_date),
         "trip_time": request.form.get("hora", "").strip(),
@@ -1513,6 +1596,8 @@ def gerador():
             "passenger": passenger,
             "passenger_email": normalize_email(request.form.get("email_passageiro", "")),
             "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
+            "passenger_document": format_document_br(
+                request.form.get("documento_passageiro", "")),
             "trip_date": trip_date,
             "trip_date_display": format_date_br(trip_date),
             "trip_time": request.form.get("hora", "").strip(),
@@ -1744,6 +1829,21 @@ def api_login():
     return jsonify(tokens)
 
 
+@app.post("/api/refresh")
+def api_refresh():
+    """Renova a sessao do app. Nao exige o access token — ele ja expirou."""
+    dados = request.get_json(silent=True) or {}
+    tokens = auth_renovar_sessao(str(dados.get("refresh_token", "")).strip())
+    if not tokens:
+        return jsonify({"erro": "refresh_invalido"}), 401
+
+    # Se o perfil sumiu (conta apagada), renovar nao adianta: manda para login.
+    if not get_store().get_user_by_id(tokens["user_id"]):
+        return jsonify({"erro": "perfil_ausente"}), 401
+
+    return jsonify(tokens)
+
+
 @app.post("/api/cadastro")
 def api_cadastro():
     """Cadastro pelo app nativo. Devolve os tokens já logado.
@@ -1855,6 +1955,7 @@ def api_criar_recibo():
         "observacoes": dados.get("observacoes", ""),
         "email_passageiro": dados.get("email_passageiro", ""),
         "whatsapp_passageiro": dados.get("whatsapp_passageiro", ""),
+        "documento_passageiro": dados.get("documento_passageiro", ""),
         "hora": dados.get("hora", ""),
     }
     for nome, (rotulo, maximo) in RECEIPT_FIELD_LIMITS.items():
@@ -1877,6 +1978,7 @@ def api_criar_recibo():
         "passenger": str(campos["passageiro"]).strip(),
         "passenger_email": normalize_email(str(campos["email_passageiro"])),
         "passenger_whatsapp": str(campos["whatsapp_passageiro"]).strip(),
+        "passenger_document": format_document_br(str(campos["documento_passageiro"])),
         "trip_date": str(campos["data"]).strip(),
         "trip_time": str(campos["hora"]).strip(),
         "origin": str(campos["origem"]).strip(),

@@ -560,6 +560,39 @@ else:
     print("  (pulado: RESEND_API_KEY ausente)")
 
 
+# -- Telefone para o wa.me ------------------------------------------------
+# Sem codigo do pais o link abre o WhatsApp sem destinatario, e o motorista so
+# consegue enviar se ja tiver o passageiro salvo na agenda.
+print("\n-- Telefone para o wa.me --")
+_casos = [
+    ("11987654321",        "5511987654321", "celular com DDD"),
+    ("(11) 98765-4321",    "5511987654321", "pontuado"),
+    ("011987654321",       "5511987654321", "com zero de interurbano"),
+    ("+55 11 98765-4321",  "5511987654321", "ja internacional"),
+    ("5511987654321",      "5511987654321", "so digitos, com pais"),
+    ("00551198765432",     "551198765432",  "prefixo 00 de discagem"),
+    ("1132654321",         "551132654321",  "fixo com DDD"),
+    # DDD 55 e de Santa Maria/RS. Classificar por prefixo trataria estes 10
+    # digitos como codigo de pais e mandaria para um numero que nao existe.
+    ("5598765432",         "555598765432",  "DDD 55 nao e codigo de pais"),
+    ("98765432",           "",              "sem DDD, nao da link"),
+    ("123",                "",              "curto demais"),
+    ("",                   "",              "vazio"),
+]
+for _entrada, _esperado, _porque in _casos:
+    check(f"telefone: {_porque}", A.phone_e164(_entrada) == _esperado,
+          f"{_entrada!r} -> {A.phone_e164(_entrada)!r}, esperado {_esperado!r}")
+
+# O link so leva destinatario quando o numero e utilizavel.
+_rec = {"rid": "X" * 14, "passenger_whatsapp": "(11) 98765-4321",
+        "passenger": "Teste", "driver_snapshot": {"whatsapp": "(44) 99999-1111"}}
+_link = A.build_whatsapp_link(_rec, "https://recibotaxi.com.br/r/x")
+check("wa.me leva o numero com 55", "wa.me/5511987654321?" in _link, _link[:60])
+check("mensagem traz a chamada do motorista",
+      "(44) 99999-1111" in A.compose_receipt_message(_rec, "https://x"))
+_sem = A.build_whatsapp_link(_rec, "https://x", with_recipient=False)
+check("sem destinatario, nao vaza o numero", "5511987654321" not in _sem)
+
 # -- Chave do RevenueCat --------------------------------------------------
 # A Test Store (prefixo test_) serve para ensaiar a compra sem a Apple, sem
 # contrato e sem cartao. Util no desenvolvimento, desastre se escapar: o app

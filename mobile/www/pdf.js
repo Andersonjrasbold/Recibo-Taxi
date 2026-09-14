@@ -68,6 +68,14 @@ function pdfDoRecibo(recibo) {
   texto(m.full_name || '-', { tam: 12, dy: 14 });
   texto(`Placa ${m.plate || '-'}${m.city ? ' - ' + m.city : ''}`, { tam: 10, dy: 14 });
   if (m.license_number) texto(`Alvará ${m.license_number}`, { tam: 10, dy: 13 });
+  if (m.whatsapp) texto(`WhatsApp ${m.whatsapp}`, { tam: 10, dy: 13 });
+
+  // O recibo circula entre passageiros; o telefone impresso traz corrida nova.
+  if (m.whatsapp) {
+    regua();
+    texto('Precisou de corrida? Me chame no WhatsApp:', { fonte: 'F2', tam: 10, dy: 22 });
+    texto(m.whatsapp, { fonte: 'F2', tam: 14, dy: 17 });
+  }
 
   y = 70;
   texto('Este recibo não é documento fiscal.', { tam: 8, dy: 0 });

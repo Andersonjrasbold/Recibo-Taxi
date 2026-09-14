@@ -141,6 +141,29 @@ function mostrar(qual) {
   window.scrollTo(0, 0);
 }
 
+// O wa.me exige o numero com codigo do pais. Sem isso o WhatsApp abre sem
+// destinatario e o motorista so consegue enviar se ja tiver o passageiro
+// salvo na agenda — o problema que este botao existe para resolver.
+//
+// A classificacao e por tamanho, nao por prefixo: o DDD 55 existe (Santa
+// Maria/RS), entao "5598765432", de 10 digitos, e DDD + fixo e vira
+// "555598765432", nao um numero ja internacional.
+function foneE164(valor, ddi = '55') {
+  let d = String(valor || '').replace(/\D/g, '');
+  if (d.startsWith('00')) d = d.slice(2);
+  d = d.replace(/^0+/, '');
+  if (d.length === 10 || d.length === 11) return ddi + d;
+  if (d.length === 12 || d.length === 13) return d;
+  return '';
+}
+
+// Vira anuncio do motorista no recibo: quem recebeu tem como chamar de novo
+// sem procurar o contato.
+function chamadaDoMotorista(m) {
+  const fone = (m && m.whatsapp) || '';
+  return fone ? `Precisou de corrida? Me chame no WhatsApp: ${fone}` : '';
+}
+
 function formatarBR(iso) {
   if (!iso) return '-';
   const [a, m, d] = iso.split('-');
@@ -163,7 +186,9 @@ function montarRecibo(recibo) {
       <dt>Pagamento</dt><dd>${d.forma_pagamento}</dd>
       <dt>Motorista</dt><dd>${m.full_name || ''}</dd>
       <dt>Placa</dt><dd>${m.plate || ''}</dd>
+      ${m.whatsapp ? `<dt>WhatsApp</dt><dd>${m.whatsapp}</dd>` : ''}
     </dl>
+    ${chamadaDoMotorista(m) ? `<p class="recibo-chamada">${chamadaDoMotorista(m)}</p>` : ''}
     <p class="recibo-estado">
       ${recibo.pendente ? '⏳ Aguardando sinal para sincronizar' : '✓ Sincronizado'}
     </p>`;
@@ -181,6 +206,8 @@ function textoParaCompartilhar(recibo) {
     `💳 Pagamento: ${d.forma_pagamento}`,
   ];
   if (recibo.url) linhas.push('', `🔗 ${recibo.url}`);
+  const chamada = chamadaDoMotorista(recibo.motorista);
+  if (chamada) linhas.push('', `🚕 ${chamada}`);
   return linhas.join('\n');
 }
 
@@ -326,12 +353,32 @@ $('form-recibo').addEventListener('submit', async (ev) => {
 
   $('recibo').innerHTML = montarRecibo(recibo);
   $('btn-compartilhar').dataset.rid = rid;
+  // Sem numero do passageiro nao ha para quem abrir a conversa; o botao some
+  // em vez de abrir o WhatsApp vazio.
+  const temFone = !!foneE164(recibo.dados.whatsapp_passageiro);
+  $('btn-whats').hidden = !temFone;
+  $('btn-whats').dataset.rid = rid;
+  $('btn-compartilhar').className = temFone ? 'secundario' : 'primario';
   mostrar('tela-recibo');
 
   sincronizar().then(async () => {
     const atual = (await listarRecibos()).find((r) => r.rid === rid);
     if (atual) $('recibo').innerHTML = montarRecibo(atual);
   });
+});
+
+// O Share.share() do iOS abre a folha do sistema, que lista contatos salvos —
+// o passageiro de uma corrida avulsa nunca esta la. Este botao pula a folha e
+// abre a conversa pelo numero, que o WhatsApp aceita mesmo sem contato salvo.
+$('btn-whats').addEventListener('click', async () => {
+  const rid = $('btn-whats').dataset.rid;
+  const recibo = (await listarRecibos()).find((r) => r.rid === rid);
+  if (!recibo) return;
+  const fone = foneE164(recibo.dados.whatsapp_passageiro);
+  if (!fone) return;
+  vibrar();
+  const texto = encodeURIComponent(textoParaCompartilhar(recibo));
+  window.open(`https://wa.me/${fone}?text=${texto}`, '_blank');
 });
 
 $('btn-compartilhar').addEventListener('click', async () => {
@@ -368,7 +415,7 @@ $('btn-compartilhar').addEventListener('click', async () => {
   if (Share) { await Share.share({ title: `Recibo #${rid}`, text: texto }); return; }
   if (navigator.share) { await navigator.share({ title: `Recibo #${rid}`, text: texto }); return; }
 
-  const fone = (recibo.dados.whatsapp_passageiro || '').replace(/\D/g, '');
+  const fone = foneE164(recibo.dados.whatsapp_passageiro);
   window.open(`https://wa.me/${fone}?text=${encodeURIComponent(texto)}`, '_blank');
 });
 

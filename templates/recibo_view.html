@@ -132,6 +132,17 @@
 
         <div class="receipt-doc-divider"></div>
 
+        {% if dados.driver_snapshot.whatsapp %}
+        <!-- O recibo circula entre passageiros; o telefone aqui traz corrida nova. -->
+        <div class="driver-callout">
+          <i class="bi bi-whatsapp me-2"></i>
+          Precisou de corrida? Me chame no WhatsApp:
+          <strong>{{ dados.driver_snapshot.whatsapp }}</strong>
+        </div>
+        {% endif %}
+
+        <div class="receipt-doc-divider"></div>
+
         <div class="receipt-doc-footer">
           <span class="receipt-doc-footer-text">Documento gerado em {{ dados.created_at[:10] }} via Recibo Táxi</span>
           <button class="btn btn-print" id="btnPrint" type="button">

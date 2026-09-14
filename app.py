@@ -199,6 +199,29 @@ def sanitize_phone(value: str) -> str:
     return "".join(char for char in (value or "") if char.isdigit())
 
 
+def phone_e164(value: str, ddi: str = "55") -> str:
+    """Telefone no formato que o wa.me exige: so digitos, com codigo do pais.
+
+    Sem o 55 na frente, o link abre o WhatsApp sem destinatario e o motorista
+    precisa ter o passageiro salvo na agenda — exatamente o que este app existe
+    para evitar.
+
+    A classificacao e por tamanho, nao por prefixo, e isso importa: existe o DDD
+    55 (Santa Maria/RS). "5598765432" tem 10 digitos, entao e DDD 55 + fixo, e
+    vira "555598765432". Quem olhasse so o prefixo trataria como codigo de pais
+    e mandaria a mensagem para um numero que nao existe.
+    """
+    digitos = sanitize_phone(value)
+    if digitos.startswith("00"):      # prefixo de discagem internacional
+        digitos = digitos[2:]
+    digitos = digitos.lstrip("0")     # zero de DDD interurbano
+    if len(digitos) in (10, 11):      # DDD + numero, sem pais
+        return ddi + digitos
+    if len(digitos) in (12, 13):      # ja veio com o codigo do pais
+        return digitos
+    return ""                         # curto ou longo demais: nao da link
+
+
 def format_date_br(date_value: str) -> str:
     if not date_value:
         return "-"
@@ -251,6 +274,11 @@ def compose_receipt_message(receipt: dict, public_url: str) -> str:
         "",
         f"🔗 Acesse o recibo: {public_url}",
     ]
+    # O recibo e repassado entre passageiros; o telefone impresso traz corrida
+    # nova para o motorista sem custo de divulgacao.
+    fone_motorista = (receipt.get("driver_snapshot") or {}).get("whatsapp") or ""
+    if fone_motorista:
+        lines += ["", f"🚕 Precisou de corrida? Me chame no WhatsApp: {fone_motorista}"]
     return "\n".join(lines)
 
 
@@ -260,7 +288,7 @@ def build_whatsapp_link(receipt: dict, public_url: str, with_recipient: bool = T
     with_recipient=False omite o telefone do passageiro: a página do recibo é
     pública e qualquer visitante com o link leria o destinatário no href.
     """
-    phone = sanitize_phone(receipt.get("passenger_whatsapp", "")) if with_recipient else ""
+    phone = phone_e164(receipt.get("passenger_whatsapp", "")) if with_recipient else ""
     message = quote(compose_receipt_message(receipt, public_url))
     if phone:
         return f"https://wa.me/{phone}?text={message}"

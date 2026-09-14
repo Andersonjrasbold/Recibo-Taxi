@@ -219,6 +219,16 @@ function mostrarRecibo(recibo) {
   }
 }
 
+// O rid nasce no aparelho e a URL publica e deterministica a partir dele.
+// Esperar o servidor devolver o endereco criava uma corrida perdida: o
+// motorista toca em enviar antes da sincronizacao terminar, e a mensagem sai
+// sem link. Usa o endereco que o servidor mandou quando ja chegou; senao,
+// monta o mesmo endereco aqui. A base sai do proprio API para nao divergir do
+// lugar onde o recibo e gravado.
+function linkDoRecibo(recibo) {
+  return recibo.url || `${API || location.origin}/recibo/${recibo.rid}`;
+}
+
 function textoParaCompartilhar(recibo) {
   const d = recibo.dados;
   const linhas = [
@@ -231,10 +241,8 @@ function textoParaCompartilhar(recibo) {
     `💰 Valor: R$ ${d.valor_exibido}`,
     `💳 Pagamento: ${d.forma_pagamento}`,
   ];
-  if (recibo.url) {
-    linhas.push('', '🔗 Recibo completo, para ver, imprimir ou salvar em PDF:',
-                recibo.url);
-  }
+  linhas.push('', '🔗 Recibo completo, para ver, imprimir ou salvar em PDF:',
+              linkDoRecibo(recibo));
   const chamada = chamadaDoMotorista(recibo.motorista);
   if (chamada) linhas.push('', `🚕 ${chamada}`);
   return linhas.join('\n');

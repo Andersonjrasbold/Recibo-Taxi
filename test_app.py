@@ -734,6 +734,124 @@ if _pdf:
     _fim = _m.end() + int(_m.group(1))
     check("o tamanho declarado da imagem confere", _pdf[_fim:_fim + 10] == b"\nendstream")
 
+# -- Recibo por e-mail ----------------------------------------------------
+# O campo de e-mail do passageiro existia no site e nao servia para nada: era
+# guardado e esquecido. Agora o recibo sai por e-mail na hora em que chega ao
+# servidor. Nenhum teste aqui manda e-mail de verdade — send_email e trocado
+# por um contador.
+print("\n-- Recibo por e-mail --")
+
+for _v, _ok in [
+    ("joao@exemplo.com.br", True),
+    ("  Joao@Exemplo.com.br  ", True),
+    ("joao@exemplo", False),          # dominio sem ponto
+    ("joao@@exemplo.com", False),
+    ("@exemplo.com", False),
+    ("joao exemplo@x.com", False),    # espaco no meio
+    ("joao@.com", False),
+    ("", False),
+    ("a" * 250 + "@x.com", False),    # passa de 254
+]:
+    check(f"email_valido({_v.strip()[:26]!r}) = {_ok}", A.email_valido(_v) is _ok)
+
+_enviados = []
+_send_real = A.send_email
+A.send_email = lambda para, assunto, corpo, timeout=15: (
+    _enviados.append({"para": para, "assunto": assunto, "corpo": corpo}) or True)
+try:
+    _cmail = A.app.test_client()
+    _r = _cmail.post("/api/cadastro", json={
+        "nome_completo": "Correio Teste", "email": "correio@teste.invalid",
+        "senha": "senha12345", "whatsapp": "(45) 99888-7777", "cpf": "12345678901",
+        "cidade": "Cascavel", "placa": "EML1234"})
+    _tk = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+    _cab = {"Authorization": f"Bearer {_tk}"}
+
+    def _emitir(rid, email=""):
+        return _cmail.post("/api/recibos", headers=_cab, json={
+            "rid": rid, "passageiro": "Passageiro", "data": "2026-09-14",
+            "origem": "A", "destino": "B", "valor": "10", "forma_pagamento": "Pix",
+            "email_passageiro": email})
+
+    # Emitir NAO envia. Preencher o campo e uma coisa, mandar e outra — e cada
+    # envio custa. Quem decide e o motorista, tocando no botao.
+    _r = _emitir("E1" + "0" * 12, "passageiro@exemplo.com.br")
+    check("emitir com e-mail NAO envia nada",
+          _r.status_code == 201 and not _enviados, f"{_r.status_code} enviados={len(_enviados)}")
+    check("a resposta da emissao nao fala de e-mail",
+          "email_enviado" not in (_r.get_json() or {}), str(_r.get_json())[:90])
+
+    _r = _emitir("E2" + "0" * 12)
+    check("emitir sem e-mail tambem nao envia", _r.status_code == 201 and not _enviados)
+
+    _r = _cmail.post("/api/recibos/E1000000000000/email", headers=_cab)
+    check("o botao do motorista envia",
+          _r.status_code == 200 and len(_enviados) == 1,
+          f"{_r.status_code} {str(_r.get_json())[:80]}")
+    if _enviados:
+        check("o e-mail leva o link do recibo", "E1000000000000" in _enviados[0]["corpo"])
+        check("o assunto nomeia o recibo", "E1000000000000" in _enviados[0]["assunto"])
+        check("vai para o endereco informado",
+              _enviados[0]["para"] == "passageiro@exemplo.com.br", _enviados[0]["para"])
+
+    # Tocar duas vezes manda duas vezes: e o motorista pedindo, nao retentativa.
+    _r = _cmail.post("/api/recibos/E1000000000000/email", headers=_cab)
+    check("pedir de novo envia de novo", _r.status_code == 200 and len(_enviados) == 2)
+
+    # A fila do aparelho reenvia o mesmo rid ate ter certeza de que chegou.
+    # Nenhuma dessas retentativas pode virar e-mail para o passageiro.
+    _antes = len(_enviados)
+    _r = _emitir("E1" + "0" * 12, "passageiro@exemplo.com.br")
+    check("retentativa da fila nao manda e-mail",
+          _r.status_code == 200 and len(_enviados) == _antes, f"{_r.status_code}")
+
+    _r = _cmail.post("/api/recibos/E2000000000000/email", headers=_cab)
+    check("envio sem e-mail no recibo devolve 400", _r.status_code == 400, str(_r.status_code))
+
+    _r = _cmail.post("/api/recibos/FFFFFFFFFFFFFF/email", headers=_cab)
+    check("envio de recibo inexistente devolve 404", _r.status_code == 404, str(_r.status_code))
+
+    # Recibo de outro motorista tem de responder 404, e nao 403: 403 confirmaria
+    # a um estranho que aquele codigo existe.
+    _outro = A.app.test_client()
+    _r = _outro.post("/api/cadastro", json={
+        "nome_completo": "Outro Motorista", "email": "outro-email@teste.invalid",
+        "senha": "senha12345", "whatsapp": "(45) 99777-6666", "cpf": "98765432100",
+        "cidade": "Cascavel", "placa": "OTR1234"})
+    _tk2 = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+    _r = _outro.post("/api/recibos/E1000000000000/email",
+                     headers={"Authorization": f"Bearer {_tk2}"})
+    check("recibo de outro motorista responde 404", _r.status_code == 404, str(_r.status_code))
+
+    _r = _cmail.post("/api/recibos/E1000000000000/email")
+    check("reenvio sem sessao devolve 401", _r.status_code == 401, str(_r.status_code))
+
+    # Teto diario: protege a reputacao do dominio. Emitir continua funcionando.
+    _teto = A.EMAIL_DAILY_LIMIT
+    A.EMAIL_DAILY_LIMIT = 1
+    try:
+        _uid = A.get_store().get_user_by_email("correio@teste.invalid")["_id"]
+        A.get_store().bump_counter(f"email:{_uid}:{A.today_br()}")   # ja no teto
+        _r = _cmail.post("/api/recibos/E1000000000000/email", headers=_cab)
+        check("no teto diario, o envio devolve 429", _r.status_code == 429, str(_r.status_code))
+        _antes = len(_enviados)
+        _r = _emitir("E3" + "0" * 12, "outro@exemplo.com.br")
+        check("no teto diario, emitir recibo continua funcionando",
+              _r.status_code == 201 and len(_enviados) == _antes, f"{_r.status_code}")
+    finally:
+        A.EMAIL_DAILY_LIMIT = _teto
+
+    # Provedor fora do ar: resposta clara, e nenhuma excecao vazando.
+    A.send_email = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("provedor caiu"))
+    _r = _cmail.post("/api/recibos/E1000000000000/email", headers=_cab)
+    check("provedor fora do ar devolve 502, sem estourar",
+          _r.status_code == 502, f"{_r.status_code} {str(_r.get_json())[:80]}")
+    _r = _emitir("E4" + "0" * 12, "passageiro@exemplo.com.br")
+    check("provedor fora do ar nao atrapalha emitir recibo", _r.status_code == 201,
+          str(_r.status_code))
+finally:
+    A.send_email = _send_real
+
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")
 

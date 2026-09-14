@@ -130,6 +130,12 @@ SIGNUP_FIELD_LIMITS = {
 CLEANUP_BATCH_LIMIT = 500
 
 GUEST_DAILY_LIMIT = 20
+
+# Teto diario de recibos enviados por e-mail, por motorista. Existe para
+# proteger a reputacao do dominio: um endereco que dispara em volume vira spam
+# para os provedores, e ai nem o e-mail de senha chega mais. Bater no teto nao
+# impede emitir recibo — so deixa de mandar o e-mail daquele.
+EMAIL_DAILY_LIMIT = 60
 # A Política de Privacidade promete remover recibos sem cadastro em 12 meses.
 GUEST_RETENTION_DAYS = 365
 COUNTER_RETENTION_DAYS = 7
@@ -198,6 +204,24 @@ def month_range_utc(reference: datetime | None = None) -> tuple[str, str]:
 
 def normalize_email(value: str) -> str:
     return (value or "").strip().lower()
+
+
+def email_valido(value: str) -> bool:
+    """Confere so o que evita erro bobo: uma arroba, um ponto no dominio, sem
+    espaco e dentro do tamanho da RFC.
+
+    Nao tenta validar se o endereco existe. Isso quem responde e o provedor do
+    destinatario, e o motorista digitou o que o passageiro ditou — recusar um
+    endereco plausivel na tela custaria mais que um e-mail devolvido.
+    """
+    endereco = normalize_email(value)
+    if not endereco or len(endereco) > 254 or any(c.isspace() for c in endereco):
+        return False
+    if endereco.count("@") != 1:
+        return False
+    usuario, _, dominio = endereco.partition("@")
+    return bool(usuario) and "." in dominio and not dominio.startswith(".") \
+        and not dominio.endswith(".")
 
 
 def sanitize_phone(value: str) -> str:
@@ -323,6 +347,44 @@ def build_email_link(receipt: dict, public_url: str, with_recipient: bool = True
     subject = quote(f"Recibo #{receipt['rid']} — Recibo Táxi")
     body = quote(compose_receipt_message(receipt, public_url))
     return f"mailto:{target}?subject={subject}&body={body}"
+
+
+def enviar_recibo_por_email(receipt: dict) -> bool:
+    """Manda o recibo para o e-mail do passageiro. Devolve se o provedor aceitou.
+
+    O corpo e o mesmo texto do WhatsApp, com o link da pagina publica — e la que
+    o passageiro ve o recibo formatado, imprime ou salva em PDF. Texto puro, e
+    nao HTML, porque o que importa e chegar: e-mail transacional simples passa
+    por qualquer filtro e qualquer leitor.
+    """
+    destino = normalize_email(receipt.get("passenger_email", ""))
+    if not email_valido(destino):
+        return False
+
+    motorista = (receipt.get("driver_snapshot") or {}).get("full_name") or ""
+    abertura = f"Segue o recibo da sua corrida com {motorista}." if motorista \
+        else "Segue o recibo da sua corrida."
+    corpo = "\n".join([
+        "Olá!",
+        "",
+        abertura,
+        "",
+        compose_receipt_message(receipt, public_receipt_url(receipt["rid"])),
+        "",
+        "Este recibo não é documento fiscal.",
+        "Você recebeu este e-mail porque este endereço foi informado no momento "
+        "da corrida. Não é preciso responder.",
+    ])
+    # Tempo curto: este envio acontece dentro da requisicao que grava o recibo,
+    # e o aparelho espera essa resposta para liberar o botao de enviar.
+    return send_email(destino, f"Recibo da sua corrida — #{receipt['rid']}",
+                      corpo, timeout=8)
+
+
+def pode_enviar_email(driver_id: str) -> bool:
+    """Consome uma unidade do teto diario do motorista."""
+    usados = get_store().bump_counter(f"email:{driver_id}:{today_br()}")
+    return usados <= EMAIL_DAILY_LIMIT
 
 
 def absolute_url(endpoint: str, **values) -> str:
@@ -887,7 +949,7 @@ def remetente_padrao() -> str:
     return os.environ.get("EMAIL_FROM", "").strip() or "onboarding@resend.dev"
 
 
-def enviar_por_resend(to_address: str, subject: str, body: str) -> bool:
+def enviar_por_resend(to_address: str, subject: str, body: str, timeout: int = 15) -> bool:
     """Envia pela API HTTP do Resend.
 
     HTTP em vez do relay SMTP de propósito: numa função serverless, o handshake
@@ -921,7 +983,7 @@ def enviar_por_resend(to_address: str, subject: str, body: str) -> bool:
     )
 
     try:
-        with urllib.request.urlopen(requisicao, timeout=15) as resposta:
+        with urllib.request.urlopen(requisicao, timeout=timeout) as resposta:
             return 200 <= resposta.status < 300
     except urllib.error.HTTPError as exc:
         detalhe = (exc.read() or b"")[:200].decode("utf-8", "replace")
@@ -934,10 +996,10 @@ def enviar_por_resend(to_address: str, subject: str, body: str) -> bool:
         return False
 
 
-def send_email(to_address: str, subject: str, body: str) -> bool:
+def send_email(to_address: str, subject: str, body: str, timeout: int = 15) -> bool:
     """Envia por Resend; se não houver chave, cai para SMTP; sem nenhum, só loga."""
     if os.environ.get("RESEND_API_KEY", "").strip():
-        return enviar_por_resend(to_address, subject, body)
+        return enviar_por_resend(to_address, subject, body, timeout=timeout)
 
     host = os.environ.get("SMTP_HOST", "").strip()
     if not host:
@@ -1522,7 +1584,8 @@ def recibo_criar():
     # Cota e gravação na mesma operação: sem a janela entre contar e inserir,
     # duas emissões simultâneas não furam mais o teto do plano Grátis.
     quota = None if g.user.get("plan", "free") in PAID_PLANS else FREE_MONTHLY_LIMIT
-    if get_store().create_receipt(receipt, quota_limit=quota) is None:
+    salvo = get_store().create_receipt(receipt, quota_limit=quota)
+    if salvo is None:
         flash(
             f"Você atingiu o limite de {FREE_MONTHLY_LIMIT} recibos deste mês do "
             "plano Grátis. Faça upgrade para emitir recibos ilimitados.",
@@ -1829,6 +1892,38 @@ def api_login():
     return jsonify(tokens)
 
 
+@app.post("/api/recibos/<rid>/email")
+@api_login_required
+def api_enviar_recibo_por_email(rid: str):
+    """Manda o recibo para o e-mail do passageiro.
+
+    Este e o UNICO lugar que envia recibo por e-mail. Emitir nao envia nada:
+    preencher o campo e uma coisa, mandar e outra, e cada envio custa — no
+    plano gratuito do Resend sao 100 por dia somados todos os motoristas.
+    """
+    recibo = get_store().get_receipt(str(rid).strip().upper())
+    # Mesma resposta para recibo inexistente e recibo de outro motorista: dizer
+    # qual dos dois e contaria a um estranho que aquele codigo existe.
+    if not recibo or str(recibo.get("driver_id") or "") != str(g.user["_id"]):
+        return jsonify({"erro": "nao_encontrado"}), 404
+
+    if not email_valido(recibo.get("passenger_email", "")):
+        return jsonify({"erro": "sem_email"}), 400
+
+    if not pode_enviar_email(g.user["_id"]):
+        return jsonify({"erro": "limite_diario", "limite": EMAIL_DAILY_LIMIT}), 429
+
+    try:
+        enviou = enviar_recibo_por_email(recibo)
+    except Exception as exc:
+        app.logger.error("Falha ao enviar recibo %s: %s", recibo.get("rid"), exc)
+        enviou = False
+    if not enviou:
+        return jsonify({"erro": "falha_no_envio"}), 502
+
+    return jsonify({"enviado": True, "para": recibo["passenger_email"]})
+
+
 @app.post("/api/refresh")
 def api_refresh():
     """Renova a sessao do app. Nao exige o access token — ele ja expirou."""
@@ -2011,6 +2106,10 @@ def api_criar_recibo():
             return jsonify({"erro": "rid_de_outro_motorista"}), 409
         return jsonify({"erro": "limite_mensal", "limite": FREE_MONTHLY_LIMIT}), 402
 
+    # O e-mail NAO sai daqui. Quem decide e o motorista, tocando em "Enviar por
+    # e-mail" na tela do recibo (POST /api/recibos/<rid>/email). Preencher o
+    # campo e uma coisa; mandar e outra — o passageiro pode ter dito o endereco
+    # so para o motorista guardar.
     return (
         jsonify(
             {

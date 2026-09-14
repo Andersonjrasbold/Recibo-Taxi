@@ -71,6 +71,18 @@ precisam de registro manual do par *nome do pacote + chave de assinatura*.
 | Chave de upload, SHA-256 | `44:5B:A8:B2:68:5F:79:6A:2C:98:D5:37:C6:BA:0C:E7:6B:A3:12:C6:EB:F0:22:D5:1B:BF:95:EA:AC:CA:68:DB` |
 | Chave de upload, SHA-1 | `F0:DC:BF:4F:1C:FB:DD:72:BB:67:A0:8B:7B:A0:F6:9E:A3:B5:D8:2A` |
 
+**O campo da impressão digital só aceita um formato, e não é nenhum dos dois que o
+Google imprime.** Testado em 14/09/2026:
+
+| Forma | Origem | Resultado |
+|---|---|---|
+| `44:5B:A8:...` maiúscula com dois-pontos | saída do `keytool` | **recusado** |
+| `445ba8b2...` minúscula contínua | saída do `apksigner` | não testado |
+| `445BA8B2...` **maiúscula contínua** | nenhuma ferramenta imprime assim | **aceito** |
+
+Ou seja: pegue a saída do `keytool` e tire os dois-pontos, sem mexer no caixa. Se
+aparecer "impressão digital inválida", é isso — o valor está certo, a forma é que não.
+
 Essa é a **nossa** chave, a que assina o APK que instalamos direto no aparelho. O que
 sai pela Play é assinado pelo Google (Play App Signing) e entra pelo registro
 automático quando o app existir no console.

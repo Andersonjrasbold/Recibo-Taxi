@@ -148,7 +148,7 @@ A digital de uso único, que antes vinha do hash da senha, agora vem do
 
 | Plano | Preço | Limite |
 |---|---|---|
-| Grátis | R$ 0,00 | 5 recibos por mês-calendário (fuso de Brasília) |
+| Grátis | R$ 0,00 | 100 recibos por mês-calendário (fuso de Brasília) — valor da fase de testes |
 | Pro | R$ 19,90/mês | Ilimitado |
 
 O limite é aplicado em `recibo_criar`. O webhook da Stripe rebaixa a conta para

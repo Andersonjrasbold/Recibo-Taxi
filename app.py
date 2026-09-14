@@ -70,7 +70,11 @@ APP_NAME = "Recibo Táxi"
 # Brasil não adota horário de verão desde 2019, então o offset é fixo.
 BR_TZ = timezone(timedelta(hours=-3))
 
-FREE_MONTHLY_LIMIT = 5
+# Fase de testes: 100 por mes, para ninguem esbarrar no teto enquanto o app e
+# provado na rua (aconteceu: cinco recibos de teste e a fila parou em 402). O
+# valor definitivo ainda vai ser decidido. Os textos do site leem daqui, via
+# inject_globals, entao mudar este numero basta.
+FREE_MONTHLY_LIMIT = 100
 # "business" segue aqui de propósito: o plano saiu de venda, mas quem já assina
 # mantém o acesso ilimitado até cancelar. Só STRIPE_PRICE_IDS perdeu a entrada,
 # o que faz /assinar/business responder 400 para assinaturas novas.
@@ -1106,6 +1110,7 @@ def inject_globals() -> dict:
         "csp_nonce": g.get("csp_nonce", ""),
         "stripe_configured": bool(os.environ.get("STRIPE_SECRET_KEY")),
         "stripe_pub_key": os.environ.get("STRIPE_PUBLISHABLE_KEY", ""),
+        "free_monthly_limit": FREE_MONTHLY_LIMIT,
     }
 
 

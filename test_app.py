@@ -13,6 +13,7 @@ rodar por acidente. Toda conta que ela cria usa o dominio @teste.invalid
 
 Sai com codigo 1 se algum teste falhar.
 """
+import base64
 import hashlib
 import hmac as _hmac
 import io
@@ -679,6 +680,21 @@ if os.path.exists(_ios):
           io.open(_ios, encoding="utf-8").read() == _cfg,
           "rode: npx cap sync ios")
 
+
+# -- Limite do plano Gratis nos textos do site ---------------------------
+# O numero vive em FREE_MONTHLY_LIMIT e os templates leem de la. Um "5"
+# escrito a mao num template voltaria a divergir na primeira mudanca de plano
+# — e foi assim que o site prometia 5 enquanto a fase de testes libera 100.
+print("\n-- Limite do plano Gratis nos textos do site --")
+_pub = A.app.test_client()
+for _rota in ("/", "/planos", "/termos"):
+    _html = _pub.get(_rota).get_data(as_text=True)
+    check(f"{_rota} mostra 'Ate {A.FREE_MONTHLY_LIMIT} recibos'",
+          f"Até {A.FREE_MONTHLY_LIMIT} recibos" in _html)
+import glob as _glob
+_fixos = [f for f in _glob.glob("templates/*.html")
+          if _re.search(r"\b5 recibos", io.open(f, encoding="utf-8").read())]
+check("nenhum template com o limite escrito a mao", not _fixos, ", ".join(_fixos))
 
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")

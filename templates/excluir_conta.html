@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Excluir sua conta{% endblock %}
+
+{% block content %}
+<section class="legal-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-9 col-xl-8">
+
+        <div class="legal-header">
+          <span class="legal-eyebrow"><i class="bi bi-trash3-fill me-1"></i>Sua conta</span>
+          <h1 class="legal-title">Excluir sua conta do {{ app_name }}</h1>
+          <p class="legal-updated">Última atualização: {{ updated_at }}</p>
+        </div>
+
+        <div class="legal-card">
+
+          <p>
+            Esta página explica como apagar sua conta do aplicativo <strong>{{ app_name }}</strong>
+            e todos os dados ligados a ela. Vale para o app no celular e para o site.
+          </p>
+
+          <h2 class="legal-h2">1. Pelo aplicativo</h2>
+          <p>
+            Abra o {{ app_name }}, toque no <strong>ícone do seu perfil</strong>, no alto da tela, e
+            escolha <strong>“Excluir conta”</strong>. O app pede sua senha para confirmar. A exclusão
+            acontece na hora.
+          </p>
+
+          <h2 class="legal-h2">2. Pelo site</h2>
+          <p>
+            <a href="{{ url_for('login') }}">Entre na sua conta</a>, abra o painel, role até o fim e
+            use <strong>“Excluir minha conta”</strong>. É pedida a senha e a palavra
+            <strong>EXCLUIR</strong> para confirmar.
+          </p>
+
+          <h2 class="legal-h2">3. Se você não consegue mais entrar</h2>
+          <p>
+            Se perdeu o acesso ou já desinstalou o app, peça a exclusão por e-mail para
+            <a href="mailto:privacidade@recibotaxi.com.br">privacidade@recibotaxi.com.br</a>,
+            escrevendo do endereço cadastrado na conta. Respondemos em até 15 dias.
+          </p>
+
+          <h2 class="legal-h2">O que é apagado</h2>
+          <ul class="legal-list">
+            <li>Seu login e sua senha.</li>
+            <li>Seu cadastro: nome, e-mail, telefone, CPF, placa e número do alvará.</li>
+            <li>Todos os recibos que você emitiu, com os dados de passageiro que eles guardam.</li>
+            <li>Seu histórico de uso do plano no mês.</li>
+          </ul>
+          <p>
+            A exclusão é <strong>imediata e definitiva</strong>: não há lixeira, e não conseguimos
+            recuperar os recibos depois. Se você ainda vai precisar de algum, baixe o PDF antes.
+          </p>
+
+          <h2 class="legal-h2">Assinatura ativa</h2>
+          <p>
+            Se você assina o plano Pro, cancele a assinatura antes de apagar a conta — apagar a
+            conta não interrompe, sozinho, uma cobrança feita pela loja. Quem assinou pela
+            <strong>App Store</strong> ou pelo <strong>Google Play</strong> cancela na própria loja,
+            nas assinaturas da sua conta. Quem assinou pelo site tem a assinatura cancelada
+            automaticamente junto com a conta.
+          </p>
+
+          <h2 class="legal-h2">O que pode ser guardado depois</h2>
+          <p>
+            Registros de acesso (data, hora e endereço IP) são mantidos por 6 meses, como exige o
+            artigo 15 do Marco Civil da Internet, e dados necessários para obrigações fiscais e para
+            a defesa em processos ficam pelo prazo legal. Esses registros não são usados para
+            nenhuma outra finalidade. O resto some com a conta.
+          </p>
+
+          <p class="legal-updated mt-4">
+            Dúvidas: <a href="mailto:suporte@recibotaxi.com.br">suporte@recibotaxi.com.br</a>.
+            Sobre dados pessoais:
+            <a href="mailto:privacidade@recibotaxi.com.br">privacidade@recibotaxi.com.br</a>.
+            Veja também a <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>.
+          </p>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

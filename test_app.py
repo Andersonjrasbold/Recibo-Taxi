@@ -126,7 +126,7 @@ def novo_cliente(email="a@teste.invalid"):
 
 print("\n── Páginas públicas novas ──")
 c0 = A.app.test_client()
-for path in ["/privacidade", "/termos", "/recuperar-senha"]:
+for path in ["/privacidade", "/termos", "/recuperar-senha", "/excluir-conta"]:
     r = c0.get(path); check(f"GET {path}", r.status_code == 200, r.status_code)
 r = c0.get("/login")
 check("login mostra 'Esqueci minha senha'", "Esqueci minha senha" in r.get_data(as_text=True))
@@ -680,11 +680,23 @@ check("sem destinatario, nao vaza o numero", "5511987654321" not in _sem)
 # que pagou. Esta checagem existe para que esquecer de trocar de volta doa.
 print("\n-- Chave do RevenueCat --")
 _cfg = io.open("mobile/www/config.js", encoding="utf-8").read()
-_m = _re.search(r"RC_CHAVE_PUBLICA\s*=\s*'([^']*)'", _cfg)
-_chave = _m.group(1) if _m else ""
-check("config.js nao carrega chave da Test Store",
-      not _chave.startswith("test_"),
-      f"achou {_chave[:9]}... — troque pela appl_ antes de commitar")
+_chaves = dict(_re.findall(r"(ios|android)\s*:\s*'([^']*)'", _cfg))
+check("config.js declara uma chave por loja",
+      set(_chaves) == {"ios", "android"},
+      f"achou {sorted(_chaves)} — esperado ios e android")
+for _loja, _chave in sorted(_chaves.items()):
+    check(f"chave {_loja} nao e da Test Store",
+          not _chave.startswith("test_"),
+          f"achou {_chave[:9]}... — troque pela chave de producao antes de commitar")
+check("a chave do iOS e uma chave da App Store",
+      _chaves.get("ios", "").startswith("appl_"),
+      f"achou {_chaves.get('ios', '')[:9]}...")
+# A do Android nasce vazia e so e preenchida quando a conta do Play existir.
+# Vazia passa; errada, nao: goog_ e o unico prefixo que o RevenueCat aceita la.
+_and = _chaves.get("android", "")
+check("a chave do Android esta vazia ou e uma chave do Google Play",
+      _and == "" or _and.startswith("goog_"),
+      f"achou {_and[:9]}...")
 
 # O bundle iOS e uma copia: se o sync nao rodou, o aparelho testa codigo velho.
 _ios = "mobile/ios/App/App/public/config.js"
@@ -976,6 +988,17 @@ check("o app tem tela de excluir conta", 'id="tela-excluir"' in _html_app)
 check("a tela pede senha e a palavra EXCLUIR",
       'id="senha-exclusao"' in _html_app and 'id="confirmacao-exclusao"' in _html_app)
 check("o app linka a Politica de Privacidade", "/privacidade" in _html_app)
+
+# -- Botao voltar do Android ---------------------------------------------
+# Sem ninguem escutando o evento, o Capacitor so tenta voltar no historico do
+# WebView — que neste app nao existe. O voltar nao faria nada, e o motorista
+# leria isso como aparelho travado.
+print("\n-- Botao voltar do Android --")
+_appjs = io.open("mobile/www/app.js", encoding="utf-8").read()
+check("o app escuta o botao voltar", "'backButton'" in _appjs)
+check("o voltar fecha o menu do perfil antes de sair",
+      "voltarUmNivel" in _appjs and "fecharMenu()" in _appjs)
+check("so sai do app na tela inicial", "exitApp()" in _appjs)
 check("o app linka os Termos de Uso", "/termos" in _html_app)
 
 # A pagina publica do recibo nao pode ser indexada: mostra nome e CPF.

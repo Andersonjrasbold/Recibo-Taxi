@@ -2313,6 +2313,22 @@ def termos():
     return render_template("termos.html", updated_at="12 de setembro de 2026")
 
 
+@app.get("/excluir-conta")
+def pagina_excluir_conta():
+    """Pagina publica de exclusao de conta.
+
+    O Google Play exige as DUAS coisas de quem deixa criar conta no app: um
+    caminho dentro do app e um link na web onde qualquer um possa pedir a
+    exclusao — inclusive quem ja desinstalou e nao consegue mais entrar. O
+    formulario do painel nao serve sozinho: ele fica atras do login. Esta
+    pagina abre sem sessao e a URL vai declarada no formulario de Seguranca
+    dos Dados do Play Console.
+
+    Mesma URL do POST logo abaixo, que e quem realmente apaga: aqui e GET.
+    """
+    return render_template("excluir_conta.html", updated_at="14 de setembro de 2026")
+
+
 # ── Receipt view ──────────────────────────────────────────────────────────────
 
 @app.get("/recibo/<rid>")

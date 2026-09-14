@@ -16,6 +16,16 @@ const RID_TAMANHO = 14;
 // alternativa — o app roda igual nos dois lugares.
 const P = () => (window.Capacitor && window.Capacitor.Plugins) || {};
 const nativo = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const plataforma = () => (window.Capacitor && window.Capacitor.getPlatform
+  ? window.Capacitor.getPlatform() : 'web');
+
+// Cada loja e um app diferente dentro do RevenueCat, entao cada uma tem a sua
+// chave publica. Vazia significa "ainda nao configurada" — e nao erro.
+const chaveDaLoja = () => (window.RC_CHAVES || {})[plataforma()] || '';
+
+// O motorista le "App Store" no iPhone e "Google Play" no Android. Dizer a
+// loja errada faz a instrucao nao bater com o que ele tem na mao.
+const nomeDaLoja = () => (plataforma() === 'android' ? 'Google Play' : 'App Store');
 
 async function temRede() {
   const net = P().Network;
@@ -781,12 +791,13 @@ $('btn-compartilhar').addEventListener('click', async () => {
 
 // ── Assinatura ─────────────────────────────────────────────────────────────
 //
-// A Apple exige (Guideline 3.1.1) que a compra passe pelo IAP. Não há, e não
-// pode haver, link para assinar no site dentro do app iOS.
+// As duas lojas exigem que a compra passe pela loja: Apple na Guideline 3.1.1,
+// Google na politica de Pagamentos. Nao ha, e nao pode haver, link para
+// assinar no site dentro do app.
 
 async function iniciarCompras() {
   const { Purchases } = P();
-  const chave = window.RC_CHAVE_PUBLICA;
+  const chave = chaveDaLoja();
   if (!Purchases || !chave) return false;
   try {
     await Purchases.configure({ apiKey: chave });
@@ -817,22 +828,22 @@ $('btn-fechar-pro').addEventListener('click', () => mostrar('tela-emitir'));
 // de teste, rede caida. Sem o motivo na tela, o motorista repete o toque e eu
 // fico adivinhando. Agora o app diz o que deu, e guarda o codigo tecnico junto
 // — feio, mas e o que permite consertar em vez de chutar.
-const MOTIVOS_DE_COMPRA = {
+const motivosDeCompra = () => ({
   PRODUCT_NOT_AVAILABLE_FOR_PURCHASE:
-    'A App Store não está oferecendo a assinatura ainda. Isso costuma ser o '
+    `A ${nomeDaLoja()} não está oferecendo a assinatura ainda. Isso costuma ser o `
     + 'contrato de apps pagos que ainda não entrou em vigor.',
   CONFIGURATION_ERROR:
-    'A assinatura não chegou da App Store. Confira se o produto está pronto e '
+    `A assinatura não chegou da ${nomeDaLoja()}. Confira se o produto está pronto e `
     + 'se o contrato de apps pagos está ativo.',
   OFFLINE_CONNECTION_ERROR: 'Sem conexão. Tente com sinal melhor.',
   NETWORK_ERROR: 'A loja não respondeu. Tente de novo em instantes.',
-  STORE_PROBLEM_ERROR: 'A App Store está com problema agora. Tente mais tarde.',
+  STORE_PROBLEM_ERROR: `A ${nomeDaLoja()} está com problema agora. Tente mais tarde.`,
   PURCHASE_NOT_ALLOWED_ERROR:
-    'Este aparelho não permite compras. Veja Tempo de Uso e restrições.',
+    'Este aparelho não permite compras. Veja as restrições de compra do aparelho.',
   PAYMENT_PENDING_ERROR: 'A compra ficou pendente de aprovação. Aguarde a confirmação.',
   RECEIPT_ALREADY_IN_USE_ERROR: 'Esta compra já está em outra conta.',
   INVALID_APP_USER_ID: 'Sessão inconsistente. Saia e entre de novo.',
-};
+});
 
 // O plugin do RevenueCat devolve o codigo como NUMERO em texto ("23"), nao o
 // nome. Descobri no aparelho: a tela mostrou "(23)" e nenhuma frase, porque a
@@ -847,9 +858,9 @@ const NOME_DO_CODIGO_RC = {
 function mostrarErroDeCompra(erro, e) {
   const bruto = String(e?.code ?? e?.errorCode ?? '');
   const codigo = NOME_DO_CODIGO_RC[bruto] || bruto;
-  const base = MOTIVOS_DE_COMPRA[codigo]
+  const base = motivosDeCompra()[codigo]
     || (String(e?.message || '').includes('sem oferta')
-        ? 'A App Store não devolveu nenhuma assinatura para vender. '
+        ? `A ${nomeDaLoja()} não devolveu nenhuma assinatura para vender. `
           + 'O produto precisa estar pronto e o contrato de apps pagos ativo.'
         : 'Não foi possível concluir a compra.');
   erro.textContent = `${base}${codigo ? ` (${codigo}${bruto !== codigo ? ' ' + bruto : ''})` : ''}`;
@@ -860,7 +871,7 @@ $('btn-assinar').addEventListener('click', async () => {
   const erro = $('erro-pro');
   erro.hidden = true;
   const { Purchases } = P();
-  if (!Purchases || !window.RC_CHAVE_PUBLICA) {
+  if (!Purchases || !chaveDaLoja()) {
     erro.textContent = 'Assinatura ainda não disponível nesta versão.';
     erro.hidden = false;
     return;
@@ -963,6 +974,43 @@ async function irParaEmitir({ comHoraDeAgora = true } = {}) {
 // Sem passar o ouvinte direto: ele receberia o evento do clique como opcoes.
 $('btn-novo').addEventListener('click', () => irParaEmitir());
 $('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
+
+// ── Botão voltar do Android ────────────────────────────────────────────────
+// No Android o voltar é do sistema, não da tela. Sem ninguém escutando, o
+// Capacitor só tenta andar para trás no histórico do WebView — e este app é
+// uma página só, sem histórico nenhum. O resultado é o pior possível: o
+// motorista aperta voltar e não acontece NADA, como se o aparelho tivesse
+// travado. No iPhone o problema não existe porque lá não há esse botão.
+//
+// Aqui o voltar faz o que faz em qualquer app: fecha o que está por cima,
+// senão sobe um nível, e só deixa sair quando já está na tela inicial.
+function voltarUmNivel() {
+  if (!$('menu-perfil').hidden) { fecharMenu(); return true; }
+
+  if (!$('tela-recibo').hidden) {
+    // Veio do histórico volta para o histórico; recém-emitido volta para o
+    // formulário. É o mesmo destino do botão que está na tela.
+    if ($('btn-voltar-historico').hidden) irParaEmitir({ comHoraDeAgora: false });
+    else mostrarHistorico();
+    return true;
+  }
+
+  if (!$('tela-historico').hidden || !$('tela-assinatura').hidden
+      || !$('tela-excluir').hidden) {
+    irParaEmitir({ comHoraDeAgora: false });
+    return true;
+  }
+
+  if (!$('tela-cadastro').hidden) { mostrar('tela-login'); return true; }
+
+  return false;  // já está na raiz: sair do app é a resposta certa
+}
+
+if (P().App) {
+  P().App.addListener('backButton', () => {
+    if (!voltarUmNivel()) P().App.exitApp();
+  });
+}
 
 // As duas lojas exigem que quem cria conta dentro do app consiga apagar dentro
 // do app: Apple na 5.1.1(v), Google na politica de exclusao de dados. Mandar

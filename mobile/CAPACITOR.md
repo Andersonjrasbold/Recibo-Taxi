@@ -41,3 +41,58 @@ npm run sync      # copia www/ para os projetos nativos
 npm run ios       # abre no Xcode
 npm run android   # abre no Android Studio
 ```
+
+## Publicar no TestFlight
+
+Tudo por linha de comando, sem abrir o Xcode. Precisa da chave de API da App
+Store Connect com papel **Admin** (`Z53W4BVFVV`, em
+`~/Credenciais/Recibo-Taxi/apple/`). A chave de App Manager não consegue
+criar o certificado de distribuição, e o `exportArchive` falha com
+"Cloud signing permission error".
+
+```bash
+# 1. Bundle novo dentro do projeto iOS
+npm run sync
+
+# 2. Número do build: tem de subir a cada envio, a Apple recusa repetido
+sed -i '' 's/CURRENT_PROJECT_VERSION = 5;/CURRENT_PROJECT_VERSION = 6;/g' \
+  ios/App/App.xcodeproj/project.pbxproj
+
+# 3. Arquivar, assinado na nuvem
+CHAVE="$HOME/Credenciais/Recibo-Taxi/apple/AuthKey_Z53W4BVFVV.p8"
+ISSUER=1a48f074-d9f7-4c4a-b9c9-7f172ac0d5a5
+cd ios/App
+xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath /tmp/ReciboTaxi.xcarchive \
+  -allowProvisioningUpdates -authenticationKeyPath "$CHAVE" \
+  -authenticationKeyID Z53W4BVFVV -authenticationKeyIssuerID "$ISSUER" archive
+
+# 4. Exportar E enviar: o ExportOptions.plist tem destination=upload
+xcodebuild -exportArchive -archivePath /tmp/ReciboTaxi.xcarchive \
+  -exportOptionsPlist ../ExportOptions.plist -exportPath /tmp/upload \
+  -allowProvisioningUpdates -authenticationKeyPath "$CHAVE" \
+  -authenticationKeyID Z53W4BVFVV -authenticationKeyIssuerID "$ISSUER"
+```
+
+A Apple leva alguns minutos processando. Depois, para o build chegar ao
+testador, ainda é preciso anexá-lo ao grupo interno e escrever a nota
+"O que testar", pelo site do App Store Connect ou pela API
+(`POST /v1/betaGroups/{id}/relationships/builds` e
+`PATCH /v1/betaBuildLocalizations/{id}`; a localização pt-BR já existe, então
+é PATCH, não POST — o POST responde 409).
+
+`DEVELOPMENT_TEAM = C78J3R5666` já está no `project.pbxproj`. Sem ele o
+archive sai assinado com o certificado de desenvolvimento e não sobe.
+
+## Ver uma tela no simulador sem fazer login
+
+Injete uma sonda em `ios/App/App/public/index.html` — a **cópia**, nunca em
+`www/`; o próximo `npm run sync` apaga. Num `<script>` colocado **antes** do
+`app.js`, remova `access_token` e `refresh_token` do `localStorage`: sem isso
+a fila tenta subir os dados de mentira para produção. Depois, no `load`, grave
+recibos com `salvarRecibo()` e chame `mostrarHistorico()`, `abrirRecibo()` etc.
+
+`open -a Simulator` é obrigatório: sem janela o WKWebView não compõe e a
+captura sai preta. A captura é `xcrun simctl io <id> screenshot x.png`, que
+não pede permissão de gravação de tela. Ao terminar,
+`xcrun simctl uninstall <id> br.com.recibotaxi.app` apaga os dados da sonda.

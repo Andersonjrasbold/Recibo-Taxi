@@ -2,6 +2,10 @@
 {% block title %}Recibo #{{ dados.rid }}{% endblock %}
 
 {% block head %}
+{# A pagina mostra nome e, as vezes, CPF do passageiro. O endereco tem 56 bits
+   de aleatorio e nao se adivinha, mas link vazado num grupo, numa captura de
+   tela ou no historico de um navegador nao pode virar resultado de busca. #}
+<meta name="robots" content="noindex, nofollow">
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 {% endblock %}
 

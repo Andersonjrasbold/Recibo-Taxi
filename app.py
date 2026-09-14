@@ -1923,6 +1923,44 @@ def api_login():
     return jsonify(tokens)
 
 
+@app.post("/api/excluir-conta")
+@api_login_required
+def api_excluir_conta():
+    """Exclusao de conta pelo proprio app.
+
+    As duas lojas exigem que quem cria conta dentro do app consiga apagar
+    dentro do app — Apple na diretriz 5.1.1(v), Google na politica de exclusao
+    de dados. Mandar o motorista para o site nao cumpre.
+
+    Pede a senha, e nao so o token: token vazado num aparelho emprestado nao
+    pode apagar a conta e todos os recibos de alguem.
+    """
+    dados = request.get_json(silent=True) or {}
+    if not auth_conferir_senha(g.user["email"], str(dados.get("senha", ""))):
+        return jsonify({"erro": "senha_incorreta"}), 403
+
+    # Apagar sem conseguir parar a cobranca deixaria assinatura orfa, cobrando
+    # alguem que ja nao tem como cancelar. Mesma regra do site.
+    assinatura = g.user.get("stripe_subscription_id")
+    if assinatura:
+        stripe = get_stripe()
+        try:
+            if not stripe:
+                raise RuntimeError("Stripe nao configurada")
+            stripe.Subscription.cancel(assinatura)
+        except Exception as exc:
+            app.logger.error("Nao cancelou a assinatura %s: %s", assinatura, exc)
+            return jsonify({"erro": "assinatura_ativa"}), 409
+
+    # Quem assinou pela loja cancela na loja: a Apple e a Google nao deixam o
+    # servidor cancelar por fora, e apagar aqui nao para a cobranca de la.
+    if g.user.get("plan") in PAID_PLANS and not assinatura:
+        return jsonify({"erro": "assinatura_na_loja"}), 409
+
+    auth_excluir_usuario(g.user["_id"])
+    return jsonify({"excluida": True})
+
+
 @app.post("/api/recibos/<rid>/email")
 @api_login_required
 def api_enviar_recibo_por_email(rid: str):

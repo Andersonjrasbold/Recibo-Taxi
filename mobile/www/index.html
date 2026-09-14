@@ -34,7 +34,10 @@
         </div>
         <button id="btn-pro" class="menu-item">Recibo Táxi Pro</button>
         <button id="btn-historico" class="menu-item">Ver histórico</button>
+        <a href="https://recibo-taxi.vercel.app/privacidade" class="menu-item">Política de Privacidade</a>
+        <a href="https://recibo-taxi.vercel.app/termos" class="menu-item">Termos de Uso</a>
         <button id="btn-sair" class="menu-item menu-item-saida">Sair</button>
+        <button id="btn-excluir-conta" class="menu-item menu-item-saida">Excluir minha conta</button>
       </div>
     </div>
   </div>
@@ -105,7 +108,10 @@
     <button type="submit" class="primario">Criar conta</button>
     <p id="erro-cadastro" class="erro" hidden></p>
     <p class="ajuda" style="margin-top:1rem">
-      Ao criar a conta você concorda com os Termos de Uso e a Política de Privacidade.
+      Ao criar a conta você concorda com os
+      <a href="https://recibo-taxi.vercel.app/termos" class="ligacao">Termos de Uso</a>
+      e a
+      <a href="https://recibo-taxi.vercel.app/privacidade" class="ligacao">Política de Privacidade</a>.
     </p>
   </form>
 </section>
@@ -225,6 +231,37 @@
     Renova automaticamente. Cancele quando quiser pelos Ajustes do aparelho,
     até 24 h antes da próxima cobrança.
   </p>
+</section>
+
+<!-- ── Excluir conta ───────────────────────────────────────────────────── -->
+<section id="tela-excluir" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Excluir conta</h1>
+    <button id="btn-fechar-excluir" class="texto">Cancelar</button>
+  </div>
+
+  <div class="aviso aviso-grave">
+    Isto apaga sua conta, seu cadastro e <strong>todos os seus recibos</strong>,
+    para sempre. Os recibos já enviados aos passageiros deixam de abrir.
+    Não há como desfazer.
+  </div>
+
+  <p class="ajuda">
+    Antes de continuar, use "Compartilhar PDF" para guardar os recibos que você
+    ainda vai precisar.
+  </p>
+
+  <form id="form-excluir">
+    <label for="senha-exclusao">Sua senha</label>
+    <input type="password" id="senha-exclusao" autocomplete="current-password" required>
+
+    <label for="confirmacao-exclusao">Digite EXCLUIR para confirmar</label>
+    <input type="text" id="confirmacao-exclusao" autocapitalize="characters"
+           autocomplete="off" spellcheck="false" required>
+
+    <button type="submit" class="primario perigo">Excluir minha conta</button>
+    <p id="erro-excluir" class="erro" hidden></p>
+  </form>
 </section>
 
 <!-- ── Histórico ───────────────────────────────────────────────────────── -->

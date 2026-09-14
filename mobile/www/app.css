@@ -55,6 +55,14 @@ body {
 }
 .menu-item:active { background:rgba(247,245,242,.09); }
 .menu-item-saida { color:var(--coral); }
+/* Os itens do menu que sao link precisam parecer botao. */
+a.menu-item { text-decoration:none; }
+.ligacao { color:var(--ambar); font-weight:700; }
+.aviso-grave {
+  background:rgba(224,57,44,.14); color:#ffb3ad;
+  border-color:rgba(224,57,44,.4);
+}
+.primario.perigo { background:var(--coral); color:var(--paper); }
 
 /* Fica ABAIXO do cabecalho (z-index 5) de proposito: se cobrisse o menu,
    engoliria o toque nos proprios itens. */

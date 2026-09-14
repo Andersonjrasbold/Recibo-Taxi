@@ -930,6 +930,60 @@ try:
 finally:
     A.send_email = _send_real
 
+# -- Exclusao de conta pelo app ------------------------------------------
+# As duas lojas exigem que quem cria conta DENTRO do app consiga apagar dentro
+# do app: Apple na diretriz 5.1.1(v), Google na politica de exclusao de dados.
+# Mandar o motorista para o site nao cumpre. Faltava, e so nao deu rejeicao
+# porque o app nunca passou por revisao completa — TestFlight nao revisa.
+print("\n-- Exclusao de conta pelo app --")
+_cdel = A.app.test_client()
+_r = _cdel.post("/api/cadastro", json={
+    "nome_completo": "Some Teste", "email": "some@teste.invalid", "senha": "senha12345",
+    "whatsapp": "45998238620", "cpf": "12345678901", "cidade": "Cascavel", "placa": "DEL1234"})
+_tkd = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+_cabd = {"Authorization": f"Bearer {_tkd}"}
+
+_r = _cdel.post("/api/excluir-conta", json={"senha": "senha12345"})
+check("excluir sem sessao devolve 401", _r.status_code == 401, str(_r.status_code))
+
+_r = _cdel.post("/api/excluir-conta", headers=_cabd, json={"senha": "errada"})
+check("senha errada nao exclui", _r.status_code == 403, str(_r.status_code))
+check("a conta continua de pe depois da senha errada",
+      A.get_store().get_user_by_email("some@teste.invalid") is not None)
+
+# Assinante pela loja: so a loja para a cobranca. Apagar aqui deixaria o
+# motorista pagando sem ter como cancelar.
+_uid_del = A.get_store().get_user_by_email("some@teste.invalid")["_id"]
+A.get_store().update_user(_uid_del, {"plan": "pro"})
+_r = _cdel.post("/api/excluir-conta", headers=_cabd, json={"senha": "senha12345"})
+check("assinante pela loja e barrado, com motivo",
+      _r.status_code == 409 and (_r.get_json() or {}).get("erro") == "assinatura_na_loja",
+      f"{_r.status_code} {str(_r.get_json())[:80]}")
+check("e a conta continua existindo",
+      A.get_store().get_user_by_email("some@teste.invalid") is not None)
+
+A.get_store().update_user(_uid_del, {"plan": "free"})
+_r = _cdel.post("/api/excluir-conta", headers=_cabd, json={"senha": "senha12345"})
+check("com a senha certa, exclui", _r.status_code == 200, f"{_r.status_code} {str(_r.get_json())[:80]}")
+check("a conta sumiu do banco",
+      A.get_store().get_user_by_email("some@teste.invalid") is None)
+_r = _cdel.get("/api/sessao", headers=_cabd)
+check("o token antigo nao abre mais a sessao", _r.status_code == 401, str(_r.status_code))
+
+# A tela existe no app, com senha e confirmacao.
+_html_app = io.open("mobile/www/index.html", encoding="utf-8").read()
+check("o app tem tela de excluir conta", 'id="tela-excluir"' in _html_app)
+check("a tela pede senha e a palavra EXCLUIR",
+      'id="senha-exclusao"' in _html_app and 'id="confirmacao-exclusao"' in _html_app)
+check("o app linka a Politica de Privacidade", "/privacidade" in _html_app)
+check("o app linka os Termos de Uso", "/termos" in _html_app)
+
+# A pagina publica do recibo nao pode ser indexada: mostra nome e CPF.
+_html_rec = A.app.test_client().get("/recibo/E9CB5C97A3C444").get_data(as_text=True)
+check("a pagina do recibo pede noindex", 'content="noindex, nofollow"' in _html_rec)
+check("a home continua indexavel",
+      "noindex" not in A.app.test_client().get("/").get_data(as_text=True))
+
 # -- Lixo dentro do pacote do app ----------------------------------------
 # O iCloud duplica arquivo dentro da pasta sincronizada: "index.html" vira
 # tambem "index 2.html". O `cap sync` so sobrescreve os arquivos que conhece,

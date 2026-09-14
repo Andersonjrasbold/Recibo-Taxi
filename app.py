@@ -824,6 +824,30 @@ def auth_entrar_com_token(email: str, password: str) -> dict | None:
     }
 
 
+def auth_renovar_sessao(refresh_token: str) -> dict | None:
+    """Troca o refresh token por um access token novo.
+
+    O access token do Supabase vale uma hora. Sem esta rota o app parava de
+    sincronizar em silencio depois desse tempo: o 401 fazia a fila desistir, o
+    motorista seguia emitindo recibo que nunca subia, e o passageiro recebia
+    link que nunca ia funcionar. So o botao "Sair", manual, destravava.
+    """
+    if not refresh_token:
+        return None
+    try:
+        resposta = supabase_public().auth.refresh_session(refresh_token)
+    except Exception:
+        return None
+    if not resposta or not resposta.session or not resposta.user:
+        return None
+    return {
+        "user_id": str(resposta.user.id),
+        "access_token": resposta.session.access_token,
+        "refresh_token": resposta.session.refresh_token,
+        "expires_at": resposta.session.expires_at,
+    }
+
+
 def auth_usuario_do_token(token: str) -> str | None:
     """Valida o JWT no Supabase e devolve o id do usuário."""
     if not token:
@@ -1795,6 +1819,21 @@ def api_login():
 
     usuario = get_store().get_user_by_id(tokens["user_id"])
     if not usuario:
+        return jsonify({"erro": "perfil_ausente"}), 401
+
+    return jsonify(tokens)
+
+
+@app.post("/api/refresh")
+def api_refresh():
+    """Renova a sessao do app. Nao exige o access token — ele ja expirou."""
+    dados = request.get_json(silent=True) or {}
+    tokens = auth_renovar_sessao(str(dados.get("refresh_token", "")).strip())
+    if not tokens:
+        return jsonify({"erro": "refresh_invalido"}), 401
+
+    # Se o perfil sumiu (conta apagada), renovar nao adianta: manda para login.
+    if not get_store().get_user_by_id(tokens["user_id"]):
         return jsonify({"erro": "perfil_ausente"}), 401
 
     return jsonify(tokens)

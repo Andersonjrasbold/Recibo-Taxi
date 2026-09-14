@@ -42,6 +42,9 @@ input:focus, select:focus { outline:2px solid var(--ambar); outline-offset:1px; 
 button { font:inherit; border:0; border-radius:14px; cursor:pointer; }
 /* O WhatsApp precisa ser um <a> de verdade, nao um botao com window.open:
    veja o comentario em app.js. Isto so devolve a aparencia de botao. */
+/* Enquanto o recibo nao subiu, o link existe mas a pagina do outro lado ainda
+   nao — tocar aqui mandaria um endereco que da 404. */
+.como-botao.aguardando { opacity:.45; pointer-events:none; }
 .como-botao {
   display:flex; align-items:center; justify-content:center;
   text-decoration:none; box-sizing:border-box;

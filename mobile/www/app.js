@@ -83,9 +83,41 @@ function novoRid() {
 
 // ── Rede ───────────────────────────────────────────────────────────────────
 const token = () => Guardado.get('access_token');
+const tokenRenovacao = () => Guardado.get('refresh_token');
+
+// O access token do Supabase vale uma hora. Antes disso nao havia renovacao:
+// passada a hora, o 401 fazia a fila desistir sem avisar, o motorista seguia
+// emitindo recibo que nunca subia, e o passageiro recebia link que nunca ia
+// funcionar. So o botao "Sair", manual, destravava.
+let renovando = null;      // uma renovacao por vez, mesmo com varios 401 juntos
+
+async function renovarSessao() {
+  if (!tokenRenovacao()) return false;
+  if (!renovando) {
+    renovando = (async () => {
+      try {
+        const resp = await fetch(API + '/api/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: tokenRenovacao() }),
+        });
+        if (!resp.ok) return false;         // sessao morreu de vez
+        const t = await resp.json();
+        Guardado.set('access_token', t.access_token);
+        Guardado.set('refresh_token', t.refresh_token);
+        return true;
+      } catch {
+        return false;   // sem rede nao e sessao invalida; tenta de novo depois
+      } finally {
+        renovando = null;
+      }
+    })();
+  }
+  return renovando;
+}
 
 async function api(caminho, opcoes = {}) {
-  const resp = await fetch(API + caminho, {
+  const enviar = () => fetch(API + caminho, {
     ...opcoes,
     headers: {
       'Content-Type': 'application/json',
@@ -93,6 +125,11 @@ async function api(caminho, opcoes = {}) {
       ...(opcoes.headers || {}),
     },
   });
+  let resp = await enviar();
+  // 401 quase sempre e so token vencido. Renova por baixo e repete uma vez.
+  if (resp.status === 401 && caminho !== '/api/refresh' && tokenRenovacao()) {
+    if (await renovarSessao()) resp = await enviar();
+  }
   return resp;
 }
 
@@ -123,7 +160,10 @@ async function sincronizar() {
       } else if (resp.status === 400 || resp.status === 409) {
         await salvarRecibo({ ...recibo, pendente: false, recusado: (await resp.json()).erro });
       } else if (resp.status === 401) {
-        break; // sessão expirou; o próximo login reenvia
+        // O api() ja tentou renovar. Chegar aqui e sessao morta de verdade —
+        // seguir em silencio deixaria a fila crescendo para sempre.
+        encerrarSessao();
+        break;
       }
     } catch {
       break; // sem rede de verdade: tenta na próxima
@@ -302,6 +342,7 @@ $('form-login').addEventListener('submit', async (ev) => {
     if (!resp.ok) { erro.textContent = 'E-mail ou senha inválidos.'; erro.hidden = false; return; }
     const t = await resp.json();
     Guardado.set('access_token', t.access_token);
+    Guardado.set('refresh_token', t.refresh_token);
     const sessao = await (await api('/api/sessao')).json();
     Guardado.set('motorista', sessao.motorista);
     await iniciar();
@@ -346,7 +387,9 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
       erro.hidden = false;
       return;
     }
-    Guardado.set('access_token', (await resp.json()).access_token);
+    const novo = await resp.json();
+    Guardado.set('access_token', novo.access_token);
+    Guardado.set('refresh_token', novo.refresh_token);
     const sessao = await (await api('/api/sessao')).json();
     Guardado.set('motorista', sessao.motorista);
     vibrar('HEAVY');
@@ -393,13 +436,24 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   mostrarRecibo(recibo);
   mostrar('tela-recibo');
 
-  sincronizar().then(async () => {
+  // Espera a subida antes de liberar o envio — mas so um tempo curto, e so
+  // quando ha rede. O link do recibo existe no aparelho desde ja, porem a
+  // pagina do outro lado so responde depois que o recibo chega no servidor.
+  // Sem esta espera o motorista tocava em enviar em dois segundos e mandava
+  // ao passageiro um endereco que ainda dava 404 — endereco quebrado com cara
+  // de bom e pior que nenhum.
+  //
+  // Offline nao espera nada: nao ha o que esperar, e o WhatsApp tambem nao
+  // enviaria. O recibo sobe quando o sinal voltar e o mesmo link passa a valer.
+  const subiu = sincronizar().then(async () => {
     const atual = (await listarRecibos()).find((r) => r.rid === rid);
-    // Redesenha inteiro, link incluso: a URL publica so existe depois que o
-    // servidor responde. Atualizar so o corpo deixava o WhatsApp saindo sem
-    // o endereco do recibo.
     if (atual) mostrarRecibo(atual);
   });
+  if (await temRede()) {
+    $('btn-whats').classList.add('aguardando');
+    await Promise.race([subiu, new Promise((ok) => setTimeout(ok, 5000))]);
+    $('btn-whats').classList.remove('aguardando');
+  }
 });
 
 // O Share.share() do iOS abre a folha do sistema, que lista contatos salvos —
@@ -542,9 +596,19 @@ $('btn-restaurar').addEventListener('click', async () => {
   }
 });
 
+// Chamada tanto pelo botao quanto quando o servidor recusa em definitivo.
+// Antes, sessao morta nao levava a lugar nenhum: o app ficava na tela de
+// emitir aceitando recibo que nunca subiria.
+function encerrarSessao() {
+  Guardado.del('access_token'); Guardado.del('refresh_token');
+  Guardado.del('motorista'); Guardado.del('motorista_id');
+  mostrar('tela-login');
+}
+
 async function atualizarSessao() {
   try {
     const r = await api('/api/sessao');
+    if (r.status === 401) { encerrarSessao(); return null; }
     if (!r.ok) return null;
     const s = await r.json();
     Guardado.set('motorista', s.motorista);
@@ -562,9 +626,7 @@ $('btn-novo').addEventListener('click', async () => {
   mostrar('tela-emitir');
 });
 $('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
-$('btn-sair').addEventListener('click', () => {
-  Guardado.del('access_token'); Guardado.del('motorista'); mostrar('tela-login');
-});
+$('btn-sair').addEventListener('click', encerrarSessao);
 
 $('btn-historico').addEventListener('click', async () => {
   const lista = await listarRecibos();

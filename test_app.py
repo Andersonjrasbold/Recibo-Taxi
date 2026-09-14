@@ -560,6 +560,39 @@ else:
     print("  (pulado: RESEND_API_KEY ausente)")
 
 
+# -- Renovacao de sessao do app ------------------------------------------
+# O access token do Supabase vale uma hora. Sem renovar, passada a hora a fila
+# do app desistia em silencio: o motorista seguia emitindo recibo que nunca
+# subia e o passageiro recebia link que nunca ia funcionar.
+print("\n-- Renovacao de sessao do app --")
+_capp = A.app.test_client()
+_email_app = "renova@teste.invalid"
+_r = _capp.post("/api/cadastro", json={
+    "nome_completo": "Renova Teste", "email": _email_app, "senha": "senha12345",
+    "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel",
+    "placa": "RNV1234"})
+check("cadastro pela API devolve refresh_token",
+      _r.status_code == 201 and bool(_r.get_json().get("refresh_token")),
+      f"{_r.status_code} {str(_r.get_json())[:120]}")
+
+_tokens = _r.get_json() if _r.status_code == 201 else {}
+_refresh = _tokens.get("refresh_token", "")
+
+_r = _capp.post("/api/refresh", json={"refresh_token": _refresh})
+check("refresh devolve access_token novo",
+      _r.status_code == 200 and bool(_r.get_json().get("access_token")),
+      f"{_r.status_code} {str(_r.get_json())[:120]}")
+
+_novo = _r.get_json().get("access_token", "") if _r.status_code == 200 else ""
+_r = _capp.get("/api/sessao", headers={"Authorization": f"Bearer {_novo}"})
+check("token renovado abre a sessao", _r.status_code == 200, str(_r.status_code))
+
+_r = _capp.post("/api/refresh", json={"refresh_token": "invalido"})
+check("refresh invalido devolve 401", _r.status_code == 401, str(_r.status_code))
+
+_r = _capp.post("/api/refresh", json={})
+check("refresh sem token devolve 401", _r.status_code == 401, str(_r.status_code))
+
 # -- CPF/CNPJ do passageiro ----------------------------------------------
 print("\n-- CPF/CNPJ do passageiro --")
 for _entrada, _esperado, _porque in [

@@ -83,7 +83,10 @@
 <section id="tela-emitir" class="tela" hidden>
   <div class="cabecalho-tela">
     <h1>Novo recibo</h1>
-    <button id="btn-sair" class="texto">Sair</button>
+    <div class="acoes-cabecalho">
+      <button id="btn-pro" class="texto">Pro</button>
+      <button id="btn-sair" class="texto">Sair</button>
+    </div>
   </div>
 
   <div id="aviso-fila" class="aviso" hidden></div>
@@ -148,6 +151,35 @@
   </div>
 </section>
 
+<!-- ── Assinatura ──────────────────────────────────────────────────────── -->
+<section id="tela-assinatura" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Recibo Táxi Pro</h1>
+    <button id="btn-fechar-pro" class="texto">Agora não</button>
+  </div>
+
+  <p id="motivo-pro" class="ajuda"></p>
+
+  <div class="cartao-pro">
+    <div class="preco-pro"><span class="preco-moeda">R$</span>19,90<span class="preco-periodo">/mês</span></div>
+    <ul class="lista-pro">
+      <li>Recibos ilimitados</li>
+      <li>Histórico completo e permanente</li>
+      <li>Compartilhar por WhatsApp e e-mail</li>
+      <li>Suporte por e-mail</li>
+    </ul>
+  </div>
+
+  <button id="btn-assinar" class="primario">Assinar</button>
+  <button id="btn-restaurar" class="secundario">Restaurar compra</button>
+  <p id="erro-pro" class="erro" hidden></p>
+
+  <p class="ajuda" style="margin-top:1.2rem">
+    Renova automaticamente. Cancele quando quiser pelos Ajustes do aparelho,
+    até 24 h antes da próxima cobrança.
+  </p>
+</section>
+
 <!-- ── Histórico ───────────────────────────────────────────────────────── -->
 <section id="tela-historico" class="tela" hidden>
   <div class="cabecalho-tela">
@@ -157,6 +189,7 @@
   <div id="lista-historico"></div>
 </section>
 
+<script src="config.js"></script>
 <script src="pdf.js"></script>
 <script src="app.js"></script>
 </body>

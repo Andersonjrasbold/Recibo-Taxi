@@ -560,6 +560,27 @@ else:
     print("  (pulado: RESEND_API_KEY ausente)")
 
 
+# -- Chave do RevenueCat --------------------------------------------------
+# A Test Store (prefixo test_) serve para ensaiar a compra sem a Apple, sem
+# contrato e sem cartao. Util no desenvolvimento, desastre se escapar: o app
+# iria para a App Store vendendo numa loja de mentira, e ninguem receberia o
+# que pagou. Esta checagem existe para que esquecer de trocar de volta doa.
+print("\n-- Chave do RevenueCat --")
+_cfg = io.open("mobile/www/config.js", encoding="utf-8").read()
+_m = _re.search(r"RC_CHAVE_PUBLICA\s*=\s*'([^']*)'", _cfg)
+_chave = _m.group(1) if _m else ""
+check("config.js nao carrega chave da Test Store",
+      not _chave.startswith("test_"),
+      f"achou {_chave[:9]}... — troque pela appl_ antes de commitar")
+
+# O bundle iOS e uma copia: se o sync nao rodou, o aparelho testa codigo velho.
+_ios = "mobile/ios/App/App/public/config.js"
+if os.path.exists(_ios):
+    check("bundle iOS esta sincronizado com o www",
+          io.open(_ios, encoding="utf-8").read() == _cfg,
+          "rode: npx cap sync ios")
+
+
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")
 

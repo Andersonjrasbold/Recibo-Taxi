@@ -26,6 +26,7 @@ body {
 .tela { padding:1.15rem; max-width:560px; margin:0 auto; }
 h1 { font-size:1.35rem; margin:.25rem 0 1rem; }
 .cabecalho-tela { display:flex; align-items:center; justify-content:space-between; }
+.acoes-cabecalho { display:flex; align-items:center; gap:1rem; }
 .ajuda { color:var(--muted); font-size:.88rem; }
 .erro { color:var(--coral); font-size:.88rem; font-weight:700; }
 
@@ -77,3 +78,17 @@ button { font:inherit; border:0; border-radius:14px; cursor:pointer; }
 .item-direita { text-align:right; flex-shrink:0; }
 .item-valor { font-weight:800; }
 .rodape-tela { margin-top:1.5rem; text-align:center; }
+
+/* ── Assinatura ────────────────────────────────────────────────────────── */
+.cartao-pro {
+  background:var(--coal-soft); border:1px solid var(--linha);
+  border-radius:20px; padding:1.5rem; margin:1rem 0 .5rem;
+}
+.preco-pro { font-size:2.6rem; font-weight:800; line-height:1; color:var(--ambar); }
+.preco-moeda { font-size:1.2rem; font-weight:700; margin-right:.2rem; vertical-align:.6rem; }
+.preco-periodo { font-size:1rem; font-weight:600; color:var(--muted); }
+.lista-pro { list-style:none; margin:1.3rem 0 0; padding:0; }
+.lista-pro li { padding:.5rem 0 .5rem 1.7rem; position:relative; font-size:.94rem; }
+.lista-pro li::before {
+  content:"✓"; position:absolute; left:0; color:var(--ambar); font-weight:800;
+}

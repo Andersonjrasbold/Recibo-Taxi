@@ -116,6 +116,10 @@ async function sincronizar() {
       } else if (resp.status === 402) {
         // Cota do mês acabou: para de tentar, senão fica em laço.
         await salvarRecibo({ ...recibo, pendente: false, recusado: 'limite_mensal' });
+        const limite = Guardado.get('limite');
+        abrirAssinatura(
+          `Você usou os ${limite ?? ''} recibos deste mês do plano Grátis. ` +
+          'O Pro libera recibos ilimitados.');
       } else if (resp.status === 400 || resp.status === 409) {
         await salvarRecibo({ ...recibo, pendente: false, recusado: (await resp.json()).erro });
       } else if (resp.status === 401) {
@@ -130,7 +134,8 @@ async function sincronizar() {
 
 // ── Telas ──────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
-const telas = ['tela-login', 'tela-cadastro', 'tela-emitir', 'tela-recibo', 'tela-historico'];
+const telas = ['tela-login', 'tela-cadastro', 'tela-emitir', 'tela-recibo',
+               'tela-assinatura', 'tela-historico'];
 function mostrar(qual) {
   telas.forEach((t) => { $(t).hidden = t !== qual; });
   window.scrollTo(0, 0);
@@ -367,6 +372,105 @@ $('btn-compartilhar').addEventListener('click', async () => {
   window.open(`https://wa.me/${fone}?text=${encodeURIComponent(texto)}`, '_blank');
 });
 
+// ── Assinatura ─────────────────────────────────────────────────────────────
+//
+// A Apple exige (Guideline 3.1.1) que a compra passe pelo IAP. Não há, e não
+// pode haver, link para assinar no site dentro do app iOS.
+
+async function iniciarCompras() {
+  const { Purchases } = P();
+  const chave = window.RC_CHAVE_PUBLICA;
+  if (!Purchases || !chave) return false;
+  try {
+    await Purchases.configure({ apiKey: chave });
+    // Amarra a compra ao motorista: sem isto o webhook não sabe quem assinou.
+    const perfil = Guardado.get('motorista_id');
+    if (perfil) await Purchases.logIn({ appUserID: perfil });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function abrirAssinatura(motivo) {
+  $('motivo-pro').textContent = motivo || '';
+  $('erro-pro').hidden = true;
+  mostrar('tela-assinatura');
+}
+
+// A tela de assinatura tambem abre sozinha no 402. Este botao existe para o
+// caso em que ninguem bateu no limite ainda: sem ele a analise da Apple nao
+// tem como chegar na compra, e assinante nenhum tem como restaurar.
+$('btn-pro').addEventListener('click', () => abrirAssinatura(''));
+
+$('btn-fechar-pro').addEventListener('click', () => mostrar('tela-emitir'));
+
+$('btn-assinar').addEventListener('click', async () => {
+  const erro = $('erro-pro');
+  erro.hidden = true;
+  const { Purchases } = P();
+  if (!Purchases || !window.RC_CHAVE_PUBLICA) {
+    erro.textContent = 'Assinatura ainda não disponível nesta versão.';
+    erro.hidden = false;
+    return;
+  }
+  try {
+    const ofertas = await Purchases.getOfferings();
+    const pacotes = ofertas?.current?.availablePackages || [];
+    // Pelo identificador, nao pela posicao: se alguem acrescentar um pacote
+    // no painel do RevenueCat, o [0] viraria sorteio e o motorista poderia
+    // acabar comprando outra coisa.
+    const pacote = pacotes.find((p) => p.identifier === '$rc_monthly') || pacotes[0];
+    if (!pacote) throw new Error('sem oferta configurada');
+    const r = await Purchases.purchasePackage({ aPackage: pacote });
+    const virou = !!r?.customerInfo?.entitlements?.active?.pro;
+    if (virou) {
+      vibrar('HEAVY');
+      await atualizarSessao();
+      mostrar('tela-emitir');
+    }
+  } catch (e) {
+    // Cancelar não é erro: o motorista fechou a folha de pagamento.
+    if (e?.code === 'PURCHASE_CANCELLED' || /cancel/i.test(e?.message || '')) return;
+    erro.textContent = 'Não foi possível concluir a compra. Tente de novo.';
+    erro.hidden = false;
+  }
+});
+
+// Obrigatório pela Apple: quem trocou de aparelho precisa recuperar o que pagou.
+$('btn-restaurar').addEventListener('click', async () => {
+  const erro = $('erro-pro');
+  erro.hidden = true;
+  const { Purchases } = P();
+  if (!Purchases) return;
+  try {
+    const r = await Purchases.restorePurchases();
+    if (r?.customerInfo?.entitlements?.active?.pro) {
+      await atualizarSessao();
+      mostrar('tela-emitir');
+    } else {
+      erro.textContent = 'Nenhuma assinatura ativa encontrada nesta conta.';
+      erro.hidden = false;
+    }
+  } catch {
+    erro.textContent = 'Não conseguimos verificar agora. Tente com sinal melhor.';
+    erro.hidden = false;
+  }
+});
+
+async function atualizarSessao() {
+  try {
+    const r = await api('/api/sessao');
+    if (!r.ok) return null;
+    const s = await r.json();
+    Guardado.set('motorista', s.motorista);
+    Guardado.set('motorista_id', s.id);
+    Guardado.set('plano', s.plano);
+    Guardado.set('limite', s.limite_mensal);
+    return s;
+  } catch { return null; }
+}
+
 $('btn-novo').addEventListener('click', async () => {
   preencherDataEHora();
   await atualizarSugestoesDeLocal();   // aprende o local que acabou de ser usado
@@ -428,6 +532,8 @@ async function iniciar() {
   preencherDataEHora();
   if (!token()) { mostrar('tela-login'); return; }
   mostrar('tela-emitir');
+  await atualizarSessao();
+  await iniciarCompras();
   await atualizarSugestoesDeLocal();
   await atualizarAvisoFila();
   sincronizar().then(atualizarAvisoFila);

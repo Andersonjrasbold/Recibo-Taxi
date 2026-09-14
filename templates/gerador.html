@@ -160,6 +160,13 @@
                       placeholder="000.000.000-00"
                       value="{{ (form or {}).get('documento_passageiro', '') }}">
                   </div>
+                  <div class="col-12 col-md-6">
+                    <label class="form-label-gen" for="razao_social">Razão social <span class="text-muted">(se for CNPJ)</span></label>
+                    <input type="text" id="razao_social" name="razao_social"
+                      class="form-control form-control-gen" maxlength="140"
+                      placeholder="Nome da empresa"
+                      value="{{ (form or {}).get('razao_social', '') }}">
+                  </div>
                   <div class="col-12">
                     <label class="form-label-gen" for="observacoes">Observações</label>
                     <textarea id="observacoes" name="observacoes" class="form-control form-control-gen"

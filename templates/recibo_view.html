@@ -74,6 +74,12 @@
               <span class="detail-value mono">{{ dados.passenger_document }}</span>
             </div>
             {% endif %}
+            {% if dados.passenger_company %}
+            <div class="detail-item">
+              <span class="detail-label">Razão social</span>
+              <span class="detail-value">{{ dados.passenger_company }}</span>
+            </div>
+            {% endif %}
             <div class="detail-item">
               <span class="detail-label">Data</span>
               <span class="detail-value">{{ dados.trip_date_display }}{% if dados.trip_time %} às {{ dados.trip_time }}{% endif %}</span>

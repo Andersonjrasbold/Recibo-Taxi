@@ -657,6 +657,19 @@ _link = A.build_whatsapp_link(_rec, "https://recibotaxi.com.br/r/x")
 check("wa.me leva o numero com 55", "wa.me/5511987654321?" in _link, _link[:60])
 check("mensagem traz a chamada do motorista",
       "(44) 99999-1111" in A.compose_receipt_message(_rec, "https://x"))
+
+# A mesma mensagem serve ao WhatsApp do site e ao e-mail do recibo. Ela tem de
+# dizer o mesmo que a do app: recibo de empresa sem CNPJ e sem razao social nao
+# serve para lancar despesa.
+_rec_pj = dict(_rec, passenger_document="12.345.678/0001-90",
+               passenger_company="Taxi Central Ltda")
+_msg_pj = A.compose_receipt_message(_rec_pj, "https://x")
+check("a mensagem leva o CNPJ", "12.345.678/0001-90" in _msg_pj)
+check("a mensagem leva a razao social", "Taxi Central Ltda" in _msg_pj)
+_msg_pf = A.compose_receipt_message(dict(_rec, passenger_document="123.456.789-01"), "https://x")
+check("sem razao social, a linha nao aparece", "Razão social" not in _msg_pf)
+check("sem documento, a linha nao aparece",
+      "CPF/CNPJ" not in A.compose_receipt_message(_rec, "https://x"))
 _sem = A.build_whatsapp_link(_rec, "https://x", with_recipient=False)
 check("sem destinatario, nao vaza o numero", "5511987654321" not in _sem)
 
@@ -733,6 +746,71 @@ if _pdf:
     _m = _re.search(rb"/Subtype/Image[^>]*?/Length (\d+)>>\nstream\n", _pdf)
     _fim = _m.end() + int(_m.group(1))
     check("o tamanho declarado da imagem confere", _pdf[_fim:_fim + 10] == b"\nendstream")
+
+# -- Razao social do passageiro ------------------------------------------
+# CNPJ sozinho nao serve: a contabilidade da empresa precisa do nome da pessoa
+# juridica no recibo. Com CPF o campo nao existe, e a regra mora no servidor
+# porque o gerador do site nao tem JavaScript para esconder nada.
+print("\n-- Razao social do passageiro --")
+for _doc, _valor, _esperado, _porque in [
+    ("12.345.678/0001-90", "Taxi Central Ltda", "Taxi Central Ltda", "CNPJ pontuado"),
+    ("12345678000190",     "Taxi Central Ltda", "Taxi Central Ltda", "CNPJ so digitos"),
+    ("12345678000190",     "  Taxi   Central  ", "Taxi Central",     "espaco sobrando some"),
+    ("123.456.789-01",     "Taxi Central Ltda", "",                  "CPF nao leva razao social"),
+    ("12345678901",        "Taxi Central Ltda", "",                  "CPF so digitos idem"),
+    ("",                   "Taxi Central Ltda", "",                  "sem documento, sem razao"),
+    ("12345678000190",     "",                  "",                  "CNPJ sem razao fica vazio"),
+]:
+    check(f"razao_social_de: {_porque}", A.razao_social_de(_doc, _valor) == _esperado,
+          repr(A.razao_social_de(_doc, _valor)))
+
+if A.get_store().kind == "postgres":
+    _crz = A.app.test_client()
+    _r = _crz.post("/api/cadastro", json={
+        "nome_completo": "Razao Teste", "email": "razao@teste.invalid", "senha": "senha12345",
+        "whatsapp": "45998238620", "cpf": "12345678901", "cidade": "Cascavel", "placa": "RZS1234"})
+    _tkz = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+    _cabz = {"Authorization": f"Bearer {_tkz}"}
+
+    def _emitir_doc(rid, doc, razao):
+        return _crz.post("/api/recibos", headers=_cabz, json={
+            "rid": rid, "passageiro": "Empresa", "data": "2026-09-14", "origem": "A",
+            "destino": "B", "valor": "10", "forma_pagamento": "Pix",
+            "documento_passageiro": doc, "razao_social": razao})
+
+    _r = _emitir_doc("DA" + "0" * 12, "12345678000190", "Taxi Central Ltda")
+    check("recibo com CNPJ grava a razao social", _r.status_code == 201, str(_r.status_code))
+    _guardado = A.get_store().get_receipt("DA" + "0" * 12)
+    check("a razao social volta do banco",
+          (_guardado or {}).get("passenger_company") == "Taxi Central Ltda",
+          str((_guardado or {}).get("passenger_company")))
+    check("o CNPJ tambem foi formatado",
+          (_guardado or {}).get("passenger_document") == "12.345.678/0001-90",
+          str((_guardado or {}).get("passenger_document")))
+
+    _r = _emitir_doc("DB" + "1" * 12, "12345678901", "Taxi Central Ltda")
+    _guardado = A.get_store().get_receipt("DB" + "1" * 12)
+    check("com CPF o servidor descarta a razao social",
+          (_guardado or {}).get("passenger_company") == "",
+          str((_guardado or {}).get("passenger_company")))
+
+    # App antigo, ja instalado no aparelho, nao manda o campo novo.
+    _r = _crz.post("/api/recibos", headers=_cabz, json={
+        "rid": "DC" + "2" * 12, "passageiro": "Sem campo novo", "data": "2026-09-14",
+        "origem": "A", "destino": "B", "valor": "10", "forma_pagamento": "Pix"})
+    check("versao antiga do app, sem o campo, continua gravando",
+          _r.status_code == 201, f"{_r.status_code} {str(_r.get_json())[:90]}")
+
+    # A pagina publica mostra os dois.
+    _html = A.app.test_client().get("/recibo/DA000000000000").get_data(as_text=True)
+    check("a pagina do recibo mostra a razao social", "Taxi Central Ltda" in _html)
+    check("a pagina do recibo mostra o CNPJ", "12.345.678/0001-90" in _html)
+
+    # Campo gigante e recusado, nao truncado.
+    _r = _emitir_doc("DD" + "3" * 12, "12345678000190", "E" * 500)
+    check("razao social gigante e recusada", _r.status_code == 400, str(_r.status_code))
+else:
+    print("  (pulado: precisa do Postgres)")
 
 # -- Recibo por e-mail ----------------------------------------------------
 # O campo de e-mail do passageiro existia no site e nao servia para nada: era

@@ -60,6 +60,8 @@ function pdfDoRecibo(recibo) {
     ['Passageiro', d.passageiro],
     // Opcional: quem viaja a trabalho precisa do documento para prestar contas.
     ...(d.documento_passageiro ? [['CPF/CNPJ', d.documento_passageiro]] : []),
+    // Sem a razao social, o CNPJ nao fecha a despesa na contabilidade.
+    ...(d.razao_social ? [['Razão social', d.razao_social]] : []),
     ['Data', d.data_exibida || d.data],
     ['Hora', d.hora || '-'],
     ['Origem', d.origem],

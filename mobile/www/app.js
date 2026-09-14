@@ -211,6 +211,22 @@ function documentoBR(valor) {
   return String(valor || '').trim();
 }
 
+// CNPJ tem 14 digitos, CPF tem 11. O campo da razao social so existe para o
+// primeiro: sem o nome da empresa, o recibo nao serve para lancar a despesa.
+// Some junto quando o motorista troca para CPF, e o valor vai junto — senao um
+// nome de empresa ficaria pendurado num recibo de pessoa fisica.
+function ehCNPJ(documento) {
+  return String(documento || '').replace(/\D/g, '').length === 14;
+}
+
+function atualizarCampoRazaoSocial() {
+  const mostrar = ehCNPJ($('documento').value);
+  $('campo-razao-social').hidden = !mostrar;
+  if (!mostrar) $('razao-social').value = '';
+}
+
+$('documento').addEventListener('input', atualizarCampoRazaoSocial);
+
 // O servidor confere de novo; aqui e so tirar o obvio: espaco que o teclado
 // do celular acrescenta sozinho e maiuscula do corretor.
 function emailLimpo(valor) {
@@ -267,6 +283,7 @@ function montarRecibo(recibo) {
     <dl class="recibo-dados">
       <dt>Passageiro</dt><dd>${d.passageiro}</dd>
       ${d.documento_passageiro ? `<dt>CPF/CNPJ</dt><dd>${d.documento_passageiro}</dd>` : ''}
+      ${d.razao_social ? `<dt>Razão social</dt><dd>${d.razao_social}</dd>` : ''}
       <dt>Data</dt><dd>${formatarBR(d.data)}${d.hora ? ' às ' + d.hora : ''}</dd>
       <dt>Origem</dt><dd>${d.origem}</dd>
       <dt>Destino</dt><dd>${d.destino}</dd>
@@ -350,6 +367,7 @@ function textoParaCompartilhar(recibo) {
     `✅ Recibo #${recibo.rid}`,
     `👤 Passageiro: ${d.passageiro}`,
     ...(d.documento_passageiro ? [`🧾 CPF/CNPJ: ${d.documento_passageiro}`] : []),
+    ...(d.razao_social ? [`🏢 Razão social: ${d.razao_social}`] : []),
     `📅 Data: ${formatarBR(d.data)}`,
     `📍 Origem: ${d.origem}`,
     `🏁 Destino: ${d.destino}`,
@@ -579,12 +597,15 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       whatsapp_passageiro: $('whats').value.trim(),
       email_passageiro: emailLimpo($('email-passageiro').value),
       documento_passageiro: documentoBR($('documento').value),
+      razao_social: ehCNPJ($('documento').value)
+        ? $('razao-social').value.trim().replace(/\s+/g, ' ') : '',
     },
   };
 
   await salvarRecibo(recibo);        // primeiro guarda, depois tenta enviar
   vibrar('HEAVY');
   $('form-recibo').reset();
+  atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
   preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
   abrirRecibo(recibo);

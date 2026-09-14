@@ -127,6 +127,14 @@
     <input type="text" id="documento" inputmode="numeric" maxlength="18"
            placeholder="000.000.000-00">
 
+    <!-- Aparece so quando o documento tem 14 digitos. CNPJ sozinho nao serve
+         para a empresa lancar a despesa: a contabilidade quer o nome dela. -->
+    <div id="campo-razao-social" hidden>
+      <label for="razao-social">Razão social da empresa</label>
+      <input type="text" id="razao-social" maxlength="140"
+             placeholder="Nome da empresa no CNPJ">
+    </div>
+
     <label for="whats">WhatsApp do passageiro</label>
     <input type="tel" id="whats" inputmode="numeric" maxlength="20">
 

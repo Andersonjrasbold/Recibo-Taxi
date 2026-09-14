@@ -103,6 +103,7 @@ RECEIPT_FIELD_LIMITS = {
     "email_passageiro": ("O e-mail do passageiro", 254),
     "whatsapp_passageiro": ("O WhatsApp do passageiro", 20),
     "documento_passageiro": ("O CPF/CNPJ do passageiro", 18),
+    "razao_social": ("A razão social", 140),
     "data": ("A data", 10),
     "hora": ("A hora", 5),
     "nome_motorista": ("O nome do motorista", 120),
@@ -251,6 +252,19 @@ def phone_e164(value: str, ddi: str = "55") -> str:
     return ""                         # curto ou longo demais: nao da link
 
 
+def razao_social_de(documento: str, valor: str) -> str:
+    """Razao social so existe quando o documento e CNPJ.
+
+    A regra mora aqui, e nao so na tela: o gerador do site nao tem JavaScript
+    para esconder o campo, e um CPF com nome de empresa junto seria um recibo
+    que a contabilidade recusa. Quatorze digitos e CNPJ; qualquer outra coisa
+    devolve vazio.
+    """
+    if len(re.sub(r"\D", "", documento or "")) != 14:
+        return ""
+    return " ".join((valor or "").split())
+
+
 def format_document_br(value: str) -> str:
     """Pontua CPF e CNPJ; devolve como veio se nao reconhecer o tamanho.
 
@@ -311,6 +325,13 @@ def compose_receipt_message(receipt: dict, public_url: str) -> str:
     lines = [
         f"✅ Recibo #{receipt['rid']}",
         f"👤 Passageiro: {receipt.get('passenger') or '-'}",
+        # Documento e razao social so entram quando existem: sao o que faz o
+        # recibo valer para a empresa lancar a despesa. O app ja mandava no
+        # WhatsApp; sem isto, o mesmo recibo por e-mail saia sem eles.
+        *([f"🧾 CPF/CNPJ: {receipt['passenger_document']}"]
+          if receipt.get("passenger_document") else []),
+        *([f"🏢 Razão social: {receipt['passenger_company']}"]
+          if receipt.get("passenger_company") else []),
         f"📅 Data: {receipt.get('trip_date_display') or '-'}",
         f"📍 Origem: {receipt.get('origin') or '-'}",
         f"🏁 Destino: {receipt.get('destination') or '-'}",
@@ -450,7 +471,8 @@ class PostgresStore:
 
     _RECEIPT_COLS = """
         rid, rid as _id, driver_id, is_guest, passenger, passenger_email,
-        passenger_whatsapp, passenger_document, trip_date, trip_time,
+        passenger_whatsapp, passenger_document, passenger_company,
+        trip_date, trip_time,
         origin, destination, amount, payment_method, notes, driver_snapshot,
         created_at
     """
@@ -589,6 +611,7 @@ class PostgresStore:
         # nao enviam documento. Sem o default, cada recibo dessas versoes
         # quebraria no insert em vez de gravar sem o campo opcional.
         dados["passenger_document"] = dados.get("passenger_document") or ""
+        dados["passenger_company"] = dados.get("passenger_company") or ""
 
         # created_at explícito é usado por testes e importação; sem ele, o
         # default now() da coluna vale.
@@ -610,12 +633,14 @@ class PostgresStore:
             row = conn.execute(
                 f"""insert into public.receipts
                     (rid, driver_id, is_guest, passenger, passenger_email,
-                     passenger_whatsapp, passenger_document, trip_date, trip_time,
+                     passenger_whatsapp, passenger_document, passenger_company,
+                     trip_date, trip_time,
                      origin, destination, amount, payment_method, notes,
                      driver_snapshot{col_created})
                     values (%(rid)s, %(driver_id)s, %(is_guest)s, %(passenger)s,
                             %(passenger_email)s, %(passenger_whatsapp)s,
-                            %(passenger_document)s, %(trip_date)s,
+                            %(passenger_document)s, %(passenger_company)s,
+                            %(trip_date)s,
                             %(trip_time)s, %(origin)s, %(destination)s, %(amount)s,
                             %(payment_method)s, %(notes)s, %(driver_snapshot)s{val_created})
                     returning {self._RECEIPT_COLS}""",
@@ -1559,6 +1584,9 @@ def recibo_criar():
         "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
         "passenger_document": format_document_br(
             request.form.get("documento_passageiro", "")),
+        "passenger_company": razao_social_de(
+            request.form.get("documento_passageiro", ""),
+            request.form.get("razao_social", "")),
         "trip_date": trip_date,
         "trip_date_display": format_date_br(trip_date),
         "trip_time": request.form.get("hora", "").strip(),
@@ -1661,6 +1689,9 @@ def gerador():
             "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
             "passenger_document": format_document_br(
                 request.form.get("documento_passageiro", "")),
+            "passenger_company": razao_social_de(
+                request.form.get("documento_passageiro", ""),
+                request.form.get("razao_social", "")),
             "trip_date": trip_date,
             "trip_date_display": format_date_br(trip_date),
             "trip_time": request.form.get("hora", "").strip(),
@@ -2051,6 +2082,7 @@ def api_criar_recibo():
         "email_passageiro": dados.get("email_passageiro", ""),
         "whatsapp_passageiro": dados.get("whatsapp_passageiro", ""),
         "documento_passageiro": dados.get("documento_passageiro", ""),
+        "razao_social": dados.get("razao_social", ""),
         "hora": dados.get("hora", ""),
     }
     for nome, (rotulo, maximo) in RECEIPT_FIELD_LIMITS.items():
@@ -2074,6 +2106,8 @@ def api_criar_recibo():
         "passenger_email": normalize_email(str(campos["email_passageiro"])),
         "passenger_whatsapp": str(campos["whatsapp_passageiro"]).strip(),
         "passenger_document": format_document_br(str(campos["documento_passageiro"])),
+        "passenger_company": razao_social_de(
+            str(campos["documento_passageiro"]), str(campos["razao_social"])),
         "trip_date": str(campos["data"]).strip(),
         "trip_time": str(campos["hora"]).strip(),
         "origin": str(campos["origem"]).strip(),

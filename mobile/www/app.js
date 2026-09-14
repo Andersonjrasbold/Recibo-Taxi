@@ -194,6 +194,20 @@ function montarRecibo(recibo) {
     </p>`;
 }
 
+// Desenha o recibo e prepara o link do WhatsApp a partir do MESMO objeto.
+// Eram duas coisas separadas e elas saiam de sincronia: o corpo era redesenhado
+// depois do envio, o link nao, e o passageiro recebia mensagem sem o endereco.
+function mostrarRecibo(recibo) {
+  $('recibo').innerHTML = montarRecibo(recibo);
+  const fone = foneE164(recibo.dados.whatsapp_passageiro);
+  $('btn-whats').hidden = !fone;
+  $('btn-compartilhar').className = fone ? 'secundario' : 'primario';
+  if (fone) {
+    const msg = encodeURIComponent(textoParaCompartilhar(recibo));
+    $('btn-whats').href = `https://wa.me/${fone}?text=${msg}`;
+  }
+}
+
 function textoParaCompartilhar(recibo) {
   const d = recibo.dados;
   const linhas = [
@@ -205,7 +219,10 @@ function textoParaCompartilhar(recibo) {
     `💰 Valor: R$ ${d.valor_exibido}`,
     `💳 Pagamento: ${d.forma_pagamento}`,
   ];
-  if (recibo.url) linhas.push('', `🔗 ${recibo.url}`);
+  if (recibo.url) {
+    linhas.push('', '🔗 Recibo completo, para ver, imprimir ou salvar em PDF:',
+                recibo.url);
+  }
   const chamada = chamadaDoMotorista(recibo.motorista);
   if (chamada) linhas.push('', `🚕 ${chamada}`);
   return linhas.join('\n');
@@ -351,22 +368,16 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   $('form-recibo').reset();
   preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
-  $('recibo').innerHTML = montarRecibo(recibo);
   $('btn-compartilhar').dataset.rid = rid;
-  // Sem numero do passageiro nao ha para quem abrir a conversa; o link some
-  // em vez de abrir o WhatsApp vazio.
-  const fonePassageiro = foneE164(recibo.dados.whatsapp_passageiro);
-  $('btn-whats').hidden = !fonePassageiro;
-  $('btn-compartilhar').className = fonePassageiro ? 'secundario' : 'primario';
-  if (fonePassageiro) {
-    const msg = encodeURIComponent(textoParaCompartilhar(recibo));
-    $('btn-whats').href = `https://wa.me/${fonePassageiro}?text=${msg}`;
-  }
+  mostrarRecibo(recibo);
   mostrar('tela-recibo');
 
   sincronizar().then(async () => {
     const atual = (await listarRecibos()).find((r) => r.rid === rid);
-    if (atual) $('recibo').innerHTML = montarRecibo(atual);
+    // Redesenha inteiro, link incluso: a URL publica so existe depois que o
+    // servidor responde. Atualizar so o corpo deixava o WhatsApp saindo sem
+    // o endereco do recibo.
+    if (atual) mostrarRecibo(atual);
   });
 });
 

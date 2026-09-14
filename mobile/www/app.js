@@ -353,12 +353,15 @@ $('form-recibo').addEventListener('submit', async (ev) => {
 
   $('recibo').innerHTML = montarRecibo(recibo);
   $('btn-compartilhar').dataset.rid = rid;
-  // Sem numero do passageiro nao ha para quem abrir a conversa; o botao some
+  // Sem numero do passageiro nao ha para quem abrir a conversa; o link some
   // em vez de abrir o WhatsApp vazio.
-  const temFone = !!foneE164(recibo.dados.whatsapp_passageiro);
-  $('btn-whats').hidden = !temFone;
-  $('btn-whats').dataset.rid = rid;
-  $('btn-compartilhar').className = temFone ? 'secundario' : 'primario';
+  const fonePassageiro = foneE164(recibo.dados.whatsapp_passageiro);
+  $('btn-whats').hidden = !fonePassageiro;
+  $('btn-compartilhar').className = fonePassageiro ? 'secundario' : 'primario';
+  if (fonePassageiro) {
+    const msg = encodeURIComponent(textoParaCompartilhar(recibo));
+    $('btn-whats').href = `https://wa.me/${fonePassageiro}?text=${msg}`;
+  }
   mostrar('tela-recibo');
 
   sincronizar().then(async () => {
@@ -368,18 +371,20 @@ $('form-recibo').addEventListener('submit', async (ev) => {
 });
 
 // O Share.share() do iOS abre a folha do sistema, que lista contatos salvos —
-// o passageiro de uma corrida avulsa nunca esta la. Este botao pula a folha e
-// abre a conversa pelo numero, que o WhatsApp aceita mesmo sem contato salvo.
-$('btn-whats').addEventListener('click', async () => {
-  const rid = $('btn-whats').dataset.rid;
-  const recibo = (await listarRecibos()).find((r) => r.rid === rid);
-  if (!recibo) return;
-  const fone = foneE164(recibo.dados.whatsapp_passageiro);
-  if (!fone) return;
-  vibrar();
-  const texto = encodeURIComponent(textoParaCompartilhar(recibo));
-  window.open(`https://wa.me/${fone}?text=${texto}`, '_blank');
-});
+// o passageiro de uma corrida avulsa nunca esta la. Por isso um link direto.
+//
+// E um <a href> de verdade, e nao um botao com window.open, por dois motivos:
+// a WKWebView bloqueia popup aberto fora do gesto do usuario, e o nosso
+// handler tinha um await antes do open — quando a promessa resolvia o gesto ja
+// tinha expirado e o toque nao fazia nada. Alem disso, navegacao para fora da
+// origem o Capacitor entrega ao sistema, que reconhece o wa.me como universal
+// link e abre o WhatsApp. O href e montado ao exibir o recibo, nao no clique.
+//
+// Sem target="_blank" de proposito: com ele a navegacao vira popup e cai em
+// createWebViewWith, o mesmo caminho que engolia o toque. Verificado no
+// simulador — navegacao simples para fora da origem faz o Capacitor entregar
+// ao sistema, e o Safari abre por cima do app.
+$('btn-whats').addEventListener('click', () => vibrar());
 
 $('btn-compartilhar').addEventListener('click', async () => {
   const rid = $('btn-compartilhar').dataset.rid;

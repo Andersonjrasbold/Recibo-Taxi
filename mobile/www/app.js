@@ -287,6 +287,28 @@ function abrirRecibo(recibo, { doHistorico = false } = {}) {
   mostrar('tela-recibo');
 }
 
+// Enquanto o recibo nao subiu, o link existe mas a pagina do outro lado nao —
+// enviar agora manda ao passageiro um endereco que da 404. Entao: tenta subir,
+// segura o botao por no maximo cinco segundos e redesenha com o que voltou.
+//
+// Vale para o recibo recem-emitido e para o reaberto pelo historico. O
+// historico e caminho novo e trazia o mesmo defeito de volta: recibo parado na
+// fila, motorista reenvia, passageiro recebe link morto.
+//
+// Offline nao espera nada: nao ha o que esperar, e o WhatsApp tambem nao
+// enviaria. O recibo sobe quando o sinal voltar e o mesmo link passa a valer.
+async function esperarSubir(rid) {
+  const subiu = sincronizar().then(async () => {
+    const atual = (await listarRecibos()).find((r) => r.rid === rid);
+    if (atual) mostrarRecibo(atual);
+    return atual;
+  });
+  if (!(await temRede())) return;
+  $('btn-whats').classList.add('aguardando');
+  await Promise.race([subiu, new Promise((ok) => setTimeout(ok, 5000))]);
+  $('btn-whats').classList.remove('aguardando');
+}
+
 // O rid nasce no aparelho e a URL publica e deterministica a partir dele.
 // Esperar o servidor devolver o endereco criava uma corrida perdida: o
 // motorista toca em enviar antes da sincronizacao terminar, e a mensagem sai
@@ -462,24 +484,8 @@ $('form-recibo').addEventListener('submit', async (ev) => {
 
   abrirRecibo(recibo);
 
-  // Espera a subida antes de liberar o envio — mas so um tempo curto, e so
-  // quando ha rede. O link do recibo existe no aparelho desde ja, porem a
-  // pagina do outro lado so responde depois que o recibo chega no servidor.
-  // Sem esta espera o motorista tocava em enviar em dois segundos e mandava
-  // ao passageiro um endereco que ainda dava 404 — endereco quebrado com cara
-  // de bom e pior que nenhum.
-  //
-  // Offline nao espera nada: nao ha o que esperar, e o WhatsApp tambem nao
-  // enviaria. O recibo sobe quando o sinal voltar e o mesmo link passa a valer.
-  const subiu = sincronizar().then(async () => {
-    const atual = (await listarRecibos()).find((r) => r.rid === rid);
-    if (atual) mostrarRecibo(atual);
-  });
-  if (await temRede()) {
-    $('btn-whats').classList.add('aguardando');
-    await Promise.race([subiu, new Promise((ok) => setTimeout(ok, 5000))]);
-    $('btn-whats').classList.remove('aguardando');
-  }
+  await esperarSubir(rid);
+  await atualizarAvisoFila();
 });
 
 // O Share.share() do iOS abre a folha do sistema, que lista contatos salvos —
@@ -705,6 +711,9 @@ $('lista-historico').addEventListener('click', async (ev) => {
   if (!recibo) return;
   vibrar('LIGHT');
   abrirRecibo(recibo, { doHistorico: true });
+  // So quem ainda nao subiu precisa esperar; o que ja tem pagina no ar abre
+  // pronto para enviar.
+  if (recibo.pendente || recibo.recusado) await esperarSubir(recibo.rid);
 });
 
 window.addEventListener('online', async () => { await sincronizar(); atualizarAvisoFila(); });

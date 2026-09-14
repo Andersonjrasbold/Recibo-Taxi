@@ -930,6 +930,41 @@ try:
 finally:
     A.send_email = _send_real
 
+# -- Lixo dentro do pacote do app ----------------------------------------
+# O iCloud duplica arquivo dentro da pasta sincronizada: "index.html" vira
+# tambem "index 2.html". O `cap sync` so sobrescreve os arquivos que conhece,
+# entao a copia sobrevive, e o Xcode empacota TUDO que esta na pasta public.
+# Foi assim que um "index 2.html" com uma sonda de teste dentro subiu para o
+# TestFlight nos builds 6 a 10. O app carrega index.html e nunca executou a
+# sonda, mas codigo de teste nao viaja junto com o app, ponto.
+print("\n-- Lixo dentro do pacote do app --")
+import glob as _g2
+_pastas = ["mobile/www", "mobile/ios/App/App", "mobile/android/app/src"]
+_dupes = []
+for _p in _pastas:
+    _dupes += [f for f in _g2.glob(f"{_p}/**/*", recursive=True)
+               if _re.search(r" \d+\.[A-Za-z0-9]+$", f)]
+check("nenhuma copia duplicada no pacote", not _dupes,
+      ", ".join(_dupes[:3]) + " — apague; o iCloud as recria")
+
+_sondas = []
+for _p in _pastas:
+    for _f in _g2.glob(f"{_p}/**/*", recursive=True):
+        if not os.path.isfile(_f) or os.path.getsize(_f) > 2_000_000:
+            continue
+        try:
+            if "SONDA" in io.open(_f, encoding="utf-8", errors="ignore").read():
+                _sondas.append(_f)
+        except Exception:
+            pass
+check("nenhuma sonda de teste no pacote", not _sondas, ", ".join(_sondas[:3]))
+
+# A chave que assina o Android nao pode entrar no repositorio.
+_ign = io.open("mobile/android/.gitignore", encoding="utf-8").read()
+check("o .gitignore do Android barra a chave de assinatura",
+      "\n*.jks" in _ign and "\n*.keystore" in _ign,
+      "descomente as linhas *.jks e *.keystore")
+
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")
 

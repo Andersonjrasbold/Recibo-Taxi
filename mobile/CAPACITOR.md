@@ -106,6 +106,19 @@ Três armadilhas que já custaram tempo:
   guarda o estado da execução passada e ele reaparece na seguinte.
 - **`xcrun simctl uninstall` antes de instalar**, para o IndexedDB não vir
   junto da rodada anterior.
+- **Apague as cópias que o iCloud cria.** A pasta do projeto está sincronizada,
+  e o iCloud duplica arquivo com um número no nome: `index.html` vira também
+  `index 2.html`. O `cap sync` só sobrescreve os arquivos que conhece, então a
+  cópia sobrevive, e o Xcode empacota tudo o que estiver em `public/`. Foi
+  assim que um `index 2.html` **com sonda dentro** subiu para o TestFlight nos
+  builds 6 a 10. O app carrega `index.html` e nunca executou a sonda, mas
+  código de teste não viaja junto com o app. A suíte agora barra isso; para
+  limpar à mão:
+
+  ```bash
+  find . -name "* [0-9].*" -not -path "*/node_modules/*" -not -path "*/.git/*" \
+    -not -path "*/DerivedData/*" -delete
+  ```
 
 E cuidado com `grep -c` dentro de uma cadeia `&&`: contagem zero devolve
 status 1 e o resto da linha não roda. Já aconteceu de a sonda nunca ser

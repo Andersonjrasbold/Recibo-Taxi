@@ -72,6 +72,19 @@ async function listarRecibos() {
 
 const pendentes = async () => (await listarRecibos()).filter((r) => r.pendente);
 
+// Usada so na exclusao de conta. "Sair" NAO apaga nada de proposito: o logout
+// tambem acontece sozinho quando a sessao morre, e ali apagar destruiria a
+// fila de recibos que ainda nao subiram.
+async function limparRecibosLocais() {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const tx = db.transaction('recibos', 'readwrite');
+    tx.objectStore('recibos').clear();
+    tx.oncomplete = () => ok();
+    tx.onerror = () => falha(tx.error);
+  });
+}
+
 // ── Identificador ──────────────────────────────────────────────────────────
 function novoRid() {
   // 14 dígitos hex = 2^56. Gerado aqui, não no servidor: é o que permite
@@ -179,7 +192,7 @@ async function sincronizar() {
 // ── Telas ──────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 const telas = ['tela-login', 'tela-cadastro', 'tela-emitir', 'tela-recibo',
-               'tela-assinatura', 'tela-historico'];
+               'tela-assinatura', 'tela-historico', 'tela-excluir'];
 function mostrar(qual) {
   telas.forEach((t) => { $(t).hidden = t !== qual; });
   window.scrollTo(0, 0);
@@ -799,6 +812,39 @@ $('btn-pro').addEventListener('click', () => abrirAssinatura(''));
 
 $('btn-fechar-pro').addEventListener('click', () => mostrar('tela-emitir'));
 
+// "Nao foi possivel concluir a compra" era tudo que aparecia, para qualquer
+// causa: produto que a loja nao devolveu, contrato pendente, aparelho sem conta
+// de teste, rede caida. Sem o motivo na tela, o motorista repete o toque e eu
+// fico adivinhando. Agora o app diz o que deu, e guarda o codigo tecnico junto
+// — feio, mas e o que permite consertar em vez de chutar.
+const MOTIVOS_DE_COMPRA = {
+  PRODUCT_NOT_AVAILABLE_FOR_PURCHASE:
+    'A App Store não está oferecendo a assinatura ainda. Isso costuma ser o '
+    + 'contrato de apps pagos que ainda não entrou em vigor.',
+  CONFIGURATION_ERROR:
+    'A assinatura não chegou da App Store. Confira se o produto está pronto e '
+    + 'se o contrato de apps pagos está ativo.',
+  OFFLINE_CONNECTION_ERROR: 'Sem conexão. Tente com sinal melhor.',
+  NETWORK_ERROR: 'A loja não respondeu. Tente de novo em instantes.',
+  STORE_PROBLEM_ERROR: 'A App Store está com problema agora. Tente mais tarde.',
+  PURCHASE_NOT_ALLOWED_ERROR:
+    'Este aparelho não permite compras. Veja Tempo de Uso e restrições.',
+  PAYMENT_PENDING_ERROR: 'A compra ficou pendente de aprovação. Aguarde a confirmação.',
+  RECEIPT_ALREADY_IN_USE_ERROR: 'Esta compra já está em outra conta.',
+  INVALID_APP_USER_ID: 'Sessão inconsistente. Saia e entre de novo.',
+};
+
+function mostrarErroDeCompra(erro, e) {
+  const codigo = e?.code || e?.errorCode || '';
+  const base = MOTIVOS_DE_COMPRA[codigo]
+    || (String(e?.message || '').includes('sem oferta')
+        ? 'A App Store não devolveu nenhuma assinatura para vender. '
+          + 'O produto precisa estar pronto e o contrato de apps pagos ativo.'
+        : 'Não foi possível concluir a compra.');
+  erro.textContent = `${base}${codigo ? ` (${codigo})` : ''}`;
+  erro.hidden = false;
+}
+
 $('btn-assinar').addEventListener('click', async () => {
   const erro = $('erro-pro');
   erro.hidden = true;
@@ -827,8 +873,7 @@ $('btn-assinar').addEventListener('click', async () => {
   } catch (e) {
     // Cancelar não é erro: o motorista fechou a folha de pagamento.
     if (e?.code === 'PURCHASE_CANCELLED' || /cancel/i.test(e?.message || '')) return;
-    erro.textContent = 'Não foi possível concluir a compra. Tente de novo.';
-    erro.hidden = false;
+    mostrarErroDeCompra(erro, e);
   }
 });
 
@@ -848,9 +893,8 @@ $('btn-restaurar').addEventListener('click', async () => {
       erro.textContent = 'Nenhuma assinatura ativa encontrada nesta conta.';
       erro.hidden = false;
     }
-  } catch {
-    erro.textContent = 'Não conseguimos verificar agora. Tente com sinal melhor.';
-    erro.hidden = false;
+  } catch (e) {
+    mostrarErroDeCompra(erro, e);
   }
 });
 
@@ -908,6 +952,67 @@ async function irParaEmitir({ comHoraDeAgora = true } = {}) {
 // Sem passar o ouvinte direto: ele receberia o evento do clique como opcoes.
 $('btn-novo').addEventListener('click', () => irParaEmitir());
 $('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
+
+// As duas lojas exigem que quem cria conta dentro do app consiga apagar dentro
+// do app: Apple na 5.1.1(v), Google na politica de exclusao de dados. Mandar
+// para o site nao cumpre.
+$('btn-excluir-conta').addEventListener('click', () => {
+  $('form-excluir').reset();
+  $('erro-excluir').hidden = true;
+  mostrar('tela-excluir');
+});
+$('btn-fechar-excluir').addEventListener('click', () => mostrar('tela-emitir'));
+
+$('form-excluir').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const erro = $('erro-excluir');
+  erro.hidden = true;
+
+  if ($('confirmacao-exclusao').value.trim().toLocaleUpperCase('pt-BR') !== 'EXCLUIR') {
+    erro.textContent = 'Digite EXCLUIR, em maiúsculas, para confirmar.';
+    erro.hidden = false;
+    return;
+  }
+
+  // A fila fica no aparelho. Apagar a conta com recibo por subir perderia
+  // aquele recibo para sempre, e o passageiro ja foi embora com o link.
+  const naFila = (await pendentes()).length;
+  if (naFila) {
+    erro.textContent = `${naFila} recibo(s) ainda não subiram. Espere o sinal ` +
+      'voltar antes de excluir, senão eles se perdem.';
+    erro.hidden = false;
+    return;
+  }
+
+  const botao = ev.target.querySelector('button[type="submit"]');
+  botao.disabled = true;
+  try {
+    const resp = await api('/api/excluir-conta', {
+      method: 'POST',
+      body: JSON.stringify({ senha: $('senha-exclusao').value }),
+    });
+    if (resp.ok) {
+      await limparRecibosLocais();
+      vibrar('HEAVY');
+      encerrarSessao();
+      return;
+    }
+    const corpo = await resp.json().catch(() => ({}));
+    erro.textContent = {
+      senha_incorreta: 'Senha incorreta. A conta não foi excluída.',
+      assinatura_ativa: 'Não conseguimos cancelar sua assinatura agora, então a '
+        + 'conta não foi excluída — apagá-la deixaria a cobrança ativa. Tente de novo.',
+      assinatura_na_loja: 'Cancele a assinatura nos Ajustes do aparelho primeiro. '
+        + 'Só a loja pode parar essa cobrança; apagar a conta aqui não pararia.',
+    }[corpo.erro] || 'Não foi possível excluir agora. Tente de novo.';
+    erro.hidden = false;
+  } catch {
+    erro.textContent = 'Sem conexão. A exclusão precisa de internet.';
+    erro.hidden = false;
+  } finally {
+    botao.disabled = false;
+  }
+});
 $('btn-sair').addEventListener('click', encerrarSessao);
 
 async function mostrarHistorico() {

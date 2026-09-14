@@ -211,6 +211,12 @@ function documentoBR(valor) {
   return String(valor || '').trim();
 }
 
+// O servidor confere de novo; aqui e so tirar o obvio: espaco que o teclado
+// do celular acrescenta sozinho e maiuscula do corretor.
+function emailLimpo(valor) {
+  return String(valor || '').trim().toLowerCase();
+}
+
 // Vira anuncio do motorista no recibo: quem recebeu tem como chamar de novo
 // sem procurar o contato.
 function chamadaDoMotorista(m) {
@@ -233,6 +239,14 @@ function motivoRecusa(codigo) {
   }[codigo] || codigo;
 }
 
+// Mostra o endereco digitado, para o motorista conferir antes de mandar, e
+// depois vira confirmacao. O e-mail so sai quando ele toca no botao.
+function estadoDoEmail(recibo) {
+  const para = recibo.dados.email_passageiro;
+  if (!para) return '';
+  return recibo.email_enviado ? `✉ Enviado para ${para}` : `✉ E-mail: ${para}`;
+}
+
 function estadoDoRecibo(recibo) {
   if (recibo.pendente) return '⏳ Aguardando sinal para sincronizar';
   if (recibo.recusado) return `⚠ Não enviado: ${motivoRecusa(recibo.recusado)}`;
@@ -243,7 +257,7 @@ function montarRecibo(recibo) {
   const d = recibo.dados, m = recibo.motorista || {};
   return `
     <div class="recibo-topo">
-      <img class="recibo-marca" src="img/marca.jpg" alt="Recibo Táxi">
+      <img class="recibo-marca" src="img/marca-recibo.png" alt="Recibo Táxi">
       <div class="recibo-topo-id">
         <span class="recibo-rotulo">Recibo</span>
         <span class="recibo-id">#${recibo.rid}</span>
@@ -262,7 +276,8 @@ function montarRecibo(recibo) {
       ${m.whatsapp ? `<dt>WhatsApp</dt><dd>${m.whatsapp}</dd>` : ''}
     </dl>
     ${chamadaDoMotorista(m) ? `<p class="recibo-chamada">${chamadaDoMotorista(m)}</p>` : ''}
-    <p class="recibo-estado">${estadoDoRecibo(recibo)}</p>`;
+    <p class="recibo-estado">${estadoDoRecibo(recibo)}</p>
+    ${estadoDoEmail(recibo) ? `<p class="recibo-estado">${estadoDoEmail(recibo)}</p>` : ''}`;
 }
 
 // Desenha o recibo e prepara o link do WhatsApp a partir do MESMO objeto.
@@ -273,9 +288,19 @@ function mostrarRecibo(recibo) {
   const fone = foneE164(recibo.dados.whatsapp_passageiro);
   $('btn-whats').hidden = !fone;
   $('btn-compartilhar').className = fone ? 'secundario' : 'primario';
+
+  const para = recibo.dados.email_passageiro;
+  $('btn-email').hidden = !para;
+  $('btn-email').textContent = recibo.email_enviado
+    ? 'Enviar por e-mail de novo' : 'Enviar por e-mail';
+  $('aviso-email').hidden = true;
+  $('aviso-email').classList.remove('erro');
   if (fone) {
     const msg = encodeURIComponent(textoParaCompartilhar(recibo));
     $('btn-whats').href = `https://wa.me/${fone}?text=${msg}`;
+  } else {
+    // Sem isto o href do recibo ANTERIOR continuava no botao.
+    $('btn-whats').removeAttribute('href');
   }
 }
 
@@ -379,6 +404,85 @@ async function atualizarAvisoFila() {
   rede.textContent = 'sem sinal';
 }
 
+// ── Cabeçalho e menu do perfil ─────────────────────────────────────────────
+//
+// Pro, histórico e sair viviam soltos: dois no cabeçalho da tela de emitir,
+// um no rodapé dela. Fora dessa tela não existiam, e dentro dela disputavam
+// espaço com o título. Agora moram no mesmo lugar, alcançável de qualquer
+// tela, atrás das iniciais do motorista.
+
+function iniciais(nome) {
+  const partes = String(nome || '').trim().split(/\s+/).filter(Boolean);
+  if (!partes.length) return '·';
+  const ultima = partes.length > 1 ? partes[partes.length - 1][0] : '';
+  return (partes[0][0] + ultima).toLocaleUpperCase('pt-BR');
+}
+
+const NOME_DO_PLANO = { free: 'Grátis', pro: 'Pro', business: 'Business' };
+
+function atualizarCabecalho() {
+  const dentro = !!token();
+  $('btn-perfil').hidden = !dentro;
+  if (!dentro) {
+    // Apagar de verdade, e nao so esconder: o texto no DOM sobrevivia ao
+    // "Sair" e o motorista seguinte podia ler o nome e o e-mail do anterior.
+    fecharMenu();
+    ['perfil-iniciais', 'menu-nome', 'menu-email', 'menu-plano']
+      .forEach((id) => { $(id).textContent = ''; });
+    return;
+  }
+
+  const m = Guardado.get('motorista') || {};
+  $('perfil-iniciais').textContent = iniciais(m.full_name);
+  $('menu-nome').textContent = m.full_name || 'Motorista';
+  $('menu-email').textContent = m.email || '';
+
+  // Quanto ainda cabe no mês: é a resposta para "por que existe um botão Pro".
+  const plano = NOME_DO_PLANO[Guardado.get('plano')] || 'Grátis';
+  const limite = Guardado.get('limite');
+  const usados = Guardado.get('usados');
+  $('menu-plano').textContent = limite
+    ? `Plano ${plano} · ${usados ?? 0} de ${limite} recibos este mês`
+    : `Plano ${plano} · recibos ilimitados`;
+}
+
+function fecharMenu() {
+  $('menu-perfil').hidden = true;
+  $('menu-fundo').hidden = true;
+  $('btn-perfil').setAttribute('aria-expanded', 'false');
+}
+
+$('btn-perfil').addEventListener('click', () => {
+  if (!token()) { fecharMenu(); return; }
+  if (!$('menu-perfil').hidden) { fecharMenu(); return; }
+  atualizarCabecalho();
+  $('menu-perfil').hidden = false;
+  $('menu-fundo').hidden = false;
+  $('btn-perfil').setAttribute('aria-expanded', 'true');
+  vibrar('LIGHT');
+  // O contador de recibos envelhece a cada emissão. Com sinal, chega o número
+  // de agora; sem sinal, fica o último conhecido em vez de nada.
+  atualizarSessao().then(atualizarCabecalho);
+});
+
+$('menu-fundo').addEventListener('click', fecharMenu);
+
+// Escolher qualquer item fecha o menu. O que o item FAZ continua com o
+// próprio botão, que já tem o seu ouvinte.
+$('menu-perfil').addEventListener('click', (ev) => {
+  if (ev.target.closest('button')) fecharMenu();
+});
+
+// Tocar na marca volta para o formulário — o caminho de volta que faltava
+// depois de olhar o histórico ou a tela de assinatura.
+$('btn-inicio').addEventListener('click', async () => {
+  fecharMenu();
+  if (!token() || !$('tela-emitir').hidden) return;
+  // Sem renovar data e hora: o motorista pode ter posto a data de ontem e ido
+  // olhar o historico. Voltar pela marca nao e comecar um recibo novo.
+  await irParaEmitir({ comHoraDeAgora: false });
+});
+
 // ── Ações ──────────────────────────────────────────────────────────────────
 $('form-login').addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -473,6 +577,7 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       observacoes: '',
       forma_pagamento: $('forma').value,
       whatsapp_passageiro: $('whats').value.trim(),
+      email_passageiro: emailLimpo($('email-passageiro').value),
       documento_passageiro: documentoBR($('documento').value),
     },
   };
@@ -503,6 +608,62 @@ $('form-recibo').addEventListener('submit', async (ev) => {
 // simulador — navegacao simples para fora da origem faz o Capacitor entregar
 // ao sistema, e o Safari abre por cima do app.
 $('btn-whats').addEventListener('click', () => vibrar());
+
+// O unico caminho do e-mail. Emitir nao manda nada: preencher o campo e uma
+// coisa, mandar e outra, e cada envio tem custo.
+//
+// Recibo que ainda esta na fila nao existe no servidor, e o envio responderia
+// 404. Entao sobe primeiro, e so depois manda.
+$('btn-email').addEventListener('click', async () => {
+  const rid = $('btn-compartilhar').dataset.rid;
+  const aviso = $('aviso-email');
+  const botao = $('btn-email');
+  vibrar();
+
+  const dizer = (texto, ehErro = false) => {
+    aviso.textContent = texto;
+    aviso.classList.toggle('erro', ehErro);
+    aviso.hidden = false;
+  };
+
+  botao.disabled = true;
+  try {
+    let recibo = (await listarRecibos()).find((r) => r.rid === rid);
+    if (!recibo) return;
+
+    if (recibo.pendente) {
+      dizer('Subindo o recibo…');
+      await esperarSubir(rid);
+      recibo = (await listarRecibos()).find((r) => r.rid === rid);
+      if (!recibo || recibo.pendente) {
+        dizer('O recibo ainda não subiu. Tente de novo quando tiver sinal.', true);
+        return;
+      }
+    }
+
+    dizer('Enviando…');
+    const resp = await api(`/api/recibos/${rid}/email`, { method: 'POST' });
+    if (resp.ok) {
+      const atualizado = { ...recibo, email_enviado: true };
+      await salvarRecibo(atualizado);
+      mostrarRecibo(atualizado);          // redesenha: some o aviso e muda o rotulo
+      dizer(`Enviado para ${recibo.dados.email_passageiro}.`);
+      vibrar('HEAVY');
+      return;
+    }
+    dizer({
+      404: 'Este recibo ainda não chegou ao servidor.',
+      400: 'Este recibo não tem e-mail do passageiro.',
+      401: 'Sua sessão expirou. Entre de novo.',
+      429: 'Você atingiu o limite de e-mails de hoje.',
+      502: 'O provedor de e-mail recusou. Tente de novo em instantes.',
+    }[resp.status] || 'Não foi possível enviar agora.', true);
+  } catch {
+    dizer('Sem conexão. Tente quando tiver sinal.', true);
+  } finally {
+    botao.disabled = false;
+  }
+});
 
 $('btn-compartilhar').addEventListener('click', async () => {
   const rid = $('btn-compartilhar').dataset.rid;
@@ -636,6 +797,9 @@ $('btn-restaurar').addEventListener('click', async () => {
 function encerrarSessao() {
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
+  Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
+  fecharMenu();
+  atualizarCabecalho();
   mostrar('tela-login');
 }
 
@@ -665,17 +829,21 @@ async function atualizarSessao() {
     Guardado.set('motorista_id', s.id);
     Guardado.set('plano', s.plano);
     Guardado.set('limite', s.limite_mensal);
+    Guardado.set('usados', s.usados_no_mes);
+    atualizarCabecalho();
     await reabrirRecusadosPorCota(s);
     return s;
   } catch { return null; }
 }
 
-$('btn-novo').addEventListener('click', async () => {
-  preencherDataEHora();
+async function irParaEmitir({ comHoraDeAgora = true } = {}) {
+  if (comHoraDeAgora) preencherDataEHora();
   await atualizarSugestoesDeLocal();   // aprende o local que acabou de ser usado
   await atualizarAvisoFila();
   mostrar('tela-emitir');
-});
+}
+// Sem passar o ouvinte direto: ele receberia o evento do clique como opcoes.
+$('btn-novo').addEventListener('click', () => irParaEmitir());
 $('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
 $('btn-sair').addEventListener('click', encerrarSessao);
 
@@ -746,6 +914,7 @@ function preencherDataEHora() {
 
 async function iniciar() {
   preencherDataEHora();
+  atualizarCabecalho();
   if (!token()) { mostrar('tela-login'); return; }
   mostrar('tela-emitir');
   await atualizarSessao();

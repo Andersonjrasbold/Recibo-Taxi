@@ -96,3 +96,30 @@ recibos com `salvarRecibo()` e chame `mostrarHistorico()`, `abrirRecibo()` etc.
 captura sai preta. A captura é `xcrun simctl io <id> screenshot x.png`, que
 não pede permissão de gravação de tela. Ao terminar,
 `xcrun simctl uninstall <id> br.com.recibotaxi.app` apaga os dados da sonda.
+
+Três armadilhas que já custaram tempo:
+
+- **Rode `npm run sync` ANTES de instalar a sonda.** Senão a sonda anterior
+  continua no arquivo e as duas rodam juntas — uma abre o menu, a outra mede
+  outra coisa, e você depura um estado que não existe.
+- **Limpe o `localStorage` no topo da sonda**, não só os tokens. O aparelho
+  guarda o estado da execução passada e ele reaparece na seguinte.
+- **`xcrun simctl uninstall` antes de instalar**, para o IndexedDB não vir
+  junto da rodada anterior.
+
+E cuidado com `grep -c` dentro de uma cadeia `&&`: contagem zero devolve
+status 1 e o resto da linha não roda. Já aconteceu de a sonda nunca ser
+instalada e eu passar vinte minutos investigando o app limpo.
+
+
+## Campo de data e hora do iOS
+
+`input[type="date"]` e `input[type="time"]` não encolhem abaixo da largura do
+próprio texto. Numa tela de 402 pt, os dois lado a lado mediam 207 pt cada numa
+coluna de 177, e a página passava a rolar de lado. Diminuir a fonte não muda
+nada — o mínimo é do controle nativo, não do texto. `min-width:0` no item do
+grid também não basta.
+
+O que resolve é `-webkit-appearance:none`. O campo passa a obedecer à coluna,
+continua mostrando a data por extenso e continua abrindo o seletor do sistema.
+Medido no simulador, com `getBoundingClientRect()`, antes e depois.

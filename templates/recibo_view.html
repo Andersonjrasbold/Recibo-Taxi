@@ -37,7 +37,9 @@
         <!-- Document header -->
         <div class="receipt-doc-header">
           <div class="receipt-doc-logo">
-            <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+            {# Preta e branca: esta e a via do passageiro, e recibo se imprime.
+               A colorida continua no cabecalho e no rodape do site. #}
+            <img src="{{ url_for('public_static', filename='img/recibo-marca.png') }}" alt="Recibo Táxi">
           </div>
           <div class="receipt-doc-id-wrap">
             <span class="receipt-doc-id-label">Recibo</span>

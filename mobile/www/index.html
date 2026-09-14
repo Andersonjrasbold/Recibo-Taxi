@@ -9,9 +9,40 @@
 <body>
 
 <header class="barra">
-  <img class="marca" src="img/marca.jpg" alt="Recibo Táxi">
-  <span id="rede" class="pilula" hidden></span>
+  <!-- A marca e um botao: tocar nela volta para o formulario, venha de onde vier. -->
+  <button id="btn-inicio" class="marca-botao" aria-label="Ir para novo recibo">
+    <img class="marca" src="img/marca.jpg" alt="Recibo Táxi">
+  </button>
+
+  <div class="barra-acoes">
+    <span id="rede" class="pilula" hidden></span>
+
+    <div class="perfil-area">
+      <button id="btn-perfil" class="perfil" hidden aria-haspopup="true"
+              aria-expanded="false" aria-controls="menu-perfil"
+              aria-label="Sua conta e opções">
+        <span id="perfil-iniciais">·</span>
+      </button>
+
+      <!-- Pro, historico e sair moram aqui. Soltos no cabecalho da tela eles
+           disputavam espaco com o titulo e so existiam na tela de emitir. -->
+      <div id="menu-perfil" class="menu-perfil" hidden>
+        <div class="menu-topo">
+          <strong id="menu-nome"></strong>
+          <small id="menu-email"></small>
+          <small id="menu-plano" class="menu-plano"></small>
+        </div>
+        <button id="btn-pro" class="menu-item">Recibo Táxi Pro</button>
+        <button id="btn-historico" class="menu-item">Ver histórico</button>
+        <button id="btn-sair" class="menu-item menu-item-saida">Sair</button>
+      </div>
+    </div>
+  </div>
 </header>
+
+<!-- Cobre a pagina enquanto o menu esta aberto: tocar fora fecha. Fica abaixo
+     do cabecalho na pilha, senao engoliria o toque nos proprios itens. -->
+<div id="menu-fundo" class="menu-fundo" hidden></div>
 
 <!-- ── Login ───────────────────────────────────────────────────────────── -->
 <section id="tela-login" class="tela" hidden>
@@ -81,19 +112,28 @@
 
 <!-- ── Emitir ──────────────────────────────────────────────────────────── -->
 <section id="tela-emitir" class="tela" hidden>
-  <div class="cabecalho-tela">
-    <h1>Novo recibo</h1>
-    <div class="acoes-cabecalho">
-      <button id="btn-pro" class="texto">Pro</button>
-      <button id="btn-sair" class="texto">Sair</button>
-    </div>
-  </div>
+  <h1>Novo recibo</h1>
 
   <div id="aviso-fila" class="aviso" hidden></div>
 
   <form id="form-recibo">
+    <!-- Os tres campos do passageiro vem primeiro: e o que o motorista pergunta
+         com o passageiro ainda no carro. Data e hora ja nascem preenchidas, e
+         origem, destino e valor ele sabe de cor. -->
     <label for="passageiro">Passageiro *</label>
     <input type="text" id="passageiro" maxlength="120" required>
+
+    <label for="documento">CPF ou CNPJ do passageiro (opcional)</label>
+    <input type="text" id="documento" inputmode="numeric" maxlength="18"
+           placeholder="000.000.000-00">
+
+    <label for="whats">WhatsApp do passageiro</label>
+    <input type="tel" id="whats" inputmode="numeric" maxlength="20">
+
+    <label for="email-passageiro">E-mail do passageiro (opcional)</label>
+    <input type="email" id="email-passageiro" maxlength="254"
+           autocomplete="off" autocapitalize="none" spellcheck="false"
+           placeholder="nome@exemplo.com">
 
     <div class="linha">
       <div>
@@ -131,19 +171,8 @@
       </div>
     </div>
 
-    <label for="whats">WhatsApp do passageiro</label>
-    <input type="tel" id="whats" inputmode="numeric" maxlength="20">
-
-    <label for="documento">CPF ou CNPJ do passageiro (opcional)</label>
-    <input type="text" id="documento" inputmode="numeric" maxlength="18"
-           placeholder="000.000.000-00">
-
     <button type="submit" class="primario">Gerar recibo</button>
   </form>
-
-  <div class="rodape-tela">
-    <button id="btn-historico" class="texto">Ver histórico</button>
-  </div>
 </section>
 
 <!-- ── Recibo pronto ───────────────────────────────────────────────────── -->
@@ -151,6 +180,8 @@
   <div id="recibo" class="recibo"></div>
   <div class="acoes">
     <a id="btn-whats" class="primario como-botao" hidden>Enviar no WhatsApp</a>
+    <button id="btn-email" class="secundario" hidden>Enviar por e-mail</button>
+    <p id="aviso-email" class="ajuda aviso-email" hidden></p>
     <button id="btn-compartilhar" class="secundario">Compartilhar PDF</button>
     <button id="btn-novo" class="secundario">Novo recibo</button>
     <button id="btn-voltar-historico" class="texto" hidden>Voltar ao histórico</button>

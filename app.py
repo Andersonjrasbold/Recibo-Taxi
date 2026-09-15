@@ -2216,8 +2216,15 @@ def webhook_revenuecat():
         app.logger.warning("REVENUECAT_WEBHOOK_SECRET ausente — webhook desativado.")
         abort(503)
 
-    enviado = request.headers.get("Authorization", "").encode("utf-8", "replace")
-    if not hmac.compare_digest(enviado, f"Bearer {segredo}".encode("utf-8")):
+    # O painel do RevenueCat manda o campo "Authorization header value" como
+    # veio: com "Bearer " na frente ou sem, com espaco sobrando ou nao. Exigir
+    # a forma exata custou um 401 em producao no primeiro evento de verdade.
+    # Aceitar as duas formas nao afrouxa nada: o segredo continua sendo
+    # comparado inteiro, em tempo constante.
+    enviado = request.headers.get("Authorization", "").strip()
+    if enviado[:7].lower() == "bearer ":
+        enviado = enviado[7:].strip()
+    if not hmac.compare_digest(enviado.encode("utf-8", "replace"), segredo.encode("utf-8")):
         abort(401)
 
     evento = (request.get_json(silent=True) or {}).get("event") or {}

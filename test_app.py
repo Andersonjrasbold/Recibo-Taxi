@@ -673,6 +673,27 @@ check("sem documento, a linha nao aparece",
 _sem = A.build_whatsapp_link(_rec, "https://x", with_recipient=False)
 check("sem destinatario, nao vaza o numero", "5511987654321" not in _sem)
 
+# -- Webhook do RevenueCat: o header ------------------------------------
+# O painel manda o "Authorization header value" como foi colado. No primeiro
+# evento real de producao veio sem "Bearer " e o servidor respondeu 401 — a
+# compra aconteceu e o plano nao virou. As duas formas tem de valer.
+print("\n-- Webhook do RevenueCat: header --")
+_seg_antigo = os.environ.get("REVENUECAT_WEBHOOK_SECRET")
+os.environ["REVENUECAT_WEBHOOK_SECRET"] = "segredo-de-teste-123"
+_wc = A.app.test_client()
+def _rc(auth):
+    kw = {"data": '{"event":{"type":"TEST"}}', "content_type": "application/json"}
+    if auth is not None: kw["headers"] = {"Authorization": auth}
+    return _wc.post("/webhook/revenuecat", **kw).status_code
+check("aceita 'Bearer <segredo>'", _rc("Bearer segredo-de-teste-123") == 200)
+check("aceita o segredo sem Bearer", _rc("segredo-de-teste-123") == 200)
+check("aceita espaco sobrando nas pontas", _rc("  Bearer segredo-de-teste-123  ") == 200)
+check("recusa segredo errado", _rc("Bearer outro") == 401)
+check("recusa sem header", _rc(None) == 401)
+check("recusa segredo parcial", _rc("segredo-de-teste") == 401)
+if _seg_antigo is None: del os.environ["REVENUECAT_WEBHOOK_SECRET"]
+else: os.environ["REVENUECAT_WEBHOOK_SECRET"] = _seg_antigo
+
 # -- Chave do RevenueCat --------------------------------------------------
 # A Test Store (prefixo test_) serve para ensaiar a compra sem a Apple, sem
 # contrato e sem cartao. Util no desenvolvimento, desastre se escapar: o app

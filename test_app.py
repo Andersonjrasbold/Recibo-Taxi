@@ -1045,6 +1045,13 @@ for _p in _pastas:
 check("nenhuma copia duplicada no pacote", not _dupes,
       ", ".join(_dupes[:3]) + " — apague; o iCloud as recria")
 
+# O iCloud tambem duplica DENTRO do .git: um "refs/remotes/origin/main 2"
+# quebrou o fetch com "bad object" em 2026-09-15. Git nao avisa; so falha.
+_dupes_git = [f for f in _g2.glob(".git/refs/**/*", recursive=True)
+              if os.path.isfile(f) and _re.search(r" \d+$", f)]
+check("nenhuma copia duplicada dentro do .git", not _dupes_git,
+      ", ".join(_dupes_git[:3]) + " — apague; quebra o fetch")
+
 _sondas = []
 for _p in _pastas:
     for _f in _g2.glob(f"{_p}/**/*", recursive=True):

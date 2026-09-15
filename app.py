@@ -70,11 +70,11 @@ APP_NAME = "Recibo Táxi"
 # Brasil não adota horário de verão desde 2019, então o offset é fixo.
 BR_TZ = timezone(timedelta(hours=-3))
 
-# Fase de testes: 100 por mes, para ninguem esbarrar no teto enquanto o app e
-# provado na rua (aconteceu: cinco recibos de teste e a fila parou em 402). O
-# valor definitivo ainda vai ser decidido. Os textos do site leem daqui, via
-# inject_globals, entao mudar este numero basta.
-FREE_MONTHLY_LIMIT = 100
+# Valor definido pelo Anderson em 2026-09-15, fechando a fase de testes (que
+# rodou com 100). Os textos do site e o app leem daqui (inject_globals e
+# /api/sessao), entao mudar este numero basta. A ficha da App Store (nota de
+# revisao da assinatura) repete o numero e precisa ser ajustada a mao.
+FREE_MONTHLY_LIMIT = 6
 # "business" segue aqui de propósito: o plano saiu de venda, mas quem já assina
 # mantém o acesso ilimitado até cancelar. Só STRIPE_PRICE_IDS perdeu a entrada,
 # o que faz /assinar/business responder 400 para assinaturas novas.

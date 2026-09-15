@@ -849,6 +849,7 @@ const motivosDeCompra = () => ({
 // nome. Descobri no aparelho: a tela mostrou "(23)" e nenhuma frase, porque a
 // tabela so conhecia os nomes. Traduz o numero antes de procurar.
 const NOME_DO_CODIGO_RC = {
+  '1': 'PURCHASE_CANCELLED_ERROR',
   '2': 'STORE_PROBLEM_ERROR', '3': 'PURCHASE_NOT_ALLOWED_ERROR',
   '5': 'PRODUCT_NOT_AVAILABLE_FOR_PURCHASE', '7': 'RECEIPT_ALREADY_IN_USE_ERROR',
   '10': 'NETWORK_ERROR', '14': 'INVALID_APP_USER_ID', '20': 'PAYMENT_PENDING_ERROR',
@@ -894,7 +895,8 @@ $('btn-assinar').addEventListener('click', async () => {
     }
   } catch (e) {
     // Cancelar não é erro: o motorista fechou a folha de pagamento.
-    if (e?.code === 'PURCHASE_CANCELLED' || /cancel/i.test(e?.message || '')) return;
+    const nome = NOME_DO_CODIGO_RC[String(e?.code ?? '')] || String(e?.code ?? '');
+    if (nome === 'PURCHASE_CANCELLED_ERROR' || /cancel/i.test(e?.message || '')) return;
     mostrarErroDeCompra(erro, e);
   }
 });

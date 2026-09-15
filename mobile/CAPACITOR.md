@@ -148,3 +148,32 @@ grid também não basta.
 O que resolve é `-webkit-appearance:none`. O campo passa a obedecer à coluna,
 continua mostrando a data por extenso e continua abrindo o seletor do sistema.
 Medido no simulador, com `getBoundingClientRect()`, antes e depois.
+
+## Compra falhando com "(23)" no TestFlight: o que era
+
+Dois dias de "não foi possível concluir a compra (23)" — CONFIGURATION_ERROR do
+RevenueCat, que significa "a StoreKit não devolveu nenhum produto". Contrato,
+banco, formulários fiscais, IDs de produto, chave pública, preço e
+disponibilidade do **app**: tudo estava certo e nada disso era a causa.
+
+A causa era a **assinatura em `MISSING_METADATA`**. Assinatura nesse estado não
+é devolvida pelo sandbox — `Product.products(for:)` volta vazio — e o TestFlight
+compra no sandbox. Eu tinha lido "Preparar para envio" num print e descartado
+essa pista; aquele era o estado da *versão* da assinatura
+(`subscriptionVersions`), não da assinatura. O campo `state` de
+`/v1/subscriptions/{id}` não é legado e não mente. Confie nele.
+
+O que faltava, com localização, imagem de revisão, grupo e preço em BRA já
+certos: **disponibilidade e preço só no Brasil, com o app à venda em 175
+territórios.** Ao colocar a assinatura em todos os territórios, o estado virou
+`READY_TO_SUBMIT` na hora:
+
+```
+GET  /v1/subscriptions/{id}/prices?include=subscriptionPricePoint   → ponto de preço BRA
+GET  /v1/subscriptionPricePoints/{ponto}/equalizations              → 174 pontos equivalentes
+POST /v1/subscriptionAvailabilities   availableInNewTerritories: true, 175 territórios
+POST /v1/subscriptionPrices           um por território, com o ponto equalizado
+```
+
+Regra que fica: app e assinatura têm de estar à venda nos **mesmos** lugares.
+Vale igual no Google Play — plano base sem preço numa região é o mesmo buraco.

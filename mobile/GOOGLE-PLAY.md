@@ -52,7 +52,8 @@ para quem já desinstalou:
 > "provide users with an in-app path to delete their app accounts (...) **and**
 > provide a web link resource where users can request app account deletion"
 
-A URL a declarar é `https://recibotaxi.com.br/excluir-conta`.
+A URL a declarar é `https://www.recibotaxi.com.br/excluir-conta` — **com `www`**: o apex
+`recibotaxi.com.br` não tem registro DNS no Registro.br e não responde (conferido em 15/09/2026).
 
 ## Verificação de desenvolvedor Android — prazo 30/09/2026
 
@@ -98,10 +99,15 @@ mas com atrito — não serve para entregar a taxista.
 | Descrição breve | 80 | `Emita e envie recibos de corrida em segundos, mesmo sem internet.` |
 | Descrição completa | 4000 | ver abaixo |
 | Ícone | 512×512 PNG | de `assets/marca/` |
-| Gráfico de destaque | 1024×500, sem transparência | **falta gerar** |
-| Capturas | mín. 2, proporção entre 16:9 e 9:16 | **falta gerar** — 1080×1920 serve |
+| Gráfico de destaque | 1024×500, sem transparência | `assets/loja/play-grafico-destaque-1024x500.png` |
+| Capturas | mín. 2, proporção entre 16:9 e 9:16 | `assets/loja/play-captura-{1..4}-*.png`, 1080×1920, geradas das capturas do iOS sem a barra de status (15/09/2026) |
 
-As capturas do iOS **não servem**: 1320×2868 é mais alto que 9:16.
+As capturas do iOS cruas **não servem**: 1320×2868 é mais alto que 9:16. As de `assets/loja` já vêm
+recortadas (sem a barra de status do iPhone) e centralizadas num fundo 1080×1920.
+
+**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **14**
+(15/09/2026, com o código do app após a correção do erro 23). Regerar com `./gradlew bundleRelease`
+após `npx cap sync android` sempre que `www/` mudar.
 
 ## Segurança dos Dados — respostas
 

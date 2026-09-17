@@ -60,6 +60,7 @@
             <span class="pricing-cents">,90</span>
             <span class="pricing-period">/mês</span>
           </div>
+          <p class="pricing-anual">ou <strong>R$ 119,40/ano</strong> em pagamento único — <span class="pricing-anual-badge">50% de desconto</span></p>
           <p class="pricing-tagline">Para taxistas que trabalham todo dia</p>
           <ul class="pricing-features">
             <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
@@ -80,6 +81,11 @@
             <form action="{{ url_for('portal_cliente') }}" method="post" class="mt-2">
               <button type="submit" class="btn btn-pricing-ghost w-100">Gerenciar assinatura</button>
             </form>
+            {% if stripe_configured %}
+            <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post" class="mt-2">
+              <button type="submit" class="btn btn-pricing-ghost w-100">Mudar para o anual — R$ 119,40/ano</button>
+            </form>
+            {% endif %}
             {% elif plano == 'business' %}{# assinante antigo do Business: só o portal #}
             <form action="{{ url_for('portal_cliente') }}" method="post">
               <button type="submit" class="btn btn-pricing-ghost w-100">Mudar para Pro no portal</button>
@@ -94,6 +100,11 @@
                 {% endif %}
               </button>
             </form>
+            {% if stripe_configured %}
+            <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post" class="mt-2">
+              <button type="submit" class="btn btn-pricing-ghost w-100">Assinar anual — R$ 119,40 (economize 50%)</button>
+            </form>
+            {% endif %}
             {% endif %}
           {% else %}
           <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com Pro</a>
@@ -124,6 +135,18 @@
               <div id="faq1" class="accordion-collapse collapse show" data-bs-parent="#faqAccordion">
                 <div class="accordion-body faq-body">
                   Sim! Você pode gerar recibos avulsos sem criar conta. Eles são públicos e compartilháveis, mas não ficam salvos no histórico. Para guardar seus recibos, cadastre-se gratuitamente.
+                </div>
+              </div>
+            </div>
+            <div class="accordion-item faq-item">
+              <h3 class="accordion-header">
+                <button class="accordion-button faq-btn collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq-anual">
+                  Como funciona o plano anual?
+                </button>
+              </h3>
+              <div id="faq-anual" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body faq-body">
+                  É o mesmo Pro, com tudo ilimitado, pago uma única vez por ano: R$ 119,40, metade do que custam 12 meses no plano mensal. Quem já é Pro mensal pode mudar para o anual a qualquer momento — os dias que sobraram do mês são descontados. A renovação acontece só a cada 12 meses e pode ser cancelada pelo portal do cliente.
                 </div>
               </div>
             </div>

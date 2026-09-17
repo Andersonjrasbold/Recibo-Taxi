@@ -480,6 +480,9 @@ a { color: inherit; text-decoration: none; }
 .pricing-cents   { font-size: 1.2rem; font-weight: 700; color: var(--paper); align-self: flex-end; margin-bottom: .15rem; }
 .pricing-period  { font-size: .82rem; font-weight: 600; color: rgba(255,244,236,.5); margin-left: .25rem; align-self: flex-end; margin-bottom: .2rem; }
 .pricing-tagline { font-size: .85rem; color: rgba(255,244,236,.58); margin-bottom: 1.25rem; }
+.pricing-anual   { font-size: .82rem; color: rgba(255,244,236,.7); margin: -.35rem 0 .9rem; }
+.pricing-anual strong { color: var(--paper); font-weight: 800; }
+.pricing-anual-badge { display: inline-block; padding: .1rem .45rem; border-radius: 999px; font-size: .72rem; font-weight: 800; color: #1a1210; background: var(--apricot); }
 
 .pricing-features { list-style: none; padding: 0; margin: 0 0 1.5rem; display: grid; gap: .5rem; flex: 1; }
 .pricing-features li { display: flex; align-items: flex-start; gap: .55rem; font-size: .87rem; }

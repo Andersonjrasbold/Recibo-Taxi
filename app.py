@@ -173,7 +173,25 @@ SECURITY_HEADERS = {
 
 STRIPE_PRICE_IDS = {
     "pro": "STRIPE_PRO_PRICE_ID",
+    # Anual = o MESMO Pro, cobrado uma vez por ano com 50% de desconto
+    # (R$ 119,40 = 19,90 × 12 × 0,5; decisão do Anderson em 2026-09-16, mesmo
+    # preço no site e nas lojas). É um Price a mais no mesmo produto do Stripe:
+    # o metadata.plan do checkout continua "pro", então webhook, gates e a
+    # tela de planos não distinguem ciclo — só o Stripe sabe.
+    "pro_anual": "STRIPE_PRO_ANUAL_PRICE_ID",
 }
+# Ciclo de cada chave de checkout. Tudo que não é "anual" é mensal.
+PLAN_CYCLES = {"pro_anual": "anual"}
+# True = o anual renova sozinho a cada 12 meses (cancelável no portal, como o
+# mensal). False = "pagamento único" literal: o webhook marca
+# cancel_at_period_end e o Stripe encerra no fim do ano, derrubando pra free
+# pelo customer.subscription.deleted de sempre. Trocar aqui basta.
+ANUAL_RENOVA_AUTOMATICAMENTE = True
+
+
+def plano_base(plan: str) -> str:
+    """'pro_anual' → 'pro'. É o valor gravado em drivers.plan."""
+    return (plan or "").split("_", 1)[0]
 
 
 def to_utc_iso(value: datetime) -> str:
@@ -1753,6 +1771,11 @@ def assinar(plan: str):
     # Quem já assina troca de plano pelo portal. Abrir um segundo checkout
     # criaria uma assinatura paralela, cobrando os dois planos ao mesmo tempo.
     if g.user.get("plan") in PAID_PLANS and g.user.get("stripe_customer_id"):
+        # Exceção: mensal → anual é troca de Price na assinatura que já existe.
+        # O Stripe zera o ciclo, credita os dias não usados do mês e cobra o
+        # ano na hora (always_invoice) — sem segunda assinatura.
+        if plan == "pro_anual" and g.user.get("stripe_subscription_id"):
+            return _migrar_para_anual(stripe, price_id)
         flash(
             "Você já tem uma assinatura ativa. Use 'Gerenciar plano' para "
             "trocar de plano ou cancelar.",
@@ -1793,7 +1816,8 @@ def assinar(plan: str):
             mode="subscription",
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={"user_id": g.user["_id"], "plan": plan},
+            metadata={"user_id": g.user["_id"], "plan": plano_base(plan),
+                      "ciclo": PLAN_CYCLES.get(plan, "mensal")},
             locale="pt-BR",
             idempotency_key=f"assinar:{g.user['_id']}:{plan}",
         )
@@ -1808,6 +1832,38 @@ def assinar(plan: str):
         return redirect(url_for("planos"))
 
     return redirect(checkout.url, code=303)
+
+
+def _migrar_para_anual(stripe, price_id: str):
+    """Troca o Price da assinatura ativa pelo anual. Só é chamado pelo /assinar."""
+    try:
+        sub = stripe.Subscription.retrieve(g.user["stripe_subscription_id"])
+        item = sub["items"]["data"][0]
+        if item["price"]["id"] == price_id:
+            flash("Você já está no plano anual.", "info")
+            return redirect(url_for("dashboard"))
+        stripe.Subscription.modify(
+            sub["id"],
+            items=[{"id": item["id"], "price": price_id}],
+            proration_behavior="always_invoice",
+            cancel_at_period_end=not ANUAL_RENOVA_AUTOMATICAMENTE,
+            metadata={"plan": "pro", "ciclo": "anual"},
+            idempotency_key=f"anual:{g.user['_id']}:{sub['id']}",
+        )
+    except Exception as exc:
+        app.logger.error("Falha ao migrar %s para o anual: %s", g.user["_id"], exc)
+        flash(
+            "Não conseguimos trocar para o plano anual agora. Tente de novo "
+            "em alguns instantes ou fale com o suporte.",
+            "danger",
+        )
+        return redirect(url_for("planos"))
+    flash(
+        "Pronto! Sua assinatura passou para o plano anual: R$ 119,40 por ano, "
+        "com o que sobrou do mês já descontado.",
+        "success",
+    )
+    return redirect(url_for("dashboard"))
 
 
 @app.post("/portal-cliente")
@@ -1865,7 +1921,9 @@ def stripe_webhook():
 
     if tipo == "checkout.session.completed":
         user_id = obj.get("metadata", {}).get("user_id")
-        plan = obj.get("metadata", {}).get("plan", "pro")
+        # plano_base por segurança: um checkout antigo/manual com "pro_anual"
+        # no metadata não pode gravar um plano que os gates não conhecem.
+        plan = plano_base(obj.get("metadata", {}).get("plan", "pro")) or "pro"
         if user_id:
             store.update_user(user_id, {
                 "plan": plan,
@@ -1873,6 +1931,15 @@ def stripe_webhook():
                 "stripe_subscription_id": obj.get("subscription"),
                 "subscription_status": "active",
             })
+        # "Pagamento único" literal: o anual não renova. O Stripe encerra no
+        # fim dos 12 meses e o subscription.deleted abaixo derruba pra free.
+        if (not ANUAL_RENOVA_AUTOMATICAMENTE
+                and obj.get("metadata", {}).get("ciclo") == "anual"
+                and obj.get("subscription")):
+            try:
+                stripe.Subscription.modify(obj["subscription"], cancel_at_period_end=True)
+            except Exception as exc:
+                app.logger.error("cancel_at_period_end falhou para %s: %s", user_id, exc)
 
     elif tipo == "customer.subscription.deleted":
         user = store.get_user_by_stripe_customer(obj.get("customer"))

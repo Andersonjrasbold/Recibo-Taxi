@@ -374,6 +374,7 @@ def planos_html(plano):
 h = planos_html("free")
 check("free ve o botao de assinar Pro", "Assinar Pro" in h)
 check("Business nao aparece mais na pagina", "Business" not in h)
+check("free ve o plano anual com 50% de desconto", "R$ 119,40/ano" in h and "50% de desconto" in h)
 h = planos_html("pro")
 check("pro nao ve botao de assinar", "Assinar Pro" not in h)
 check("pro ve 'Seu plano atual' uma unica vez", h.count("Seu plano atual") == 1, h.count("Seu plano atual"))
@@ -390,6 +391,11 @@ uidb = A.get_store().get_user_by_email("bizz@teste.invalid")["_id"]
 A.get_store().update_user(uidb, {"plan": "business"})
 r = cb.post("/assinar/business")
 check("checkout de Business e recusado (400)", r.status_code == 400, r.status_code)
+# pro_anual e uma chave valida de checkout (sem Stripe configurado nos testes,
+# a rota redireciona pra /planos em vez de 400)
+r = cb.post("/assinar/pro_anual")
+check("checkout do Pro anual e uma rota valida (nao 400)", r.status_code == 302, r.status_code)
+check("plano_base reduz o anual ao Pro", A.plano_base("pro_anual") == "pro" and A.plano_base("pro") == "pro")
 
 # assinante antigo mantem recibos ilimitados
 criados = sum(1 for i in range(A.FREE_MONTHLY_LIMIT + 5)

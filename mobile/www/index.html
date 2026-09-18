@@ -60,7 +60,29 @@
     <p id="erro-login" class="erro" hidden></p>
   </form>
   <div class="rodape-tela">
+    <button id="btn-ir-recuperar" class="texto">Esqueci minha senha</button>
     <button id="btn-ir-cadastro" class="texto">Não tem conta? Criar agora</button>
+  </div>
+</section>
+
+<!-- ── Recuperar senha ─────────────────────────────────────────────────── -->
+<!-- Só pede o e-mail. O link chega por e-mail e abre a página do site, onde a
+     senha nova é criada; depois o motorista volta aqui e entra. -->
+<section id="tela-recuperar" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Recuperar senha</h1>
+    <button id="btn-recuperar-voltar" class="texto">Voltar</button>
+  </div>
+  <form id="form-recuperar">
+    <p class="ajuda">Digite o e-mail da sua conta. Enviamos um link para você criar uma senha nova.</p>
+    <label for="r-email">E-mail</label>
+    <input type="email" id="r-email" autocomplete="email" required>
+    <button type="submit" class="primario">Enviar link</button>
+    <p id="erro-recuperar" class="erro" hidden></p>
+  </form>
+  <div id="recuperar-enviado" class="aviso" hidden>
+    Se existir uma conta com este e-mail, o link já foi enviado e vale por 1 hora.
+    Abra o e-mail, crie a senha nova e volte aqui para entrar.
   </div>
 </section>
 

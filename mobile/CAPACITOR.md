@@ -34,6 +34,13 @@ que o app guarda e manda como `Bearer`.
 
 O CORS da API responde só a essas origens, e sem `Allow-Credentials`.
 
+Senha esquecida: a tela de login tem "Esqueci minha senha", que chama
+`POST /api/recuperar-senha` com o e-mail. O link chega por e-mail e abre a
+página do site (`/redefinir-senha/<token>`), porque a senha vive no Supabase
+Auth e a troca acontece no servidor. O motorista cria a senha nova no
+navegador e volta ao app para entrar. A resposta da API é a mesma exista ou
+não a conta, e há teto de 5 pedidos por e-mail e 30 por IP ao dia.
+
 ## Comandos
 
 ```bash

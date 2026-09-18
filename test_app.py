@@ -188,8 +188,37 @@ r = c4.get(f"/redefinir-senha/{token}", follow_redirects=False)
 check("token é de uso único", r.status_code == 302 and "recuperar-senha" in r.headers.get("Location",""), r.status_code)
 r = c4.get("/redefinir-senha/token-falso-123", follow_redirects=False)
 check("token inválido é rejeitado", r.status_code == 302)
-r = c0.post("/recuperar-senha", data={"email":"naoexiste@teste.invalid"})
+# E-mails e IP sorteados: o teto de pedidos e por dia, e um valor fixo herdaria
+# o contador da execucao anterior no mesmo dia.
+_sufixo = os.urandom(3).hex()
+r = c0.post("/recuperar-senha", data={"email":f"naoexiste-{_sufixo}@teste.invalid"})
 check("e-mail inexistente não vaza cadastro", r.headers.get("Location","").endswith("/login"))
+
+print("\n── Recuperar senha pelo app ──")
+_cr = A.app.test_client()
+_ip = f"203.0.113.{int(_sufixo[:2], 16) % 200 + 20}"
+r = _cr.post("/api/recuperar-senha", json={"email": f"naoexiste-{_sufixo}@teste.invalid"},
+             environ_base={"REMOTE_ADDR": _ip})
+check("API: e-mail inexistente responde 200 sem vazar cadastro",
+      r.status_code == 200 and r.get_json().get("enviado") is True, f"{r.status_code} {r.get_json()}")
+r = _cr.post("/api/recuperar-senha", json={"email": "sem-arroba"}, environ_base={"REMOTE_ADDR": _ip})
+check("API: e-mail inválido devolve 400", r.status_code == 400, r.status_code)
+r = _cr.post("/api/recuperar-senha", json={}, environ_base={"REMOTE_ADDR": _ip})
+check("API: corpo vazio devolve 400", r.status_code == 400, r.status_code)
+_alvo = f"teto-{_sufixo}@teste.invalid"
+_oks = sum(1 for _ in range(A.RESET_DAILY_LIMIT_EMAIL)
+           if _cr.post("/api/recuperar-senha", json={"email": _alvo},
+                       environ_base={"REMOTE_ADDR": _ip}).status_code == 200)
+check(f"API: permite {A.RESET_DAILY_LIMIT_EMAIL} pedidos por e-mail/dia",
+      _oks == A.RESET_DAILY_LIMIT_EMAIL, f"passaram {_oks}")
+r = _cr.post("/api/recuperar-senha", json={"email": _alvo}, environ_base={"REMOTE_ADDR": _ip})
+check("API: o seguinte responde 429", r.status_code == 429 and r.get_json().get("erro") == "muitos_pedidos",
+      f"{r.status_code} {r.get_json()}")
+r = _cr.post("/api/recuperar-senha", json={"email": f"outro-{_sufixo}@teste.invalid"},
+             environ_base={"REMOTE_ADDR": _ip})
+check("API: outro e-mail no mesmo IP tem cota própria", r.status_code == 200, r.status_code)
+r = c0.post("/recuperar-senha", data={"email": _alvo})
+check("site: mesmo e-mail estourado também responde 429", r.status_code == 429, r.status_code)
 
 print("\n── Exclusão de conta ──")
 cd = novo_cliente("delete@teste.invalid")

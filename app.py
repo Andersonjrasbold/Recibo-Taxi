@@ -144,6 +144,12 @@ COUNTER_RETENTION_DAYS = 7
 ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trialing", "past_due")
 
 RESET_TOKEN_MAX_AGE = 3600  # 1 hora
+# Pedidos de redefinicao por dia, por e-mail e por IP. Nao e economia: cada
+# pedido e um e-mail, e um script disparando queima a reputacao do dominio —
+# derrubando junto o e-mail de senha de quem precisa de verdade. O teto por IP e
+# largo porque operadora de celular poe milhares de aparelhos atras do mesmo IP.
+RESET_DAILY_LIMIT_EMAIL = 5
+RESET_DAILY_LIMIT_IP = 30
 RESET_TOKEN_SALT = "recibo-taxi-redefinir-senha"
 
 # Os scripts inline carregam um nonce por requisição, então script-src dispensa
@@ -424,6 +430,37 @@ def pode_enviar_email(driver_id: str) -> bool:
     """Consome uma unidade do teto diario do motorista."""
     usados = get_store().bump_counter(f"email:{driver_id}:{today_br()}")
     return usados <= EMAIL_DAILY_LIMIT
+
+
+def pode_pedir_redefinicao(email: str) -> bool:
+    """Consome uma unidade dos tetos diarios de redefinicao (e-mail e IP)."""
+    store = get_store()
+    dia = today_br()
+    por_email = store.bump_counter(f"reset:email:{email}:{dia}")
+    por_ip = store.bump_counter(f"reset:ip:{client_ip()}:{dia}")
+    return por_email <= RESET_DAILY_LIMIT_EMAIL and por_ip <= RESET_DAILY_LIMIT_IP
+
+
+def enviar_link_de_redefinicao(user: dict) -> bool:
+    """Manda o link de nova senha. Usado pelo site e pelo app.
+
+    O link abre a pagina do site mesmo quando o pedido vem do app: a senha
+    vive no Supabase Auth e a troca acontece no servidor. O motorista cria a
+    senha nova no navegador e volta ao app para entrar.
+    """
+    link = absolute_url("redefinir_senha", token=build_reset_token(user))
+    return send_email(
+        user["email"],
+        f"Redefinição de senha — {APP_NAME}",
+        (
+            f"Olá, {user['full_name'].split()[0]}.\n\n"
+            f"Recebemos um pedido para redefinir a senha da sua conta no {APP_NAME}.\n"
+            f"Abra o link abaixo para criar uma nova senha:\n\n"
+            f"{link}\n\n"
+            "O link vale por 1 hora e só pode ser usado uma vez.\n"
+            "Se não foi você quem pediu, ignore este e-mail — sua senha continua a mesma."
+        ),
+    )
 
 
 def absolute_url(endpoint: str, **values) -> str:
@@ -1355,22 +1392,13 @@ def recuperar_senha():
 
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
-        user = get_store().get_user_by_email(email) if email else None
+        if email and not pode_pedir_redefinicao(email):
+            flash("Muitos pedidos para este e-mail hoje. Tente novamente mais tarde.", "danger")
+            return render_template("recuperar_senha.html"), 429
 
+        user = get_store().get_user_by_email(email) if email else None
         if user:
-            link = absolute_url("redefinir_senha", token=build_reset_token(user))
-            send_email(
-                user["email"],
-                f"Redefinição de senha — {APP_NAME}",
-                (
-                    f"Olá, {user['full_name'].split()[0]}.\n\n"
-                    f"Recebemos um pedido para redefinir a senha da sua conta no {APP_NAME}.\n"
-                    f"Abra o link abaixo para criar uma nova senha:\n\n"
-                    f"{link}\n\n"
-                    "O link vale por 1 hora e só pode ser usado uma vez.\n"
-                    "Se não foi você quem pediu, ignore este e-mail — sua senha continua a mesma."
-                ),
-            )
+            enviar_link_de_redefinicao(user)
 
         # Resposta idêntica exista ou não a conta, para não revelar cadastros.
         flash(
@@ -1988,6 +2016,32 @@ def api_login():
         return jsonify({"erro": "perfil_ausente"}), 401
 
     return jsonify(tokens)
+
+
+@app.post("/api/recuperar-senha")
+def api_recuperar_senha():
+    """Pedido de nova senha pelo app.
+
+    Sem isto o motorista que esquecia a senha nao tinha saida dentro do app: a
+    tela de login so oferecia entrar ou criar conta. A resposta e a mesma exista
+    ou nao a conta — dizer "nao encontrado" contaria a um estranho quem esta
+    cadastrado.
+    """
+    dados = request.get_json(silent=True) or {}
+    email = normalize_email(str(dados.get("email", "")))
+    if not email_valido(email):
+        return jsonify({"erro": "email_invalido"}), 400
+    if not pode_pedir_redefinicao(email):
+        return jsonify({"erro": "muitos_pedidos"}), 429
+
+    user = get_store().get_user_by_email(email)
+    if user:
+        try:
+            enviar_link_de_redefinicao(user)
+        except Exception as exc:
+            app.logger.error("Falha ao enviar link de redefinicao: %s", exc)
+
+    return jsonify({"enviado": True})
 
 
 @app.post("/api/excluir-conta")

@@ -1,0 +1,44 @@
+{% extends "admin/layout.html" %}
+{% block title %}Minha senha — Painel{% endblock %}
+{% block admin %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6 col-xl-5">
+    <div class="auth-card">
+      <div class="auth-card-header">
+        <h1 class="auth-title">Trocar minha senha</h1>
+        <p class="auth-subtitle">Mínimo de 8 caracteres. As outras sessões do painel são encerradas.</p>
+      </div>
+      <form action="{{ url_for('admin_senha') }}" method="post" class="auth-form" novalidate>
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <div class="form-group-auth">
+          <label for="senha_atual" class="form-label-auth">Senha atual</label>
+          <div class="input-icon-wrap">
+            <i class="bi bi-lock input-icon"></i>
+            <input type="password" id="senha_atual" name="senha_atual" class="form-control form-control-auth"
+                   autocomplete="current-password" required>
+          </div>
+        </div>
+        <div class="form-group-auth">
+          <label for="senha" class="form-label-auth">Nova senha</label>
+          <div class="input-icon-wrap">
+            <i class="bi bi-key input-icon"></i>
+            <input type="password" id="senha" name="senha" class="form-control form-control-auth"
+                   autocomplete="new-password" minlength="8" required>
+          </div>
+        </div>
+        <div class="form-group-auth">
+          <label for="confirmar_senha" class="form-label-auth">Confirmar nova senha</label>
+          <div class="input-icon-wrap">
+            <i class="bi bi-key-fill input-icon"></i>
+            <input type="password" id="confirmar_senha" name="confirmar_senha" class="form-control form-control-auth"
+                   autocomplete="new-password" minlength="8" required>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-auth-submit w-100">
+          <i class="bi bi-check2-circle me-2"></i>Salvar nova senha
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

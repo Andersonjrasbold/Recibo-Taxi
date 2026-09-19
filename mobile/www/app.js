@@ -201,8 +201,8 @@ async function sincronizar() {
 
 // ── Telas ──────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
-const telas = ['tela-login', 'tela-cadastro', 'tela-emitir', 'tela-recibo',
-               'tela-assinatura', 'tela-historico', 'tela-excluir'];
+const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-emitir',
+               'tela-recibo', 'tela-assinatura', 'tela-historico', 'tela-excluir'];
 function mostrar(qual) {
   telas.forEach((t) => { $(t).hidden = t !== qual; });
   window.scrollTo(0, 0);
@@ -590,6 +590,51 @@ $('form-login').addEventListener('submit', async (ev) => {
 
 $('btn-ir-cadastro').addEventListener('click', () => mostrar('tela-cadastro'));
 $('btn-ir-login').addEventListener('click', () => mostrar('tela-login'));
+
+// ── Recuperar senha ────────────────────────────────────────────────────────
+// O app so pede o e-mail. O link chega por e-mail e abre a pagina do site,
+// porque a senha vive no Supabase Auth e a troca acontece no servidor. Sem
+// esta tela o motorista que esquecia a senha nao tinha saida dentro do app.
+$('btn-ir-recuperar').addEventListener('click', () => {
+  // Leva o e-mail que ele ja digitou: e o caso comum de quem errou a senha.
+  $('r-email').value = $('email').value.trim();
+  $('erro-recuperar').hidden = true;
+  $('recuperar-enviado').hidden = true;
+  $('form-recuperar').hidden = false;
+  mostrar('tela-recuperar');
+});
+$('btn-recuperar-voltar').addEventListener('click', () => mostrar('tela-login'));
+
+$('form-recuperar').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const erro = $('erro-recuperar');
+  erro.hidden = true;
+  const email = $('r-email').value.trim();
+  try {
+    const resp = await api('/api/recuperar-senha', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+    if (resp.status === 429) {
+      erro.textContent = 'Muitos pedidos para este e-mail hoje. Tente mais tarde.';
+      erro.hidden = false;
+      return;
+    }
+    if (!resp.ok) {
+      erro.textContent = 'Confira o e-mail digitado.';
+      erro.hidden = false;
+      return;
+    }
+    // A resposta e a mesma exista ou nao a conta; o aviso diz isso.
+    $('form-recuperar').hidden = true;
+    $('recuperar-enviado').hidden = false;
+    // Deixa o e-mail pronto na tela de login para quando ele voltar.
+    $('email').value = email;
+  } catch {
+    erro.textContent = 'Sem conexão. Recuperar a senha precisa de internet.';
+    erro.hidden = false;
+  }
+});
 
 $('form-cadastro').addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -1004,6 +1049,7 @@ function voltarUmNivel() {
   }
 
   if (!$('tela-cadastro').hidden) { mostrar('tela-login'); return true; }
+  if (!$('tela-recuperar').hidden) { mostrar('tela-login'); return true; }
 
   return false;  // já está na raiz: sair do app é a resposta certa
 }

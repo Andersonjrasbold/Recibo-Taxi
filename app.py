@@ -30,6 +30,7 @@ from flask import (
 )
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
     from supabase import ClientOptions, create_client
@@ -144,6 +145,23 @@ COUNTER_RETENTION_DAYS = 7
 ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trialing", "past_due")
 
 RESET_TOKEN_MAX_AGE = 3600  # 1 hora
+# Pedidos de redefinicao por dia, por e-mail e por IP. Nao e economia: cada
+# pedido e um e-mail, e um script disparando queima a reputacao do dominio —
+# derrubando junto o e-mail de senha de quem precisa de verdade. O teto por IP e
+# largo porque operadora de celular poe milhares de aparelhos atras do mesmo IP.
+RESET_DAILY_LIMIT_EMAIL = 5
+RESET_DAILY_LIMIT_IP = 30
+
+# Painel /admin. Tentativas de login por dia: o painel mostra CPF e telefone de
+# todos os motoristas, e a senha inicial e curta por decisao do dono — o teto
+# e o que impede um script de adivinhar. A sessao do admin morre sozinha em
+# 12 horas; a do motorista dura 90 dias porque um recibo nao vale um CPF alheio.
+ADMIN_LOGIN_DAILY_LIMIT_IP = 20
+ADMIN_LOGIN_DAILY_LIMIT_EMAIL = 10
+ADMIN_SESSION_HOURS = 12
+ADMIN_IDLE_MINUTES = 60
+ADMIN_PASSWORD_MIN = 8
+ADMIN_PAGE_SIZE = 50
 RESET_TOKEN_SALT = "recibo-taxi-redefinir-senha"
 
 # Os scripts inline carregam um nonce por requisição, então script-src dispensa
@@ -173,7 +191,25 @@ SECURITY_HEADERS = {
 
 STRIPE_PRICE_IDS = {
     "pro": "STRIPE_PRO_PRICE_ID",
+    # Anual = o MESMO Pro, cobrado uma vez por ano com 50% de desconto
+    # (R$ 119,40 = 19,90 × 12 × 0,5; decisão do Anderson em 2026-09-16, mesmo
+    # preço no site e nas lojas). É um Price a mais no mesmo produto do Stripe:
+    # o metadata.plan do checkout continua "pro", então webhook, gates e a
+    # tela de planos não distinguem ciclo — só o Stripe sabe.
+    "pro_anual": "STRIPE_PRO_ANUAL_PRICE_ID",
 }
+# Ciclo de cada chave de checkout. Tudo que não é "anual" é mensal.
+PLAN_CYCLES = {"pro_anual": "anual"}
+# True = o anual renova sozinho a cada 12 meses (cancelável no portal, como o
+# mensal). False = "pagamento único" literal: o webhook marca
+# cancel_at_period_end e o Stripe encerra no fim do ano, derrubando pra free
+# pelo customer.subscription.deleted de sempre. Trocar aqui basta.
+ANUAL_RENOVA_AUTOMATICAMENTE = True
+
+
+def plano_base(plan: str) -> str:
+    """'pro_anual' → 'pro'. É o valor gravado em drivers.plan."""
+    return (plan or "").split("_", 1)[0]
 
 
 def to_utc_iso(value: datetime) -> str:
@@ -406,6 +442,37 @@ def pode_enviar_email(driver_id: str) -> bool:
     """Consome uma unidade do teto diario do motorista."""
     usados = get_store().bump_counter(f"email:{driver_id}:{today_br()}")
     return usados <= EMAIL_DAILY_LIMIT
+
+
+def pode_pedir_redefinicao(email: str) -> bool:
+    """Consome uma unidade dos tetos diarios de redefinicao (e-mail e IP)."""
+    store = get_store()
+    dia = today_br()
+    por_email = store.bump_counter(f"reset:email:{email}:{dia}")
+    por_ip = store.bump_counter(f"reset:ip:{client_ip()}:{dia}")
+    return por_email <= RESET_DAILY_LIMIT_EMAIL and por_ip <= RESET_DAILY_LIMIT_IP
+
+
+def enviar_link_de_redefinicao(user: dict) -> bool:
+    """Manda o link de nova senha. Usado pelo site e pelo app.
+
+    O link abre a pagina do site mesmo quando o pedido vem do app: a senha
+    vive no Supabase Auth e a troca acontece no servidor. O motorista cria a
+    senha nova no navegador e volta ao app para entrar.
+    """
+    link = absolute_url("redefinir_senha", token=build_reset_token(user))
+    return send_email(
+        user["email"],
+        f"Redefinição de senha — {APP_NAME}",
+        (
+            f"Olá, {user['full_name'].split()[0]}.\n\n"
+            f"Recebemos um pedido para redefinir a senha da sua conta no {APP_NAME}.\n"
+            f"Abra o link abaixo para criar uma nova senha:\n\n"
+            f"{link}\n\n"
+            "O link vale por 1 hora e só pode ser usado uma vez.\n"
+            "Se não foi você quem pediu, ignore este e-mail — sua senha continua a mesma."
+        ),
+    )
 
 
 def absolute_url(endpoint: str, **values) -> str:
@@ -699,12 +766,71 @@ class PostgresStore:
                 (driver_id, start_iso, end_iso),
             ).fetchone()["n"]
 
+    # ── administradores (/admin) ────────────────────────────────────────────
+    _ADMIN_COLS = "id as _id, email, password_hash, created_at, password_changed_at, last_login_at"
+
+    def get_admin_by_email(self, email: str) -> dict | None:
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"select {self._ADMIN_COLS} from public.admin_users where lower(email) = lower(%s)",
+                (email,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_admin_by_id(self, admin_id: str | None) -> dict | None:
+        if not admin_id:
+            return None
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"select {self._ADMIN_COLS} from public.admin_users where id = %s",
+                (admin_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_admin(self, email: str, password_hash: str) -> dict:
+        """Cria o administrador, ou redefine a senha se o e-mail ja existir."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"""insert into public.admin_users (email, password_hash)
+                    values (lower(%s), %s)
+                    on conflict (lower(email)) do update
+                      set password_hash = excluded.password_hash,
+                          password_changed_at = now()
+                    returning {self._ADMIN_COLS}""",
+                (email, password_hash),
+            ).fetchone()
+        return dict(row)
+
+    def set_admin_password(self, admin_id: str, password_hash: str) -> None:
+        with self.pool.connection() as conn:
+            conn.execute(
+                """update public.admin_users
+                      set password_hash = %s, password_changed_at = now()
+                    where id = %s""",
+                (password_hash, admin_id),
+            )
+
+    def touch_admin_login(self, admin_id: str) -> None:
+        with self.pool.connection() as conn:
+            conn.execute(
+                "update public.admin_users set last_login_at = now() where id = %s",
+                (admin_id,),
+            )
+
+    def delete_admin(self, admin_id: str) -> None:
+        with self.pool.connection() as conn:
+            conn.execute("delete from public.admin_users where id = %s", (admin_id,))
+
     # ── contadores e limpeza ────────────────────────────────────────────────
     def bump_counter(self, key: str) -> int:
         with self.pool.connection() as conn:
             return conn.execute(
                 "select public.bump_counter(%s) as n", (key,)
             ).fetchone()["n"]
+
+    def reset_counter(self, key: str) -> None:
+        with self.pool.connection() as conn:
+            conn.execute("delete from public.rate_limits where key = %s", (key,))
 
     def purge_guest_receipts_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
         with self.pool.connection() as conn:
@@ -1337,22 +1463,13 @@ def recuperar_senha():
 
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
-        user = get_store().get_user_by_email(email) if email else None
+        if email and not pode_pedir_redefinicao(email):
+            flash("Muitos pedidos para este e-mail hoje. Tente novamente mais tarde.", "danger")
+            return render_template("recuperar_senha.html"), 429
 
+        user = get_store().get_user_by_email(email) if email else None
         if user:
-            link = absolute_url("redefinir_senha", token=build_reset_token(user))
-            send_email(
-                user["email"],
-                f"Redefinição de senha — {APP_NAME}",
-                (
-                    f"Olá, {user['full_name'].split()[0]}.\n\n"
-                    f"Recebemos um pedido para redefinir a senha da sua conta no {APP_NAME}.\n"
-                    f"Abra o link abaixo para criar uma nova senha:\n\n"
-                    f"{link}\n\n"
-                    "O link vale por 1 hora e só pode ser usado uma vez.\n"
-                    "Se não foi você quem pediu, ignore este e-mail — sua senha continua a mesma."
-                ),
-            )
+            enviar_link_de_redefinicao(user)
 
         # Resposta idêntica exista ou não a conta, para não revelar cadastros.
         flash(
@@ -1753,6 +1870,11 @@ def assinar(plan: str):
     # Quem já assina troca de plano pelo portal. Abrir um segundo checkout
     # criaria uma assinatura paralela, cobrando os dois planos ao mesmo tempo.
     if g.user.get("plan") in PAID_PLANS and g.user.get("stripe_customer_id"):
+        # Exceção: mensal → anual é troca de Price na assinatura que já existe.
+        # O Stripe zera o ciclo, credita os dias não usados do mês e cobra o
+        # ano na hora (always_invoice) — sem segunda assinatura.
+        if plan == "pro_anual" and g.user.get("stripe_subscription_id"):
+            return _migrar_para_anual(stripe, price_id)
         flash(
             "Você já tem uma assinatura ativa. Use 'Gerenciar plano' para "
             "trocar de plano ou cancelar.",
@@ -1793,7 +1915,8 @@ def assinar(plan: str):
             mode="subscription",
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={"user_id": g.user["_id"], "plan": plan},
+            metadata={"user_id": g.user["_id"], "plan": plano_base(plan),
+                      "ciclo": PLAN_CYCLES.get(plan, "mensal")},
             locale="pt-BR",
             idempotency_key=f"assinar:{g.user['_id']}:{plan}",
         )
@@ -1808,6 +1931,38 @@ def assinar(plan: str):
         return redirect(url_for("planos"))
 
     return redirect(checkout.url, code=303)
+
+
+def _migrar_para_anual(stripe, price_id: str):
+    """Troca o Price da assinatura ativa pelo anual. Só é chamado pelo /assinar."""
+    try:
+        sub = stripe.Subscription.retrieve(g.user["stripe_subscription_id"])
+        item = sub["items"]["data"][0]
+        if item["price"]["id"] == price_id:
+            flash("Você já está no plano anual.", "info")
+            return redirect(url_for("dashboard"))
+        stripe.Subscription.modify(
+            sub["id"],
+            items=[{"id": item["id"], "price": price_id}],
+            proration_behavior="always_invoice",
+            cancel_at_period_end=not ANUAL_RENOVA_AUTOMATICAMENTE,
+            metadata={"plan": "pro", "ciclo": "anual"},
+            idempotency_key=f"anual:{g.user['_id']}:{sub['id']}",
+        )
+    except Exception as exc:
+        app.logger.error("Falha ao migrar %s para o anual: %s", g.user["_id"], exc)
+        flash(
+            "Não conseguimos trocar para o plano anual agora. Tente de novo "
+            "em alguns instantes ou fale com o suporte.",
+            "danger",
+        )
+        return redirect(url_for("planos"))
+    flash(
+        "Pronto! Sua assinatura passou para o plano anual: R$ 119,40 por ano, "
+        "com o que sobrou do mês já descontado.",
+        "success",
+    )
+    return redirect(url_for("dashboard"))
 
 
 @app.post("/portal-cliente")
@@ -1865,7 +2020,9 @@ def stripe_webhook():
 
     if tipo == "checkout.session.completed":
         user_id = obj.get("metadata", {}).get("user_id")
-        plan = obj.get("metadata", {}).get("plan", "pro")
+        # plano_base por segurança: um checkout antigo/manual com "pro_anual"
+        # no metadata não pode gravar um plano que os gates não conhecem.
+        plan = plano_base(obj.get("metadata", {}).get("plan", "pro")) or "pro"
         if user_id:
             store.update_user(user_id, {
                 "plan": plan,
@@ -1873,6 +2030,15 @@ def stripe_webhook():
                 "stripe_subscription_id": obj.get("subscription"),
                 "subscription_status": "active",
             })
+        # "Pagamento único" literal: o anual não renova. O Stripe encerra no
+        # fim dos 12 meses e o subscription.deleted abaixo derruba pra free.
+        if (not ANUAL_RENOVA_AUTOMATICAMENTE
+                and obj.get("metadata", {}).get("ciclo") == "anual"
+                and obj.get("subscription")):
+            try:
+                stripe.Subscription.modify(obj["subscription"], cancel_at_period_end=True)
+            except Exception as exc:
+                app.logger.error("cancel_at_period_end falhou para %s: %s", user_id, exc)
 
     elif tipo == "customer.subscription.deleted":
         user = store.get_user_by_stripe_customer(obj.get("customer"))
@@ -1921,6 +2087,32 @@ def api_login():
         return jsonify({"erro": "perfil_ausente"}), 401
 
     return jsonify(tokens)
+
+
+@app.post("/api/recuperar-senha")
+def api_recuperar_senha():
+    """Pedido de nova senha pelo app.
+
+    Sem isto o motorista que esquecia a senha nao tinha saida dentro do app: a
+    tela de login so oferecia entrar ou criar conta. A resposta e a mesma exista
+    ou nao a conta — dizer "nao encontrado" contaria a um estranho quem esta
+    cadastrado.
+    """
+    dados = request.get_json(silent=True) or {}
+    email = normalize_email(str(dados.get("email", "")))
+    if not email_valido(email):
+        return jsonify({"erro": "email_invalido"}), 400
+    if not pode_pedir_redefinicao(email):
+        return jsonify({"erro": "muitos_pedidos"}), 429
+
+    user = get_store().get_user_by_email(email)
+    if user:
+        try:
+            enviar_link_de_redefinicao(user)
+        except Exception as exc:
+            app.logger.error("Falha ao enviar link de redefinicao: %s", exc)
+
+    return jsonify({"enviado": True})
 
 
 @app.post("/api/excluir-conta")
@@ -2359,6 +2551,786 @@ def recibo_view(rid: str):
     context["just_created"] = request.args.get("created") == "1"
 
     return render_template("recibo_view.html", dados=context)
+
+
+# ── Painel administrativo (/admin) ───────────────────────────────────────────
+#
+# Conta separada da de motorista, com sessao propria (`admin_id`). O painel
+# mostra CPF, telefone e placa de todo mundo, entao ele e mais fechado que o
+# resto do site: tentativas de login com teto diario, sessao que morre em 12 h,
+# CSRF em todo POST e noindex em toda resposta.
+
+# Hash de mentira para e-mail inexistente: check_password_hash roda do mesmo
+# jeito, entao o tempo de resposta nao conta quem e admin. Calculado uma vez —
+# scrypt a cada tentativa errada seria custo sem motivo.
+_ADMIN_DUMMY_HASH = generate_password_hash(secrets.token_hex(16))
+
+
+def _admin_pw_stamp(admin: dict) -> str:
+    return to_utc_iso(admin["password_changed_at"]) if admin.get("password_changed_at") else ""
+
+
+def admin_atual() -> dict | None:
+    """Administrador da sessao, ou None. Derruba sessao velha ou de senha trocada."""
+    admin_id = session.get("admin_id")
+    if not admin_id:
+        return None
+    agora = datetime.now(timezone.utc)
+    entrou_em = session.get("admin_login_at")
+    visto_em = session.get("admin_seen_at") or entrou_em
+    if (not entrou_em
+            or datetime.fromisoformat(entrou_em) + timedelta(hours=ADMIN_SESSION_HOURS) < agora
+            or datetime.fromisoformat(visto_em) + timedelta(minutes=ADMIN_IDLE_MINUTES) < agora):
+        encerrar_sessao_admin()
+        return None
+    # Renova a marca de atividade no maximo a cada 5 min, senao o cookie e
+    # reescrito em toda resposta.
+    if datetime.fromisoformat(visto_em) + timedelta(minutes=5) < agora:
+        session["admin_seen_at"] = to_utc_iso(agora)
+    admin = get_store().get_admin_by_id(admin_id)
+    if not admin or _admin_pw_stamp(admin) != session.get("admin_pw_stamp", ""):
+        encerrar_sessao_admin()
+        return None
+    return admin
+
+
+def iniciar_sessao_admin(admin: dict, senha_digitada: str) -> None:
+    # Sessao nova do zero: nao herda nada de um login de motorista no mesmo
+    # navegador, e ganha um token CSRF proprio.
+    session.clear()
+    session["admin_id"] = admin["_id"]
+    session["admin_login_at"] = to_utc_iso(datetime.now(timezone.utc))
+    session["admin_seen_at"] = session["admin_login_at"]
+    session["admin_pw_stamp"] = _admin_pw_stamp(admin)
+    session["admin_csrf"] = secrets.token_urlsafe(32)
+    # A senha inicial e "1234" por decisao do dono. O painel avisa em toda tela
+    # ate ela ser trocada — o aviso vive na sessao para nao rodar scrypt a cada
+    # pagina.
+    session["admin_senha_fraca"] = len(senha_digitada) < ADMIN_PASSWORD_MIN
+    get_store().touch_admin_login(admin["_id"])
+
+
+def encerrar_sessao_admin() -> None:
+    for chave in ("admin_id", "admin_login_at", "admin_seen_at", "admin_pw_stamp", "admin_csrf", "admin_senha_fraca"):
+        session.pop(chave, None)
+
+
+def admin_csrf_ok() -> bool:
+    esperado = session.get("admin_csrf", "")
+    enviado = request.form.get("csrf", "")
+    return bool(esperado) and hmac.compare_digest(esperado, enviado)
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        admin = admin_atual()
+        if not admin:
+            return redirect(url_for("admin_login", proximo=request.path))
+        if request.method == "POST" and not admin_csrf_ok():
+            abort(400)
+        g.admin = admin
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+@app.after_request
+def admin_noindex(response):
+    # O painel nao existe para o Google, e a URL nao deve nem aparecer numa
+    # busca. Vale para login, erro e tudo mais debaixo de /admin.
+    if request.path == "/admin" or request.path.startswith("/admin/"):
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        response.headers["Cache-Control"] = "no-store"
+        # As URLs do painel carregam id de motorista e ha links para o painel
+        # da Stripe: nada disso deve viajar no Referer.
+        response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@app.context_processor
+def inject_admin() -> dict:
+    return {
+        "admin_user": g.get("admin"),
+        "admin_csrf": session.get("admin_csrf", ""),
+        "admin_senha_fraca": bool(session.get("admin_senha_fraca")),
+    }
+
+
+def _chave_login_admin(email: str) -> str:
+    # O e-mail tentado nao vai em claro para a tabela de contadores.
+    digest = hashlib.sha256(email.encode("utf-8")).hexdigest()[:16]
+    return f"admin_login:email:{digest}:{today_br()}"
+
+
+def pode_tentar_login_admin(email: str) -> bool:
+    store = get_store()
+    por_ip = store.bump_counter(f"admin_login:ip:{client_ip()}:{today_br()}")
+    por_email = store.bump_counter(_chave_login_admin(email))
+    return por_ip <= ADMIN_LOGIN_DAILY_LIMIT_IP and por_email <= ADMIN_LOGIN_DAILY_LIMIT_EMAIL
+
+
+def _proximo_seguro(valor: str) -> str:
+    """So aceita caminho interno debaixo de /admin: nada de mandar para fora."""
+    return valor if valor.startswith("/admin") and "//" not in valor else url_for("admin_dashboard")
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if admin_atual():
+        return redirect(url_for("admin_dashboard"))
+
+    if request.method == "POST":
+        email = normalize_email(request.form.get("email", ""))
+        senha = request.form.get("senha", "")
+        if not email or not senha:
+            flash("Informe e-mail e senha.", "danger")
+            return render_template("admin/login.html", form={"email": email}), 400
+
+        if not pode_tentar_login_admin(email):
+            flash("Muitas tentativas hoje. Tente novamente mais tarde.", "danger")
+            return render_template("admin/login.html", form={"email": email}), 429
+
+        admin = get_store().get_admin_by_email(email)
+        # check_password_hash roda mesmo sem conta, com um hash de mentira:
+        # responder mais rapido para e-mail inexistente contaria quem e admin.
+        hash_ = admin["password_hash"] if admin else _ADMIN_DUMMY_HASH
+        if not admin or not check_password_hash(hash_, senha):
+            app.logger.warning("admin: login recusado para %s de %s", _chave_login_admin(email), client_ip())
+            flash("E-mail ou senha inválidos.", "danger")
+            return render_template("admin/login.html", form={"email": email}), 401
+
+        # Login certo zera as tentativas do e-mail: o dono errar a senha nove
+        # vezes num dia nao pode trancar a conta dele.
+        get_store().reset_counter(_chave_login_admin(email))
+        iniciar_sessao_admin(admin, senha)
+        app.logger.info("admin %s entrou de %s", admin["email"], client_ip())
+        return redirect(_proximo_seguro(request.form.get("proximo", "")))
+
+    return render_template("admin/login.html", form={}, proximo=request.args.get("proximo", ""))
+
+
+@app.post("/admin/sair")
+@admin_required
+def admin_sair():
+    encerrar_sessao_admin()
+    flash("Você saiu do painel.", "info")
+    return redirect(url_for("admin_login"))
+
+
+@app.route("/admin/senha", methods=["GET", "POST"])
+@admin_required
+def admin_senha():
+    if request.method == "POST":
+        atual = request.form.get("senha_atual", "")
+        nova = request.form.get("senha", "")
+        confirmacao = request.form.get("confirmar_senha", "")
+
+        if not check_password_hash(g.admin["password_hash"], atual):
+            flash("A senha atual não confere.", "danger")
+            return render_template("admin/senha.html"), 403
+        if len(nova) < ADMIN_PASSWORD_MIN:
+            flash(f"A nova senha precisa ter pelo menos {ADMIN_PASSWORD_MIN} caracteres.", "danger")
+            return render_template("admin/senha.html"), 400
+        if nova != confirmacao:
+            flash("As senhas não conferem.", "danger")
+            return render_template("admin/senha.html"), 400
+        if nova == atual:
+            flash("A nova senha é igual à atual.", "danger")
+            return render_template("admin/senha.html"), 400
+
+        get_store().set_admin_password(g.admin["_id"], generate_password_hash(nova))
+        # Trocar a senha derruba as outras sessoes (o carimbo muda); esta
+        # continua, com o carimbo novo.
+        admin = get_store().get_admin_by_id(g.admin["_id"])
+        iniciar_sessao_admin(admin, nova)
+        flash("Senha alterada.", "success")
+        return redirect(url_for("admin_dashboard"))
+
+    return render_template("admin/senha.html")
+
+
+# Cache em processo: na Vercel a instancia sobrevive entre invocacoes, e o
+# painel sao ~35 idas ao banco. Um minuto de atraso nao muda decisao nenhuma.
+_ADMIN_CACHE: dict = {}
+ADMIN_CACHE_SECONDS = 60
+
+
+@app.get("/admin")
+@admin_required
+def admin_dashboard():
+    import time as _time
+
+    agora = _time.monotonic()
+    guardado = _ADMIN_CACHE.get("dashboard")
+    if guardado and guardado[0] > agora and request.args.get("atualizar") != "1":
+        dados = dict(guardado[1], cache=True)
+    else:
+        dados = montar_dashboard_admin()
+        _ADMIN_CACHE["dashboard"] = (agora + ADMIN_CACHE_SECONDS, dados)
+    return render_template("admin/dashboard.html", d=dados)
+
+
+# ── Dashboard: consultas ─────────────────────────────────────────────────────
+#
+# Tudo numa conexao so, com um savepoint por secao: se uma consulta falhar (por
+# exemplo, permissao em auth.*), a secao sai como None e a pagina continua de pe.
+# Janelas sao calculadas em Python e passadas como constante, para o planner
+# usar os indices em created_at. Dia e mes "de negocio" sao no fuso de Brasilia.
+
+def _inicio_dia_br(dias_atras: int = 0) -> str:
+    d = datetime.now(BR_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    return to_utc_iso(d - timedelta(days=dias_atras))
+
+
+def _inicio_mes_br(meses_atras: int = 0) -> str:
+    hoje = datetime.now(BR_TZ)
+    ano, mes = hoje.year, hoje.month - meses_atras
+    while mes <= 0:
+        mes += 12
+        ano -= 1
+    return to_utc_iso(datetime(ano, mes, 1, tzinfo=BR_TZ))
+
+
+def _serie_dias(linhas: list[dict], dias: int, campos: tuple[str, ...]) -> list[dict]:
+    """Preenche os dias sem linha com zero, do mais antigo para hoje."""
+    por_dia = {str(l["dia"]): l for l in linhas}
+    hoje = datetime.now(BR_TZ).date()
+    saida = []
+    for i in range(dias - 1, -1, -1):
+        dia = hoje - timedelta(days=i)
+        l = por_dia.get(dia.isoformat(), {})
+        saida.append({"dia": dia, **{c: l.get(c) or 0 for c in campos}})
+    return saida
+
+
+def _serie_meses(linhas: list[dict], meses: int, campos: tuple[str, ...]) -> list[dict]:
+    por_mes = {str(l["mes"]): l for l in linhas}
+    hoje = datetime.now(BR_TZ)
+    saida = []
+    for i in range(meses - 1, -1, -1):
+        ano, mes = hoje.year, hoje.month - i
+        while mes <= 0:
+            mes += 12
+            ano -= 1
+        chave = f"{ano:04d}-{mes:02d}-01"
+        l = por_mes.get(chave, {})
+        saida.append({"mes": f"{mes:02d}/{ano % 100:02d}", **{c: l.get(c) or 0 for c in campos}})
+    return saida
+
+
+def _com_maximo(serie: list[dict], campo: str) -> list[dict]:
+    """Acrescenta pct (0-100) para desenhar barra em CSS sem JavaScript."""
+    maior = max((float(l[campo] or 0) for l in serie), default=0) or 1
+    for l in serie:
+        l["pct"] = round(float(l[campo] or 0) / maior * 100)
+    return serie
+
+
+_SQL_ADMIN = {
+    "geral": """
+        select count(*) as total,
+               count(*) filter (where created_at >= %(ini_hoje)s) as novos_hoje,
+               count(*) filter (where created_at >= %(ini_7d)s) as novos_7d,
+               count(*) filter (where created_at >= %(ini_mes)s) as novos_mes,
+               count(*) filter (where plan in ('pro','business')) as pagantes,
+               count(*) filter (where plan='pro' and stripe_subscription_id is not null) as pro_stripe,
+               count(*) filter (where plan='pro' and stripe_subscription_id is null) as pro_loja,
+               count(*) filter (where plan='business') as business,
+               count(*) filter (where subscription_status='past_due') as past_due,
+               count(*) filter (where subscription_status='canceled_pendente') as cancel_pendente,
+               count(*) filter (where plan='free' and subscription_status is not null) as ex_assinantes,
+               count(*) filter (where plan='free') as gratis
+          from public.drivers""",
+    "recibos_mes": """
+        select count(*) as mes,
+               count(*) filter (where created_at >= %(ini_hoje)s) as hoje,
+               count(*) filter (where is_guest) as mes_guest,
+               coalesce(sum(amount), 0) as mes_valor
+          from public.receipts where created_at >= %(ini_mes)s""",
+    "recibos_estim": """
+        select greatest(reltuples, 0)::bigint as n from pg_class where oid = 'public.receipts'::regclass""",
+    "pagantes": """
+        select id, full_name, email, city, plan, subscription_status,
+               case when stripe_subscription_id is not null then 'Stripe'
+                    when stripe_customer_id is not null then 'Loja (ex-Stripe)'
+                    else 'Loja' end as origem,
+               created_at, updated_at
+          from public.drivers where plan in ('pro','business')
+         order by updated_at desc limit 50""",
+    "ex_assinantes": """
+        select subscription_status as status, count(*) as n
+          from public.drivers where plan='free' and subscription_status is not null
+         group by 1 order by n desc""",
+    "novos_por_dia": """
+        select (created_at at time zone 'America/Sao_Paulo')::date as dia, count(*) as n
+          from public.drivers where created_at >= %(ini_30d)s group by 1 order by 1""",
+    "novos_por_mes": """
+        select public.br_period(created_at) as mes, count(*) as n
+          from public.drivers where created_at >= %(ini_12m)s group by 1 order by 1""",
+    "ativacao": """
+        select count(*) as total,
+               count(*) filter (where ativo) as ativados,
+               count(*) filter (where created_at >= %(ini_30d)s) as coorte_30d,
+               count(*) filter (where created_at >= %(ini_30d)s and ativo) as coorte_30d_ativados,
+               count(*) filter (where created_at >= %(ini_30d)s and ativo_24h) as coorte_30d_ativados_24h
+          from (select d.created_at,
+                       exists (select 1 from public.receipts r where r.driver_id = d.id) as ativo,
+                       exists (select 1 from public.receipts r where r.driver_id = d.id
+                                  and r.created_at < d.created_at + interval '24 hours') as ativo_24h
+                  from public.drivers d) s""",
+    "funil": """
+        select count(*) as free_ativos_mes,
+               count(*) filter (where q.used >= %(limite)s and d.plan='free') as no_teto,
+               count(*) filter (where q.used >= %(limite)s and d.plan<>'free') as no_teto_converteram,
+               count(*) filter (where q.used between %(limite)s-2 and %(limite)s-1 and d.plan='free') as quase_teto,
+               count(*) filter (where q.used between 1 and %(limite)s-3 and d.plan='free') as uso_baixo
+          from public.receipt_quotas q join public.drivers d on d.id = q.driver_id
+         where q.period = public.br_period()""",
+    "candidatos": """
+        select d.id, d.full_name, d.email, d.whatsapp, d.city, q.used, d.created_at,
+               (select count(*) from public.receipts r where r.driver_id = d.id) as recibos_total
+          from public.receipt_quotas q join public.drivers d on d.id = q.driver_id
+         where q.period = public.br_period() and q.used >= %(limite)s and d.plan = 'free'
+         order by recibos_total desc limit 50""",
+    "uso_por_dia": """
+        select (created_at at time zone 'America/Sao_Paulo')::date as dia,
+               count(*) filter (where not is_guest) as logado,
+               count(*) filter (where is_guest) as guest,
+               count(*) as n,
+               coalesce(sum(amount), 0) as valor
+          from public.receipts where created_at >= %(ini_30d)s group by 1 order by 1""",
+    "uso_por_mes": """
+        select public.br_period(created_at) as mes,
+               count(*) filter (where not is_guest) as logado,
+               count(*) filter (where is_guest) as guest,
+               count(*) as n,
+               coalesce(sum(amount), 0) as valor,
+               count(distinct driver_id) as motoristas_ativos
+          from public.receipts where created_at >= %(ini_12m)s group by 1 order by 1""",
+    "pagamentos": """
+        select payment_method as forma, count(*) as n, coalesce(sum(amount), 0) as valor
+          from public.receipts where created_at >= %(ini_30d)s group by 1 order by n desc limit 6""",
+    "cidades_recibos": """
+        select coalesce(nullif(initcap(trim(driver_snapshot->>'city')), ''), '(sem cidade)') as cidade,
+               count(*) as n, count(distinct driver_id) as motoristas
+          from public.receipts where created_at >= %(ini_30d)s group by 1 order by n desc limit 15""",
+    "cidades_cadastro": """
+        select initcap(trim(city)) as cidade, count(*) as n,
+               count(*) filter (where plan <> 'free') as pagantes
+          from public.drivers group by 1 order by n desc limit 15""",
+    "ticket": """
+        select round(avg(amount), 2) as media,
+               percentile_cont(0.5) within group (order by amount) as mediana,
+               min(amount) as minimo, max(amount) as maximo
+          from public.receipts where created_at >= %(ini_30d)s""",
+    "top_emissores": """
+        select d.id, d.full_name, d.plan, count(*) as n, sum(r.amount) as valor
+          from public.receipts r join public.drivers d on d.id = r.driver_id
+         where r.created_at >= %(ini_30d)s
+         group by d.id, d.full_name, d.plan order by n desc limit 10""",
+    "por_hora": """
+        select extract(hour from created_at at time zone 'America/Sao_Paulo')::int as hora, count(*) as n
+          from public.receipts where created_at >= %(ini_30d)s group by 1 order by 1""",
+    "ultimos_recibos": """
+        select rid, is_guest, driver_id, driver_snapshot->>'full_name' as motorista,
+               driver_snapshot->>'city' as cidade, passenger, amount, payment_method, created_at
+          from public.receipts order by created_at desc limit 20""",
+    "logins": """
+        select count(*) filter (where u.last_sign_in_at >= now() - interval '1 day') as login_24h,
+               count(*) filter (where u.last_sign_in_at >= now() - interval '7 days') as login_7d,
+               count(*) filter (where u.last_sign_in_at >= now() - interval '30 days') as login_30d,
+               count(*) filter (where u.last_sign_in_at is null) as nunca_logou
+          from auth.users u join public.drivers d on d.id = u.id""",
+    "ultimos_logins": """
+        select d.id, d.full_name, d.email, d.plan, u.last_sign_in_at
+          from auth.users u join public.drivers d on d.id = u.id
+         order by u.last_sign_in_at desc nulls last limit 20""",
+    "sessoes": """
+        select count(*) as sessoes, count(distinct user_id) as usuarios
+          from auth.sessions
+         where coalesce(refreshed_at, updated_at, created_at) >= now() - interval '7 days'
+           and (not_after is null or not_after > now())""",
+    "inativos_30d": """
+        select count(*) as n from public.drivers d join auth.users u on u.id = d.id
+         where d.created_at < now() - interval '30 days'
+           and coalesce(u.last_sign_in_at, 'epoch') < now() - interval '30 days'
+           and not exists (select 1 from public.receipts r
+                            where r.driver_id = d.id and r.created_at >= now() - interval '30 days')""",
+    "pagantes_parados": """
+        select d.id, d.full_name, d.email, d.whatsapp, d.plan,
+               (select max(created_at) from public.receipts r where r.driver_id = d.id) as ultimo_recibo
+          from public.drivers d
+         where d.plan in ('pro','business')
+           and not exists (select 1 from public.receipts r
+                            where r.driver_id = d.id and r.created_at >= now() - interval '30 days')
+         order by ultimo_recibo nulls first limit 30""",
+    "emails_por_dia": r"""
+        select substring(key from '(\d{4}-\d{2}-\d{2})$') as dia,
+               sum(count) as tentativas, sum(least(count, %(teto_email)s)) as enviados,
+               count(*) as motoristas, count(*) filter (where count > %(teto_email)s) as no_teto
+          from public.rate_limits where key like 'email:%%' group by 1 order by 1 desc""",
+    "resets_por_dia": r"""
+        select substring(key from '(\d{4}-\d{2}-\d{2})$') as dia,
+               coalesce(sum(count) filter (where key like 'reset:email:%%'), 0) as pedidos,
+               count(*) filter (where key like 'reset:email:%%') as emails_distintos,
+               count(*) filter (where key like 'reset:ip:%%' and count >= %(teto_reset_ip)s) as ips_no_teto
+          from public.rate_limits where key like 'reset:%%' group by 1 order by 1 desc""",
+    "ips_no_teto": r"""
+        select substring(key from '^gerar:(.+):\d{4}-\d{2}-\d{2}$') as ip,
+               substring(key from '(\d{4}-\d{2}-\d{2})$') as dia, count
+          from public.rate_limits where key like 'gerar:%%' and count >= %(teto_gerar)s
+         order by dia desc, count desc limit 50""",
+    "top_ips_hoje": r"""
+        select substring(key from '^gerar:(.+):\d{4}-\d{2}-\d{2}$') as ip, count
+          from public.rate_limits where key like 'gerar:%%' and key like %(sufixo_hoje)s
+         order by count desc limit 10""",
+    "guest_repetido": """
+        select driver_snapshot->>'full_name' as motorista, driver_snapshot->>'plate' as placa, count(*) as n
+          from public.receipts where is_guest and created_at >= now() - interval '24 hours'
+         group by 1, 2 having count(*) >= 10 order by n desc limit 10""",
+    "tentativas_admin": """
+        select key, count, created_at from public.rate_limits
+         where key like 'admin_login:%%' order by count desc limit 20""",
+    "retencao": """
+        select (select min(created_at) from public.receipts where is_guest) as guest_mais_antigo,
+               (select count(*) from public.receipts where is_guest and created_at < %(corte_guest)s) as guest_vencidos,
+               (select min(created_at) from public.rate_limits) as contador_mais_antigo,
+               (select count(*) from public.rate_limits where created_at < %(corte_contadores)s) as contadores_vencidos""",
+    "tabelas": """
+        select c.relname as tabela, greatest(c.reltuples, 0)::bigint as linhas,
+               pg_total_relation_size(c.oid) as bytes
+          from pg_class c join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'public' and c.relkind = 'r' order by bytes desc""",
+    "indices": """
+        select indexname from pg_indexes where schemaname = 'public'
+           and indexname in ('receipts_created_idx', 'drivers_created_idx')""",
+    "ultimo_webhook": """
+        select max(updated_at) as em from public.drivers where plan <> 'free'""",
+    "admins": """
+        select email, last_login_at, password_changed_at from public.admin_users
+         order by last_login_at desc nulls last""",
+}
+
+# Uma linha (fetchone) ou varias (fetchall)?
+_ADMIN_UMA_LINHA = {
+    "geral", "recibos_mes", "recibos_estim", "ativacao", "funil", "ticket", "logins",
+    "sessoes", "inativos_30d", "retencao", "ultimo_webhook",
+}
+
+
+def _executar_secoes(conn, nomes: list[str], params: dict, dados: dict) -> None:
+    import time as _time
+
+    for nome in nomes:
+        inicio = _time.perf_counter()
+        try:
+            with conn.transaction():  # savepoint: a falha de uma nao derruba as outras
+                cur = conn.execute(_SQL_ADMIN[nome], params)
+                dados[nome] = dict(cur.fetchone() or {}) if nome in _ADMIN_UMA_LINHA \
+                    else [dict(r) for r in cur.fetchall()]
+        except Exception as exc:
+            app.logger.warning("admin: secao %s indisponivel: %s", nome, exc)
+            dados[nome] = None
+        dados["_tempos"][nome] = round((_time.perf_counter() - inicio) * 1000)
+
+
+def _saude_do_sistema() -> dict:
+    """Configuracao presente ou ausente. Nunca o valor — so booleano e prefixo."""
+    def tem(nome: str) -> bool:
+        return bool(os.environ.get(nome, "").strip())
+
+    stripe_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+    return {
+        "integracoes": [
+            ("Stripe (chave secreta)", bool(stripe_key),
+             "modo live" if stripe_key.startswith("sk_live_") else "modo teste" if stripe_key else ""),
+            ("Stripe (webhook)", tem("STRIPE_WEBHOOK_SECRET"), ""),
+            ("Stripe (preço Pro mensal)", tem("STRIPE_PRO_PRICE_ID"), ""),
+            ("Stripe (preço Pro anual)", tem("STRIPE_PRO_ANUAL_PRICE_ID"), ""),
+            ("Resend (e-mail)", tem("RESEND_API_KEY"), os.environ.get("EMAIL_FROM", "").strip()),
+            ("RevenueCat (webhook)", tem("REVENUECAT_WEBHOOK_SECRET"), ""),
+            ("Cron de limpeza", tem("CRON_SECRET"), "04:00 UTC, diário"),
+            ("APP_BASE_URL", tem("APP_BASE_URL"), os.environ.get("APP_BASE_URL", "").strip()),
+            ("Supabase (URL)", tem("SUPABASE_URL"), ""),
+            ("Supabase (chave de serviço)", tem("SUPABASE_SECRET_KEY") or tem("SUPABASE_SERVICE_ROLE_KEY"), ""),
+            ("SECRET_KEY com 32+ caracteres", len(os.environ.get("SECRET_KEY", "")) >= 32, ""),
+        ],
+        "deploy": {
+            "ambiente": os.environ.get("VERCEL_ENV", "local"),
+            "regiao": os.environ.get("VERCEL_REGION", ""),
+            "commit": os.environ.get("VERCEL_GIT_COMMIT_SHA", "")[:7],
+            "mensagem": os.environ.get("VERCEL_GIT_COMMIT_MESSAGE", "")[:80],
+        },
+        "constantes": [
+            ("Recibos/mês no Grátis", FREE_MONTHLY_LIMIT),
+            ("Recibos/dia por IP no gerador", GUEST_DAILY_LIMIT),
+            ("E-mails/dia por motorista", EMAIL_DAILY_LIMIT),
+            ("Retenção de recibos do gerador (dias)", GUEST_RETENTION_DAYS),
+            ("Retenção de contadores (dias)", COUNTER_RETENTION_DAYS),
+            ("Pedidos de nova senha/dia por e-mail", RESET_DAILY_LIMIT_EMAIL),
+            ("Tentativas de login no painel/dia por IP", ADMIN_LOGIN_DAILY_LIMIT_IP),
+        ],
+    }
+
+
+def montar_dashboard_admin() -> dict:
+    """Numeros do painel, por secao. Ver templates/admin/dashboard.html."""
+    import time as _time
+
+    store = get_store()
+    agora = datetime.now(timezone.utc)
+    params = {
+        "ini_hoje": _inicio_dia_br(0),
+        "ini_7d": _inicio_dia_br(6),
+        "ini_30d": _inicio_dia_br(29),
+        "ini_mes": _inicio_mes_br(0),
+        "ini_12m": _inicio_mes_br(11),
+        "limite": FREE_MONTHLY_LIMIT,
+        "teto_email": EMAIL_DAILY_LIMIT,
+        "teto_reset_ip": RESET_DAILY_LIMIT_IP,
+        "teto_gerar": GUEST_DAILY_LIMIT,
+        "sufixo_hoje": "%:" + today_br(),
+        "corte_guest": to_utc_iso(agora - timedelta(days=GUEST_RETENTION_DAYS + 1)),
+        "corte_contadores": to_utc_iso(agora - timedelta(days=COUNTER_RETENTION_DAYS + 1)),
+    }
+    d: dict = {"_tempos": {}, "gerado_em": datetime.now(BR_TZ)}
+
+    inicio = _time.perf_counter()
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute("set local statement_timeout = 4000")
+            d["latencia_ms"] = None
+            t0 = _time.perf_counter()
+            conn.execute("select 1").fetchone()
+            d["latencia_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
+            _executar_secoes(conn, list(_SQL_ADMIN), params, d)
+    d["_tempos"]["total"] = round((_time.perf_counter() - inicio) * 1000)
+
+    # Series com os dias/meses vazios preenchidos e a barra ja calculada.
+    d["novos_por_dia"] = _com_maximo(_serie_dias(d.get("novos_por_dia") or [], 30, ("n",)), "n")
+    d["novos_por_mes"] = _com_maximo(_serie_meses(d.get("novos_por_mes") or [], 12, ("n",)), "n")
+    d["uso_por_dia"] = _com_maximo(_serie_dias(d.get("uso_por_dia") or [], 30, ("logado", "guest", "n", "valor")), "n")
+    d["uso_por_mes"] = _com_maximo(
+        _serie_meses(d.get("uso_por_mes") or [], 12, ("logado", "guest", "n", "valor", "motoristas_ativos")), "n")
+    por_hora = {int(l["hora"]): int(l["n"]) for l in (d.get("por_hora") or [])}
+    d["por_hora"] = _com_maximo([{"hora": h, "n": por_hora.get(h, 0)} for h in range(24)], "n")
+    for nome in ("pagamentos", "cidades_recibos", "cidades_cadastro"):
+        d[nome] = _com_maximo(d.get(nome) or [], "n")
+
+    # MRR como faixa: o banco nao diz quem e mensal e quem e anual, nem o preco
+    # do Business legado. Piso = todo Pro da Stripe anual (119,40/12);
+    # teto = todo Pro mensal. Loja: bruto; a Apple fica com 15%.
+    g = d.get("geral") or {}
+    pro_stripe = int(g.get("pro_stripe") or 0)
+    pro_loja = int(g.get("pro_loja") or 0)
+    d["mrr"] = {
+        "piso": round(pro_stripe * 119.40 / 12 + pro_loja * 19.90 * 0.85, 2),
+        "teto": round((pro_stripe + pro_loja) * 19.90, 2),
+        "business_sem_preco": int(g.get("business") or 0),
+    }
+    a = d.get("ativacao") or {}
+    d["ativacao_pct"] = round(100 * int(a.get("ativados") or 0) / max(int(a.get("total") or 0), 1))
+    d["ativacao_30d_pct"] = round(100 * int(a.get("coorte_30d_ativados") or 0) / max(int(a.get("coorte_30d") or 0), 1))
+    d["saude"] = _saude_do_sistema()
+    d["indices_ok"] = {r["indexname"] for r in (d.get("indices") or [])} >= {"receipts_created_idx", "drivers_created_idx"}
+    return d
+
+
+# ── Lista e ficha de motoristas ──────────────────────────────────────────────
+
+_ADMIN_CURSOR_SALT = "admin-cursor"
+
+
+def _cursor_dumps(created_at, driver_id: str) -> str:
+    return URLSafeTimedSerializer(app.config["SECRET_KEY"], salt=_ADMIN_CURSOR_SALT).dumps(
+        [to_utc_iso(created_at), str(driver_id)])
+
+
+def _cursor_loads(valor: str) -> tuple[str | None, str | None]:
+    """Cursor invalido ou adulterado vira primeira pagina, nao 500."""
+    if not valor:
+        return None, None
+    try:
+        ts, did = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt=_ADMIN_CURSOR_SALT).loads(valor, max_age=86400)
+        return str(ts), str(did)
+    except Exception:
+        return None, None
+
+
+def _escapar_like(valor: str) -> str:
+    return valor.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@app.get("/admin/motoristas")
+@admin_required
+def admin_motoristas():
+    q = request.args.get("q", "").strip()[:80]
+    plano = request.args.get("plano", "") if request.args.get("plano") in ("free", "pro", "business") else ""
+    status = request.args.get("status", "").strip()[:40]
+    origem = request.args.get("origem", "") if request.args.get("origem") in ("stripe", "loja") else ""
+    so_teto = request.args.get("so_teto") == "1"
+    sem_recibo = request.args.get("sem_recibo") == "1"
+    cur_ts, cur_id = _cursor_loads(request.args.get("cursor", ""))
+    tamanho = max(1, min(int(ADMIN_PAGE_SIZE), 100))
+
+    digitos = re.sub(r"\D", "", q)
+    params = {
+        "cur_ts": cur_ts, "cur_id": cur_id,
+        "plan": plano or None, "status": status or None, "origem": origem or None,
+        "q": f"%{_escapar_like(q)}%" if q else None,
+        "qdig": f"{digitos}%" if len(digitos) >= 4 else None,
+        "so_teto": so_teto, "sem_recibo": sem_recibo,
+        "limite": FREE_MONTHLY_LIMIT, "n": tamanho + 1,
+    }
+    sql = """
+        select d.id, d.full_name, d.email, d.city, d.plate, d.plan, d.subscription_status,
+               case when d.plan = 'free' then '-'
+                    when d.stripe_subscription_id is not null then 'Stripe' else 'Loja' end as origem,
+               d.created_at, u.last_sign_in_at, s.n as recibos, s.ultimo as ultimo_recibo, q.used as uso_mes
+          from public.drivers d
+          left join auth.users u on u.id = d.id
+          left join lateral (select count(*) as n, max(created_at) as ultimo
+                               from public.receipts r where r.driver_id = d.id) s on true
+          left join public.receipt_quotas q on q.driver_id = d.id and q.period = public.br_period()
+         where (%(cur_ts)s::timestamptz is null
+                or (d.created_at, d.id) < (%(cur_ts)s::timestamptz, %(cur_id)s::uuid))
+           and (%(plan)s::text is null or d.plan = %(plan)s)
+           and (%(status)s::text is null or d.subscription_status = %(status)s)
+           and (%(origem)s::text is null
+                or (%(origem)s = 'stripe' and d.stripe_subscription_id is not null)
+                or (%(origem)s = 'loja' and d.plan <> 'free' and d.stripe_subscription_id is null))
+           and (%(q)s::text is null or d.email ilike %(q)s or d.full_name ilike %(q)s
+                or d.plate ilike %(q)s
+                or (%(qdig)s::text is not null and (d.whatsapp like %(qdig)s or d.cpf like %(qdig)s)))
+           and (not %(so_teto)s or coalesce(q.used, 0) >= %(limite)s)
+           and (not %(sem_recibo)s or s.n = 0)
+         order by d.created_at desc, d.id desc
+         limit %(n)s"""
+    with get_store().pool.connection() as conn:
+        linhas = [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    proximo = ""
+    if len(linhas) > tamanho:
+        linhas = linhas[:tamanho]
+        proximo = _cursor_dumps(linhas[-1]["created_at"], linhas[-1]["id"])
+    app.logger.info("admin %s listou motoristas q=%r", g.admin["email"], q)
+    return render_template(
+        "admin/motoristas.html", motoristas=linhas, proximo=proximo,
+        filtros={"q": q, "plano": plano, "status": status, "origem": origem,
+                 "so_teto": so_teto, "sem_recibo": sem_recibo},
+    )
+
+
+@app.get("/admin/motoristas/<uuid:driver_id>")
+@admin_required
+def admin_motorista(driver_id):
+    store = get_store()
+    did = str(driver_id)
+    with store.pool.connection() as conn:
+        cols = ", ".join("d." + c.strip() for c in PostgresStore._DRIVER_COLS.split(",") if c.strip())
+        perfil = conn.execute(
+            f"""select {cols}, u.last_sign_in_at, u.email_confirmed_at,
+                       u.banned_until, u.created_at as auth_created_at
+                  from public.drivers d left join auth.users u on u.id = d.id
+                 where d.id = %(id)s""", {"id": did}).fetchone()
+        if not perfil:
+            abort(404)
+        totais = conn.execute(
+            """select count(*) as n, coalesce(sum(amount), 0) as valor,
+                      min(created_at) as primeiro, max(created_at) as ultimo,
+                      count(*) filter (where created_at >= %(ini_30d)s) as n_30d
+                 from public.receipts where driver_id = %(id)s""",
+            {"id": did, "ini_30d": _inicio_dia_br(29)}).fetchone()
+        cotas = conn.execute(
+            "select period, used from public.receipt_quotas where driver_id = %s order by period desc limit 6",
+            (did,)).fetchall()
+        try:
+            with conn.transaction():
+                sessoes = conn.execute(
+                    "select count(*) as n from auth.sessions where user_id = %s and (not_after is null or not_after > now())",
+                    (did,)).fetchone()["n"]
+        except Exception:
+            sessoes = None
+        emails_hoje = conn.execute(
+            "select count from public.rate_limits where key = %s", (f"email:{did}:{today_br()}",)).fetchone()
+    recibos = store.list_receipts_by_driver(did, limit=20)
+    app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
+    return render_template(
+        "admin/motorista.html", m=dict(perfil), totais=dict(totais), cotas=[dict(c) for c in cotas],
+        sessoes=sessoes, emails_hoje=(emails_hoje or {}).get("count", 0), recibos=recibos,
+        limite=FREE_MONTHLY_LIMIT,
+    )
+
+
+# ── Filtros Jinja do painel ──────────────────────────────────────────────────
+
+@app.template_filter("brl")
+def filtro_brl(valor) -> str:
+    try:
+        n = float(valor or 0)
+    except (TypeError, ValueError):
+        return "-"
+    inteiro, _, dec = f"{n:,.2f}".partition(".")
+    return "R$ " + inteiro.replace(",", ".") + "," + dec
+
+
+@app.template_filter("mascarar_cpf")
+def filtro_mascarar_cpf(valor) -> str:
+    digitos = re.sub(r"\D", "", str(valor or ""))
+    if len(digitos) == 11:
+        return f"***.***.{digitos[6:9]}-{digitos[9:]}"
+    if len(digitos) == 14:  # CNPJ e dado publico
+        return format_document_br(digitos)
+    return "***" if digitos else ""
+
+
+@app.template_filter("mascarar_email")
+def filtro_mascarar_email(valor) -> str:
+    usuario, _, dominio = str(valor or "").partition("@")
+    return f"{usuario[:1]}***@{dominio}" if dominio else ""
+
+
+@app.template_filter("mascarar_fone")
+def filtro_mascarar_fone(valor) -> str:
+    digitos = re.sub(r"\D", "", str(valor or ""))
+    return f"*****-{digitos[-4:]}" if len(digitos) >= 4 else ""
+
+
+@app.template_filter("data_br")
+def filtro_data_br(valor, com_hora: bool = True) -> str:
+    if not valor:
+        return "-"
+    if isinstance(valor, str):
+        try:
+            valor = datetime.fromisoformat(valor.replace("Z", "+00:00"))
+        except ValueError:
+            return valor
+    if isinstance(valor, datetime):
+        if valor.tzinfo is None:
+            valor = valor.replace(tzinfo=timezone.utc)
+        valor = valor.astimezone(BR_TZ)
+        return valor.strftime("%d/%m/%Y %H:%M") if com_hora else valor.strftime("%d/%m/%Y")
+    return valor.strftime("%d/%m/%Y")
+
+
+@app.cli.command("criar-admin")
+def cli_criar_admin():
+    """Cria um administrador do painel, ou redefine a senha se o e-mail ja existir.
+
+    Uso: flask --app app criar-admin  (pede e-mail e senha; a senha nao ecoa)
+    Nao ha cadastro de admin pelo site de proposito.
+    """
+    import getpass
+
+    email = normalize_email(input("E-mail do administrador: "))
+    if not email_valido(email):
+        raise SystemExit("E-mail inválido.")
+    senha = getpass.getpass("Senha: ")
+    if not senha:
+        raise SystemExit("Senha vazia.")
+    admin = get_store().upsert_admin(email, generate_password_hash(senha))
+    print(f"Administrador pronto: {admin['email']} (id {admin['_id']}).")
 
 
 if __name__ == "__main__":

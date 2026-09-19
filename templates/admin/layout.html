@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block head %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block content %}
+<section class="admin-shell">
+  <div class="container">
+    {% if admin_user %}
+    <nav class="admin-nav">
+      <a href="{{ url_for('admin_dashboard') }}" class="admin-nav-link {% if request.endpoint == 'admin_dashboard' %}ativo{% endif %}">
+        <i class="bi bi-speedometer2 me-1"></i>Visão geral
+      </a>
+      <a href="{{ url_for('admin_motoristas') }}" class="admin-nav-link {% if request.endpoint in ('admin_motoristas', 'admin_motorista') %}ativo{% endif %}">
+        <i class="bi bi-people me-1"></i>Motoristas
+      </a>
+      <a href="{{ url_for('admin_senha') }}" class="admin-nav-link {% if request.endpoint == 'admin_senha' %}ativo{% endif %}">
+        <i class="bi bi-key me-1"></i>Minha senha
+      </a>
+      <span class="admin-nav-quem"><i class="bi bi-shield-lock me-1"></i>{{ admin_user.email }}</span>
+      <form action="{{ url_for('admin_sair') }}" method="post" class="d-inline">
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <button type="submit" class="admin-nav-link admin-nav-sair">Sair</button>
+      </form>
+    </nav>
+    {% if admin_senha_fraca %}
+    <div class="alert alert-warning admin-aviso-senha" role="alert">
+      <i class="bi bi-exclamation-triangle-fill me-2"></i>
+      <strong>Sua senha do painel é curta.</strong> Este painel mostra CPF e telefone de todos os motoristas.
+      <a href="{{ url_for('admin_senha') }}" class="alert-link">Troque a senha agora</a>.
+    </div>
+    {% endif %}
+    {% endif %}
+    {% block admin %}{% endblock %}
+  </div>
+</section>
+{% endblock %}

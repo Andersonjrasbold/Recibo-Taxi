@@ -1,0 +1,78 @@
+{% extends "admin/layout.html" %}
+{% import "admin/_macros.html" as ui %}
+{% block title %}{{ m.full_name }} — Painel{% endblock %}
+{% block admin %}
+<p><a href="{{ url_for('admin_motoristas') }}" class="adm-link"><i class="bi bi-arrow-left me-1"></i>Motoristas</a></p>
+<div class="adm-cabecalho">
+  <h1 class="admin-titulo">{{ m.full_name }}</h1>
+  {{ ui.plano(m) }}
+</div>
+<div class="row g-4">
+  <div class="col-lg-4">
+    <section class="adm-painel">
+      <h2 class="adm-h2">Perfil</h2>
+      <table class="adm-tabela adm-tabela-mini">
+        <tr><td>E-mail</td><td>{{ m.email }}{% if not m.email_confirmed_at %} <small class="adm-falha">(não confirmado)</small>{% endif %}</td></tr>
+        <tr><td>WhatsApp</td><td>{{ m.whatsapp }}</td></tr>
+        <tr><td>CPF</td><td>{{ m.cpf | mascarar_cpf }}</td></tr>
+        <tr><td>Cidade</td><td>{{ m.city }}</td></tr>
+        <tr><td>Placa · veículo</td><td>{{ m.plate }} · {{ m.vehicle_model or '-' }}</td></tr>
+        <tr><td>Prefixo · alvará</td><td>{{ m.taxi_prefix or '-' }} · {{ m.license_number or '-' }}</td></tr>
+        <tr><td>Cadastro</td><td>{{ m.created_at | data_br }}</td></tr>
+        <tr><td>Senha alterada</td><td>{{ m.password_changed_at | data_br }}</td></tr>
+        <tr><td>Último login</td><td>{{ m.last_sign_in_at | data_br }}</td></tr>
+        <tr><td>Sessões vivas</td><td>{{ sessoes if sessoes is not none else '-' }}</td></tr>
+        <tr><td>E-mails enviados hoje</td><td>{{ emails_hoje }}</td></tr>
+        {% if m.banned_until %}<tr><td>Bloqueado até</td><td class="adm-falha">{{ m.banned_until | data_br }}</td></tr>{% endif %}
+      </table>
+      <p class="adm-suave">CPF mascarado de propósito: o painel não precisa do número inteiro para dar suporte.</p>
+    </section>
+    <section class="adm-painel">
+      <h2 class="adm-h2">Assinatura</h2>
+      <table class="adm-tabela adm-tabela-mini">
+        <tr><td>Plano</td><td>{{ m.plan }}</td></tr>
+        <tr><td>Status</td><td>{{ m.subscription_status or '-' }}</td></tr>
+        <tr><td>Origem</td><td>{% if m.plan == 'free' %}-{% elif m.stripe_subscription_id %}Stripe{% else %}Loja (App Store / Google Play){% endif %}</td></tr>
+        {% if m.stripe_customer_id %}<tr><td>Cliente Stripe</td><td><a class="adm-link" href="https://dashboard.stripe.com/customers/{{ m.stripe_customer_id }}" target="_blank" rel="noopener noreferrer">{{ m.stripe_customer_id }}</a></td></tr>{% endif %}
+        {% if m.stripe_subscription_id %}<tr><td>Assinatura Stripe</td><td><a class="adm-link" href="https://dashboard.stripe.com/subscriptions/{{ m.stripe_subscription_id }}" target="_blank" rel="noopener noreferrer">{{ m.stripe_subscription_id }}</a></td></tr>{% endif %}
+        <tr><td>Última alteração</td><td>{{ m.updated_at | data_br }}</td></tr>
+      </table>
+    </section>
+  </div>
+  <div class="col-lg-8">
+    <section class="adm-painel">
+      <h2 class="adm-h2">Uso</h2>
+      <div class="db-stats adm-kpis">
+        {{ ui.kpi(totais.n, 'Recibos no total', 'receipt', 'coral') }}
+        {{ ui.kpi(totais.n_30d, 'Nos últimos 30 dias', 'calendar-month', 'blue') }}
+        {{ ui.kpi(totais.valor | brl, 'Valor emitido', 'cash', 'green') }}
+      </div>
+      <table class="adm-tabela adm-tabela-mini mt-3">
+        <tr><td>Primeiro recibo</td><td>{{ totais.primeiro | data_br }}</td><td>Último recibo</td><td>{{ totais.ultimo | data_br }}</td></tr>
+      </table>
+      {% if cotas %}
+      <h3 class="adm-h3 mt-3">Cota do plano Grátis por mês</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for c in cotas %}<tr><td>{{ c.period.strftime('%m/%Y') }}</td><td class="adm-barra-h-celula"><div class="adm-barra-h" style="width:{{ [100, (c.used * 100 / limite) | round | int] | min }}%"></div></td><td class="adm-num">{{ c.used }}/{{ limite }}</td></tr>{% endfor %}
+      </table>
+      {% endif %}
+    </section>
+    <section class="adm-painel">
+      <h2 class="adm-h2">Recibos recentes</h2>
+      <div class="table-responsive"><table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Quando</th><th>Corrida</th><th>Passageiro</th><th>Documento</th><th>Contato</th><th class="adm-num">Valor</th><th>Forma</th><th>Link</th></tr></thead>
+        <tbody>{% for r in recibos %}
+        <tr><td>{{ r.trip_date_display or r.trip_date }} {{ r.trip_time }}</td>
+            <td>{{ r.origin }} → {{ r.destination }}</td>
+            <td>{{ r.passenger }}{% if r.passenger_company %}<br><small class="adm-suave">{{ r.passenger_company }}</small>{% endif %}</td>
+            <td>{{ r.passenger_document | mascarar_cpf }}</td>
+            <td>{{ r.passenger_email | mascarar_email }} {{ r.passenger_whatsapp | mascarar_fone }}</td>
+            <td class="adm-num">{{ r.amount | brl }}</td><td>{{ r.payment_method }}</td>
+            <td><a href="{{ url_for('recibo_view', rid=r.rid) }}" class="adm-link" target="_blank" rel="noopener">{{ r.rid }}</a></td></tr>
+        {% else %}<tr><td colspan="8" class="adm-suave">Nenhum recibo.</td></tr>{% endfor %}</tbody>
+      </table></div>
+      <p class="adm-suave">Dados do passageiro mascarados: são de terceiros sem relação com o painel.</p>
+    </section>
+  </div>
+</div>
+{% endblock %}

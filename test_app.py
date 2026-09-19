@@ -74,6 +74,9 @@ def limpar_contas_de_teste():
                     or key like 'gerar:192.0.2.%%'
                     or key like 'teste:%%'
             """)
+            # Painel: admins de teste e tentativas de login da suite.
+            conn.execute("delete from public.admin_users where email like '%%@teste.invalid'")
+            conn.execute("delete from public.rate_limits where key like 'admin_login:%%'")
     return removidas
 
 
@@ -188,8 +191,37 @@ r = c4.get(f"/redefinir-senha/{token}", follow_redirects=False)
 check("token é de uso único", r.status_code == 302 and "recuperar-senha" in r.headers.get("Location",""), r.status_code)
 r = c4.get("/redefinir-senha/token-falso-123", follow_redirects=False)
 check("token inválido é rejeitado", r.status_code == 302)
-r = c0.post("/recuperar-senha", data={"email":"naoexiste@teste.invalid"})
+# E-mails e IP sorteados: o teto de pedidos e por dia, e um valor fixo herdaria
+# o contador da execucao anterior no mesmo dia.
+_sufixo = os.urandom(3).hex()
+r = c0.post("/recuperar-senha", data={"email":f"naoexiste-{_sufixo}@teste.invalid"})
 check("e-mail inexistente não vaza cadastro", r.headers.get("Location","").endswith("/login"))
+
+print("\n── Recuperar senha pelo app ──")
+_cr = A.app.test_client()
+_ip = f"203.0.113.{int(_sufixo[:2], 16) % 200 + 20}"
+r = _cr.post("/api/recuperar-senha", json={"email": f"naoexiste-{_sufixo}@teste.invalid"},
+             environ_base={"REMOTE_ADDR": _ip})
+check("API: e-mail inexistente responde 200 sem vazar cadastro",
+      r.status_code == 200 and r.get_json().get("enviado") is True, f"{r.status_code} {r.get_json()}")
+r = _cr.post("/api/recuperar-senha", json={"email": "sem-arroba"}, environ_base={"REMOTE_ADDR": _ip})
+check("API: e-mail inválido devolve 400", r.status_code == 400, r.status_code)
+r = _cr.post("/api/recuperar-senha", json={}, environ_base={"REMOTE_ADDR": _ip})
+check("API: corpo vazio devolve 400", r.status_code == 400, r.status_code)
+_alvo = f"teto-{_sufixo}@teste.invalid"
+_oks = sum(1 for _ in range(A.RESET_DAILY_LIMIT_EMAIL)
+           if _cr.post("/api/recuperar-senha", json={"email": _alvo},
+                       environ_base={"REMOTE_ADDR": _ip}).status_code == 200)
+check(f"API: permite {A.RESET_DAILY_LIMIT_EMAIL} pedidos por e-mail/dia",
+      _oks == A.RESET_DAILY_LIMIT_EMAIL, f"passaram {_oks}")
+r = _cr.post("/api/recuperar-senha", json={"email": _alvo}, environ_base={"REMOTE_ADDR": _ip})
+check("API: o seguinte responde 429", r.status_code == 429 and r.get_json().get("erro") == "muitos_pedidos",
+      f"{r.status_code} {r.get_json()}")
+r = _cr.post("/api/recuperar-senha", json={"email": f"outro-{_sufixo}@teste.invalid"},
+             environ_base={"REMOTE_ADDR": _ip})
+check("API: outro e-mail no mesmo IP tem cota própria", r.status_code == 200, r.status_code)
+r = c0.post("/recuperar-senha", data={"email": _alvo})
+check("site: mesmo e-mail estourado também responde 429", r.status_code == 429, r.status_code)
 
 print("\n── Exclusão de conta ──")
 cd = novo_cliente("delete@teste.invalid")
@@ -374,6 +406,7 @@ def planos_html(plano):
 h = planos_html("free")
 check("free ve o botao de assinar Pro", "Assinar Pro" in h)
 check("Business nao aparece mais na pagina", "Business" not in h)
+check("free ve o plano anual com 50% de desconto", "R$ 119,40/ano" in h and "50% de desconto" in h)
 h = planos_html("pro")
 check("pro nao ve botao de assinar", "Assinar Pro" not in h)
 check("pro ve 'Seu plano atual' uma unica vez", h.count("Seu plano atual") == 1, h.count("Seu plano atual"))
@@ -390,6 +423,11 @@ uidb = A.get_store().get_user_by_email("bizz@teste.invalid")["_id"]
 A.get_store().update_user(uidb, {"plan": "business"})
 r = cb.post("/assinar/business")
 check("checkout de Business e recusado (400)", r.status_code == 400, r.status_code)
+# pro_anual e uma chave valida de checkout (sem Stripe configurado nos testes,
+# a rota redireciona pra /planos em vez de 400)
+r = cb.post("/assinar/pro_anual")
+check("checkout do Pro anual e uma rota valida (nao 400)", r.status_code == 302, r.status_code)
+check("plano_base reduz o anual ao Pro", A.plano_base("pro_anual") == "pro" and A.plano_base("pro") == "pro")
 
 # assinante antigo mantem recibos ilimitados
 criados = sum(1 for i in range(A.FREE_MONTHLY_LIMIT + 5)
@@ -1069,6 +1107,100 @@ _ign = io.open("mobile/android/.gitignore", encoding="utf-8").read()
 check("o .gitignore do Android barra a chave de assinatura",
       "\n*.jks" in _ign and "\n*.keystore" in _ign,
       "descomente as linhas *.jks e *.keystore")
+
+# -- Painel administrativo (/admin) ---------------------------------------
+# Conta separada da de motorista; a conta de teste e criada direto no store,
+# porque nao existe cadastro de admin pelo site, e apagada no fim.
+print("\n-- Painel administrativo --")
+import re as _re_adm
+from werkzeug.security import generate_password_hash as _gph
+_sufixo_adm = os.urandom(3).hex()
+_email_adm = f"admin-{_sufixo_adm}@teste.invalid"
+_ip_adm = f"203.0.113.{int(_sufixo_adm[:2], 16) % 200 + 20}"
+_adm = A.get_store().upsert_admin(_email_adm, _gph("1234"))
+_ca = A.app.test_client()
+def _adm_post(cli, path, **data):
+    return cli.post(path, data=data, environ_base={"REMOTE_ADDR": _ip_adm})
+
+r = _ca.get("/admin")
+check("sem sessao, /admin manda para o login", r.status_code == 302 and "/admin/login" in r.headers.get("Location", ""), r.status_code)
+check("/admin sai com noindex", r.headers.get("X-Robots-Tag", "").startswith("noindex"), r.headers.get("X-Robots-Tag"))
+r = _adm_post(_ca, "/admin/login", email=_email_adm, senha="errada")
+check("senha errada devolve 401", r.status_code == 401, r.status_code)
+r = _adm_post(_ca, "/admin/login", email=f"ninguem-{_sufixo_adm}@teste.invalid", senha="1234")
+check("e-mail inexistente devolve o mesmo 401", r.status_code == 401, r.status_code)
+r = _adm_post(_ca, "/admin/login", email=_email_adm, senha="1234", proximo="https://evil.example/x")
+check("login entra e ignora 'proximo' externo", r.status_code == 302 and r.headers.get("Location", "").endswith("/admin"), r.headers.get("Location"))
+r = _ca.get("/admin"); _html_adm = r.get_data(as_text=True)
+check("dashboard abre logado", r.status_code == 200, r.status_code)
+check("senha curta gera aviso no painel", "senha do painel é curta" in _html_adm)
+check("painel nao e cacheado", r.headers.get("Cache-Control") == "no-store", r.headers.get("Cache-Control"))
+# Dashboard, lista e ficha — com a sessao ainda aberta
+for _secao in ("Receita", "Crescimento", "Funil", "Uso", "Engajamento", "E-mail", "Abuso", "Saúde"):
+    check(f"dashboard tem a seção {_secao}", _secao in _html_adm)
+check("nenhuma seção indisponível", "Seção indisponível" not in _html_adm)
+_segredos = [k for k in ("STRIPE_SECRET_KEY", "RESEND_API_KEY", "STRIPE_WEBHOOK_SECRET", "SECRET_KEY", "SUPABASE_DB_URL")
+             if os.environ.get(k) and os.environ[k] in _html_adm]
+check("dashboard nao vaza segredo de ambiente", not _segredos, str(_segredos))
+r = _ca.get("/admin")
+check("segunda abertura vem do cache", "em cache" in r.get_data(as_text=True))
+r = _ca.get("/admin?atualizar=1")
+check("atualizar=1 refaz as consultas", "em cache" not in r.get_data(as_text=True))
+_alvo_m = A.get_store().get_user_by_email("reset@teste.invalid")
+r = _ca.get("/admin/motoristas?q=teste.invalid"); _lista = r.get_data(as_text=True)
+check("lista acha as contas de teste", r.status_code == 200 and _alvo_m["_id"] in _lista, r.status_code)
+check("lista nao mostra CPF", "12345678900" not in _lista and "123.456.789-00" not in _lista)
+r = _ca.get("/admin/motoristas?q=%25_x&plano=pro&origem=loja&so_teto=1&sem_recibo=1")
+check("filtros com % e _ nao quebram", r.status_code == 200, r.status_code)
+_tam = A.ADMIN_PAGE_SIZE; A.ADMIN_PAGE_SIZE = 2
+r = _ca.get("/admin/motoristas?q=teste.invalid"); _p1 = r.get_data(as_text=True)
+_cursor = _re_adm.search(r'cursor=([^&"]+)', _p1)
+check("pagina de 2 traz cursor para a proxima", _p1.count("/admin/motoristas/") == 2 and _cursor is not None)
+r = _ca.get(f"/admin/motoristas?q=teste.invalid&cursor={_cursor.group(1) if _cursor else ''}")
+check("proxima pagina abre e nao repete a primeira",
+      r.status_code == 200 and _p1.split("/admin/motoristas/")[1][:36] not in r.get_data(as_text=True))
+A.ADMIN_PAGE_SIZE = _tam
+r = _ca.get("/admin/motoristas?cursor=adulterado")
+check("cursor invalido volta a primeira pagina (200)", r.status_code == 200, r.status_code)
+r = _ca.get(f"/admin/motoristas/{_alvo_m['_id']}"); _ficha = r.get_data(as_text=True)
+check("ficha do motorista abre", r.status_code == 200, r.status_code)
+check("ficha mascara o CPF", "***.***.789-00" in _ficha and "12345678900" not in _ficha and "123.456.789-00" not in _ficha)
+check("ficha mostra e-mail e WhatsApp inteiros", "reset@teste.invalid" in _ficha)
+check("uuid inexistente da 404", _ca.get("/admin/motoristas/00000000-0000-0000-0000-000000000000").status_code == 404)
+check("id que nao e uuid da 404", _ca.get("/admin/motoristas/abc").status_code == 404)
+check("ficha sai com no-referrer", r.headers.get("Referrer-Policy") == "no-referrer", r.headers.get("Referrer-Policy"))
+check("/admin nao vira /administrador", _ca.get("/administrador").headers.get("X-Robots-Tag") is None)
+
+r = _adm_post(_ca, "/admin/senha", senha_atual="1234", senha="novaSenha123", confirmar_senha="novaSenha123")
+check("POST sem CSRF e recusado (400)", r.status_code == 400, r.status_code)
+_csrf_adm = _re_adm.search(r'name="csrf" value="([^"]+)"', _html_adm).group(1)
+r = _adm_post(_ca, "/admin/senha", csrf=_csrf_adm, senha_atual="errada", senha="novaSenha123", confirmar_senha="novaSenha123")
+check("troca exige a senha atual (403)", r.status_code == 403, r.status_code)
+r = _adm_post(_ca, "/admin/senha", csrf=_csrf_adm, senha_atual="1234", senha="curta", confirmar_senha="curta")
+check("nova senha curta e recusada (400)", r.status_code == 400, r.status_code)
+_cb = A.app.test_client()
+_adm_post(_cb, "/admin/login", email=_email_adm, senha="1234")
+check("segunda sessao entra antes da troca", _cb.get("/admin").status_code == 200)
+r = _adm_post(_ca, "/admin/senha", csrf=_csrf_adm, senha_atual="1234", senha="novaSenha123", confirmar_senha="novaSenha123")
+check("troca de senha redireciona ao painel", r.status_code == 302, r.status_code)
+r = _ca.get("/admin")
+check("quem trocou continua logado, sem aviso", r.status_code == 200 and "senha do painel é curta" not in r.get_data(as_text=True))
+check("a outra sessao e derrubada pela troca", _cb.get("/admin").status_code == 302)
+r = _adm_post(A.app.test_client(), "/admin/login", email=_email_adm, senha="1234")
+check("senha antiga nao entra mais", r.status_code == 401, r.status_code)
+_html_adm = _ca.get("/admin").get_data(as_text=True)
+_csrf_adm = _re_adm.search(r'name="csrf" value="([^"]+)"', _html_adm).group(1)
+r = _adm_post(_ca, "/admin/sair", csrf=_csrf_adm)
+check("sair encerra a sessao", r.status_code == 302 and _ca.get("/admin").status_code == 302)
+# teto de tentativas por e-mail
+_cc = A.app.test_client()
+_alvo_adm = f"teto-{_sufixo_adm}@teste.invalid"
+_codigos = [_adm_post(_cc, "/admin/login", email=_alvo_adm, senha="x").status_code
+            for _ in range(A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL + 1)]
+check(f"apos {A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL} tentativas o login responde 429",
+      _codigos[-1] == 429 and _codigos[-2] == 401, str(_codigos[-3:]))
+A.get_store().delete_admin(_adm["_id"])
+check("admin de teste apagado", A.get_store().get_admin_by_email(_email_adm) is None)
 
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")

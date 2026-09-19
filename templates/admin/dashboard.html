@@ -1,0 +1,324 @@
+{% extends "admin/layout.html" %}
+{% import "admin/_macros.html" as ui %}
+{% block title %}Visão geral — Painel{% endblock %}
+{% block admin %}
+<div class="adm-cabecalho">
+  <h1 class="admin-titulo">Visão geral</h1>
+  <span class="adm-suave">Gerado às {{ d.gerado_em | data_br }} · {{ d._tempos.total }} ms{% if d.cache %} · em cache{% endif %} ·
+    <a href="{{ url_for('admin_dashboard', atualizar=1) }}" class="adm-link">atualizar</a></span>
+</div>
+
+{# ── 1. Visão geral ─────────────────────────────────────────────────── #}
+{% set g = d.geral or {} %}{% set r = d.recibos_mes or {} %}
+<div class="db-stats adm-kpis">
+  {{ ui.kpi(g.total, 'Motoristas cadastrados', 'people', 'blue') }}
+  {{ ui.kpi(g.novos_7d, 'Novos em 7 dias', 'person-plus', 'green', ' / ' ~ g.novos_mes ~ ' no mês') }}
+  {{ ui.kpi(g.pagantes, 'Pagantes', 'star-fill', 'orange', ' (' ~ g.pro_stripe ~ ' Stripe · ' ~ g.pro_loja ~ ' loja · ' ~ g.business ~ ' Business)') }}
+  {{ ui.kpi(d.mrr.piso | brl ~ ' – ' ~ d.mrr.teto | brl, 'MRR estimado (faixa)', 'cash-coin', 'green') }}
+  {{ ui.kpi(r.mes, 'Recibos no mês', 'receipt', 'coral', ' (' ~ r.mes_guest ~ ' sem login)') }}
+  {{ ui.kpi(r.hoje, 'Recibos hoje', 'calendar-day', 'coral') }}
+  {{ ui.kpi(r.mes_valor | brl, 'Valor emitido no mês', 'currency-dollar', 'green') }}
+  {{ ui.kpi(g.past_due ~ ' / ' ~ g.cancel_pendente, 'Inadimplentes / cancelando', 'exclamation-triangle', 'orange') }}
+</div>
+
+{# ── 2. Receita ────────────────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-cash-stack me-2"></i>Receita</h2>
+  <p class="adm-suave">MRR é uma faixa: o banco não diz quem é mensal ou anual na Stripe (piso = todos anuais a R$ 9,95/mês; teto = todos mensais a R$ 19,90) e a Apple fica com 15% do que vem da loja. Business legado não tem preço registrado{% if d.mrr.business_sem_preco %} ({{ d.mrr.business_sem_preco }} conta(s)){% endif %}.</p>
+  <div class="row g-4">
+    <div class="col-lg-8">
+      <h3 class="adm-h3">Assinantes ativos ({{ (d.pagantes or []) | length }}, mais recentes primeiro)</h3>
+      {% if d.pagantes is none %}{{ ui.indisponivel() }}{% else %}
+      <div class="table-responsive"><table class="adm-tabela">
+        <thead><tr><th>Motorista</th><th>Cidade</th><th>Plano</th><th>Origem</th><th>Desde</th></tr></thead>
+        <tbody>
+        {% for m in d.pagantes %}
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
+            <td>{{ m.city }}</td><td>{{ ui.plano(m) }}</td><td>{{ m.origem }}</td><td>{{ m.updated_at | data_br(false) }}</td></tr>
+        {% else %}<tr><td colspan="5" class="adm-suave">Nenhum assinante ainda.</td></tr>{% endfor %}
+        </tbody></table></div>
+      {% endif %}
+    </div>
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Ex-assinantes por status</h3>
+      {% if d.ex_assinantes is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela">
+        {% for l in d.ex_assinantes %}<tr><td>{{ l.status }}</td><td class="adm-num">{{ l.n }}</td></tr>
+        {% else %}<tr><td class="adm-suave">Ninguém cancelou.</td></tr>{% endfor %}
+      </table>
+      {% endif %}
+      <p class="adm-suave mt-3">Não dá para medir hoje: data de upgrade/cancelamento, novas assinaturas por mês, mensal × anual. Precisa de uma tabela de eventos de cobrança alimentada pelos webhooks.</p>
+    </div>
+  </div>
+</section>
+
+{# ── 3. Crescimento ────────────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-graph-up-arrow me-2"></i>Crescimento e ativação</h2>
+  <div class="row g-4">
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Cadastros por dia (30 dias)</h3>
+      {{ ui.barras(d.novos_por_dia, 'dia', 'n', 'Cadastros por dia') }}
+    </div>
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Cadastros por mês (12 meses)</h3>
+      {{ ui.barras(d.novos_por_mes, 'mes', 'n', 'Cadastros por mês') }}
+    </div>
+  </div>
+  {% set a = d.ativacao or {} %}
+  <div class="db-stats adm-kpis mt-4">
+    {{ ui.kpi(d.ativacao_pct ~ '%', 'Ativação total (emitiram ≥ 1 recibo)', 'check2-circle', 'green', ' ' ~ a.ativados ~ ' de ' ~ a.total) }}
+    {{ ui.kpi(d.ativacao_30d_pct ~ '%', 'Ativação dos cadastros de 30 dias', 'lightning', 'orange', ' ' ~ a.coorte_30d_ativados ~ ' de ' ~ a.coorte_30d) }}
+    {{ ui.kpi(a.coorte_30d_ativados_24h, 'Emitiram nas primeiras 24 h', 'stopwatch', 'blue') }}
+  </div>
+</section>
+
+{# ── 4. Funil do Grátis ────────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-funnel me-2"></i>Funil do plano Grátis (este mês)</h2>
+  {% set f = d.funil or {} %}
+  <div class="db-stats adm-kpis">
+    {{ ui.kpi(f.free_ativos_mes, 'Grátis que emitiram este mês', 'person', 'blue', ' de ' ~ g.gratis) }}
+    {{ ui.kpi(f.no_teto, 'Bateram o teto e seguem Grátis', 'fire', 'coral') }}
+    {{ ui.kpi(f.quase_teto, 'Quase no teto', 'hourglass-split', 'orange') }}
+    {{ ui.kpi(f.no_teto_converteram, 'Bateram o teto e viraram Pro', 'star', 'green') }}
+  </div>
+  <h3 class="adm-h3 mt-4">Candidatos ao Pro: bateram o teto de {{ free_monthly_limit }} e continuam no Grátis</h3>
+  {% if d.candidatos is none %}{{ ui.indisponivel() }}{% else %}
+  <div class="table-responsive"><table class="adm-tabela">
+    <thead><tr><th>Motorista</th><th>Cidade</th><th>WhatsApp</th><th>Uso no mês</th><th>Recibos (total)</th><th>Cadastro</th></tr></thead>
+    <tbody>
+    {% for m in d.candidatos %}
+    <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
+        <td>{{ m.city }}</td><td>{{ m.whatsapp }}</td><td class="adm-num">{{ m.used }}/{{ free_monthly_limit }}</td><td class="adm-num">{{ m.recibos_total }}</td><td>{{ m.created_at | data_br(false) }}</td></tr>
+    {% else %}<tr><td colspan="6" class="adm-suave">Ninguém no teto este mês.</td></tr>{% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+
+{# ── 5. Uso ────────────────────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-receipt-cutoff me-2"></i>Uso</h2>
+  <div class="row g-4">
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Recibos por dia (30 dias) · ≈ {{ (d.recibos_estim or {}).n }} no total</h3>
+      {{ ui.barras(d.uso_por_dia, 'dia', 'n', 'Recibos por dia') }}
+      <table class="adm-tabela adm-tabela-mini mt-2">
+        <thead><tr><th>Dia</th><th class="adm-num">Com login</th><th class="adm-num">Sem login</th><th class="adm-num">Valor</th></tr></thead>
+        <tbody>{% for l in d.uso_por_dia[-7:] | reverse %}
+        <tr><td>{{ l.dia.strftime('%d/%m') }}</td><td class="adm-num">{{ l.logado }}</td><td class="adm-num">{{ l.guest }}</td><td class="adm-num">{{ l.valor | brl }}</td></tr>
+        {% endfor %}</tbody>
+      </table>
+    </div>
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Recibos por mês (12 meses)</h3>
+      {{ ui.barras(d.uso_por_mes, 'mes', 'n', 'Recibos por mês') }}
+      <table class="adm-tabela adm-tabela-mini mt-2">
+        <thead><tr><th>Mês</th><th class="adm-num">Com login</th><th class="adm-num">Sem login</th><th class="adm-num">Motoristas ativos</th><th class="adm-num">Valor</th></tr></thead>
+        <tbody>{% for l in d.uso_por_mes[-6:] | reverse %}
+        <tr><td>{{ l.mes }}</td><td class="adm-num">{{ l.logado }}</td><td class="adm-num">{{ l.guest }}</td><td class="adm-num">{{ l.motoristas_ativos }}</td><td class="adm-num">{{ l.valor | brl }}</td></tr>
+        {% endfor %}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="row g-4 mt-1">
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Formas de pagamento (30 dias)</h3>
+      {{ ui.linhas_h(d.pagamentos or [], 'forma', 'n', 'valor') }}
+    </div>
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Cidades por recibo (30 dias)</h3>
+      {{ ui.linhas_h(d.cidades_recibos or [], 'cidade', 'n', 'motoristas') }}
+    </div>
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Cidades por cadastro</h3>
+      {{ ui.linhas_h(d.cidades_cadastro or [], 'cidade', 'n', 'pagantes') }}
+    </div>
+  </div>
+  <div class="row g-4 mt-1">
+    <div class="col-lg-4">
+      {% set t = d.ticket or {} %}
+      <h3 class="adm-h3">Ticket (30 dias)</h3>
+      <table class="adm-tabela">
+        <tr><td>Média</td><td class="adm-num">{{ t.media | brl }}</td></tr>
+        <tr><td>Mediana</td><td class="adm-num">{{ t.mediana | brl }}</td></tr>
+        <tr><td>Menor</td><td class="adm-num">{{ t.minimo | brl }}</td></tr>
+        <tr><td>Maior</td><td class="adm-num">{{ t.maximo | brl }}</td></tr>
+      </table>
+      <h3 class="adm-h3 mt-4">Hora do dia (30 dias)</h3>
+      {{ ui.barras(d.por_hora, 'hora', 'n', 'Recibos por hora do dia') }}
+    </div>
+    <div class="col-lg-8">
+      <h3 class="adm-h3">Quem mais emite (30 dias)</h3>
+      {% if d.top_emissores is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela">
+        <thead><tr><th>Motorista</th><th>Plano</th><th class="adm-num">Recibos</th><th class="adm-num">Valor</th></tr></thead>
+        <tbody>{% for m in d.top_emissores %}
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a></td><td>{{ m.plan }}</td><td class="adm-num">{{ m.n }}</td><td class="adm-num">{{ m.valor | brl }}</td></tr>
+        {% else %}<tr><td colspan="4" class="adm-suave">Nenhum recibo com login no período.</td></tr>{% endfor %}</tbody>
+      </table>
+      {% endif %}
+      <h3 class="adm-h3 mt-4">Últimos 20 recibos</h3>
+      {% if d.ultimos_recibos is none %}{{ ui.indisponivel() }}{% else %}
+      <div class="table-responsive"><table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Quando</th><th>Motorista</th><th>Cidade</th><th>Passageiro</th><th class="adm-num">Valor</th><th>Forma</th><th>Link</th></tr></thead>
+        <tbody>{% for r in d.ultimos_recibos %}
+        <tr><td>{{ r.created_at | data_br }}</td>
+            <td>{% if r.driver_id %}<a href="{{ url_for('admin_motorista', driver_id=r.driver_id) }}" class="adm-link">{{ r.motorista }}</a>{% else %}{{ r.motorista }} <small class="adm-suave">(sem login)</small>{% endif %}</td>
+            <td>{{ r.cidade }}</td><td>{{ r.passenger }}</td><td class="adm-num">{{ r.amount | brl }}</td><td>{{ r.payment_method }}</td>
+            <td><a href="{{ url_for('recibo_view', rid=r.rid) }}" class="adm-link" target="_blank" rel="noopener">{{ r.rid }}</a></td></tr>
+        {% endfor %}</tbody></table></div>
+      {% endif %}
+    </div>
+  </div>
+  <p class="adm-suave mt-3">Não dá para medir hoje: canal (site × app × gerador — só "sem login" se distingue), recibos abertos pelo passageiro, envios por WhatsApp.</p>
+</section>
+
+{# ── 6. Engajamento ────────────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-activity me-2"></i>Engajamento</h2>
+  {% set lg = d.logins or {} %}{% set ss = d.sessoes or {} %}
+  <div class="db-stats adm-kpis">
+    {{ ui.kpi(lg.login_24h, 'Logins em 24 h', 'box-arrow-in-right', 'green', ' / ' ~ lg.login_7d ~ ' em 7 d / ' ~ lg.login_30d ~ ' em 30 d') }}
+    {{ ui.kpi(ss.usuarios, 'Motoristas com sessão viva (7 d)', 'phone', 'blue', ' em ' ~ ss.sessoes ~ ' sessões') }}
+    {{ ui.kpi((d.inativos_30d or {}).n, 'Inativos há 30 dias', 'moon', 'orange') }}
+    {{ ui.kpi(lg.nunca_logou, 'Nunca entraram', 'person-x', 'coral') }}
+  </div>
+  <p class="adm-suave mt-2">Ressalva: o último login só muda em login com senha. Quem fica logado no app renovando o token parece inativo. A melhor medida de atividade é recibo emitido.</p>
+  <div class="row g-4">
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Últimos logins</h3>
+      {% if d.ultimos_logins is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        <tbody>{% for m in d.ultimos_logins %}
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a> <small class="adm-suave">{{ m.plan }}</small></td><td>{{ m.last_sign_in_at | data_br }}</td></tr>
+        {% endfor %}</tbody>
+      </table>
+      {% endif %}
+    </div>
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Pagantes sem recibo há 30 dias (risco de cancelar)</h3>
+      {% if d.pagantes_parados is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Motorista</th><th>WhatsApp</th><th>Último recibo</th></tr></thead>
+        <tbody>{% for m in d.pagantes_parados %}
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a> <small class="adm-suave">{{ m.plan }}</small></td><td>{{ m.whatsapp }}</td><td>{{ m.ultimo_recibo | data_br(false) }}</td></tr>
+        {% else %}<tr><td colspan="3" class="adm-suave">Todos os pagantes emitiram nos últimos 30 dias.</td></tr>{% endfor %}</tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# ── 7. E-mail ─────────────────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-envelope me-2"></i>E-mail (últimos {{ d.saude.constantes[4][1] }} dias, pelos contadores)</h2>
+  <div class="row g-4">
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Recibos enviados por e-mail</h3>
+      {% if d.emails_por_dia is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Dia</th><th class="adm-num">Enviados</th><th class="adm-num">Motoristas</th><th class="adm-num">No teto</th></tr></thead>
+        <tbody>{% for l in d.emails_por_dia %}
+        <tr><td>{{ l.dia }}</td><td class="adm-num">{{ l.enviados }}</td><td class="adm-num">{{ l.motoristas }}</td><td class="adm-num">{{ l.no_teto }}</td></tr>
+        {% else %}<tr><td colspan="4" class="adm-suave">Nenhum envio no período.</td></tr>{% endfor %}</tbody>
+      </table>
+      {% endif %}
+      <p class="adm-suave">Conta tentativas, não entregas: falhas do Resend não ficam registradas.</p>
+    </div>
+    <div class="col-lg-6">
+      <h3 class="adm-h3">Pedidos de nova senha</h3>
+      {% if d.resets_por_dia is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Dia</th><th class="adm-num">Pedidos</th><th class="adm-num">E-mails distintos</th><th class="adm-num">IPs no teto</th></tr></thead>
+        <tbody>{% for l in d.resets_por_dia %}
+        <tr><td>{{ l.dia }}</td><td class="adm-num">{{ l.pedidos }}</td><td class="adm-num">{{ l.emails_distintos }}</td><td class="adm-num">{{ l.ips_no_teto }}</td></tr>
+        {% else %}<tr><td colspan="4" class="adm-suave">Nenhum pedido no período.</td></tr>{% endfor %}</tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# ── 8. Abuso ──────────────────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-shield-exclamation me-2"></i>Abuso</h2>
+  <div class="row g-4">
+    <div class="col-lg-4">
+      <h3 class="adm-h3">IPs que bateram o teto do gerador</h3>
+      {% if d.ips_no_teto is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        {% for l in d.ips_no_teto %}<tr><td>{{ l.dia }}</td><td><code>{{ l.ip }}</code></td><td class="adm-num">{{ l.count }}</td></tr>
+        {% else %}<tr><td class="adm-suave">Nenhum.</td></tr>{% endfor %}
+      </table>
+      {% endif %}
+      <h3 class="adm-h3 mt-3">Maiores IPs de hoje</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for l in d.top_ips_hoje or [] %}<tr><td><code>{{ l.ip }}</code></td><td class="adm-num">{{ l.count }}</td></tr>
+        {% else %}<tr><td class="adm-suave">Nenhum recibo sem login hoje.</td></tr>{% endfor %}
+      </table>
+    </div>
+    <div class="col-lg-4">
+      <h3 class="adm-h3">"Motorista" sem login repetido (10+ em 24 h)</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for l in d.guest_repetido or [] %}<tr><td>{{ l.motorista }}</td><td>{{ l.placa }}</td><td class="adm-num">{{ l.n }}</td></tr>
+        {% else %}<tr><td class="adm-suave">Nenhum.</td></tr>{% endfor %}
+      </table>
+    </div>
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Tentativas de login neste painel</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for l in d.tentativas_admin or [] %}<tr><td><code>{{ l.key }}</code></td><td class="adm-num">{{ l.count }}</td></tr>
+        {% else %}<tr><td class="adm-suave">Nenhuma nos últimos dias.</td></tr>{% endfor %}
+      </table>
+    </div>
+  </div>
+</section>
+
+{# ── 9. Saúde do sistema ───────────────────────────────────────────── #}
+<section class="adm-painel">
+  <h2 class="adm-h2"><i class="bi bi-heart-pulse me-2"></i>Saúde do sistema</h2>
+  <div class="row g-4">
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Integrações</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for nome, ok, nota in d.saude.integracoes %}
+        <tr><td>{% if ok %}<i class="bi bi-check-circle-fill adm-ok"></i>{% else %}<i class="bi bi-x-circle-fill adm-falha"></i>{% endif %} {{ nome }}</td><td class="adm-suave">{{ nota }}</td></tr>
+        {% endfor %}
+      </table>
+      <h3 class="adm-h3 mt-3">Deploy</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        <tr><td>Ambiente</td><td>{{ d.saude.deploy.ambiente }} {{ d.saude.deploy.regiao }}</td></tr>
+        <tr><td>Commit</td><td><code>{{ d.saude.deploy.commit or '-' }}</code> {{ d.saude.deploy.mensagem }}</td></tr>
+        <tr><td>Latência do banco</td><td>{{ d.latencia_ms }} ms · painel em {{ d._tempos.total }} ms</td></tr>
+        <tr><td>Índices do painel</td><td>{% if d.indices_ok %}<i class="bi bi-check-circle-fill adm-ok"></i> aplicados{% else %}<i class="bi bi-x-circle-fill adm-falha"></i> faltando (migração 0005){% endif %}</td></tr>
+      </table>
+    </div>
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Limites em vigor</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for nome, valor in d.saude.constantes %}<tr><td>{{ nome }}</td><td class="adm-num">{{ valor }}</td></tr>{% endfor %}
+      </table>
+      {% set rt = d.retencao or {} %}
+      <h3 class="adm-h3 mt-3">Cron de limpeza</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        <tr><td>Recibos sem login vencidos</td><td class="adm-num">{% if rt.guest_vencidos %}<span class="adm-falha">{{ rt.guest_vencidos }}</span>{% else %}0{% endif %}</td></tr>
+        <tr><td>Contadores vencidos</td><td class="adm-num">{% if rt.contadores_vencidos %}<span class="adm-falha">{{ rt.contadores_vencidos }}</span>{% else %}0{% endif %}</td></tr>
+        <tr><td>Recibo sem login mais antigo</td><td>{{ rt.guest_mais_antigo | data_br(false) }}</td></tr>
+        <tr><td>Última mudança em conta paga</td><td>{{ (d.ultimo_webhook or {}).em | data_br }}</td></tr>
+      </table>
+      <p class="adm-suave">Vencido acima de zero por mais de um dia = o cron das 04:00 UTC não rodou.</p>
+    </div>
+    <div class="col-lg-4">
+      <h3 class="adm-h3">Tabelas (estimativa)</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for t in d.tabelas or [] %}<tr><td>{{ t.tabela }}</td><td class="adm-num">≈ {{ t.linhas }}</td><td class="adm-num">{{ (t.bytes / 1024) | round | int }} KB</td></tr>{% endfor %}
+      </table>
+      <h3 class="adm-h3 mt-3">Administradores</h3>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for a in d.admins or [] %}<tr><td>{{ a.email }}</td><td>{{ a.last_login_at | data_br }}</td></tr>{% endfor %}
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}

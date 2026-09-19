@@ -1,0 +1,47 @@
+{# Pedacos repetidos do painel. Sem JavaScript: barras em CSS, dados no HTML. #}
+{% macro kpi(valor, rotulo, icone='bar-chart', cor='coral', sufixo='') -%}
+<div class="stat-card">
+  <div class="stat-icon stat-icon-{{ cor }}"><i class="bi bi-{{ icone }}"></i></div>
+  <div class="stat-body">
+    <div class="stat-value">{{ valor }}{% if sufixo %}<span class="stat-limit">{{ sufixo }}</span>{% endif %}</div>
+    <div class="stat-label">{{ rotulo }}</div>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro barras(serie, campo_rotulo, campo_valor='n', titulo_valor='') -%}
+<div class="adm-barras" role="img" aria-label="{{ titulo_valor }}">
+  {% for l in serie %}
+  <div class="adm-barra-coluna" title="{{ l[campo_rotulo] }}: {{ l[campo_valor] }}">
+    <div class="adm-barra" style="height:{{ l.pct }}%"></div>
+  </div>
+  {% endfor %}
+</div>
+<div class="adm-barras-eixo">
+  <span>{{ serie[0][campo_rotulo] if serie else '' }}</span>
+  <span>{{ serie[-1][campo_rotulo] if serie else '' }}</span>
+</div>
+{%- endmacro %}
+
+{% macro linhas_h(serie, campo_rotulo, campo_valor='n', extra=None) -%}
+<table class="adm-tabela adm-tabela-barras">
+  {% for l in serie %}
+  <tr>
+    <td class="adm-rotulo">{{ l[campo_rotulo] }}</td>
+    <td class="adm-barra-h-celula"><div class="adm-barra-h" style="width:{{ l.pct }}%"></div></td>
+    <td class="adm-num">{{ l[campo_valor] }}</td>
+    {% if extra %}<td class="adm-num adm-suave">{{ l[extra] | brl if extra == 'valor' else l[extra] }}</td>{% endif %}
+  </tr>
+  {% else %}
+  <tr><td class="adm-suave">Nada no período.</td></tr>
+  {% endfor %}
+</table>
+{%- endmacro %}
+
+{% macro plano(m) -%}
+<span class="db-plan-badge adm-badge db-plan-{{ m.plan }}">{{ m.plan }}{% if m.subscription_status %} · {{ m.subscription_status }}{% endif %}</span>
+{%- endmacro %}
+
+{% macro indisponivel() -%}
+<p class="adm-suave"><i class="bi bi-exclamation-circle me-1"></i>Seção indisponível agora (a consulta falhou). Veja o log.</p>
+{%- endmacro %}

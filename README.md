@@ -144,6 +144,37 @@ server-rendered não consegue lê-los.
 A digital de uso único, que antes vinha do hash da senha, agora vem do
 `password_changed_at`.
 
+## Painel administrativo (`/admin`)
+
+Painel interno com os números da plataforma: motoristas, receita (MRR como
+faixa, porque o banco não distingue mensal de anual), crescimento e ativação,
+funil do Grátis (quem bateu o teto e segue sem pagar), uso, engajamento,
+e-mail, abuso e saúde do sistema. Mais lista de motoristas com busca, filtros e
+paginação por cursor, e ficha por motorista com CPF e dados do passageiro
+mascarados.
+
+**Administrador não é motorista.** Tabela própria (`admin_users`, migração
+0005), senha com hash do werkzeug, sessão própria (`admin_id`). Não há cadastro
+pelo site: o admin nasce pelo comando
+
+```bash
+flask --app app criar-admin   # pede e-mail e senha; repetir o e-mail redefine a senha
+```
+
+Proteções: teto de tentativas de login por dia (30 por IP, 10 por e-mail, zerado
+no login certo), sessão que expira em 12 h ou 60 min sem uso, CSRF em todo POST,
+troca de senha derruba as outras sessões, `noindex` + `no-store` +
+`no-referrer` em tudo debaixo de `/admin`, e nada de `/admin` em página pública
+ou `robots.txt`. As consultas do dashboard rodam numa conexão só, com savepoint
+por seção (uma consulta falhando marca só aquela seção como indisponível) e
+`statement_timeout` de 4 s; o resultado fica em cache no processo por 60 s
+(`?atualizar=1` força).
+
+O que o painel ainda **não** mede, por falta de instrumentação: upgrades e
+cancelamentos por dia, mensal × anual, e-mails entregues × falhos, canal do
+recibo (site × app) e se o cron rodou. O caminho é uma tabela de eventos
+alimentada pelos webhooks e pelo cron.
+
 ## Planos
 
 | Plano | Preço | Limite |

@@ -1,0 +1,39 @@
+{% extends "admin/layout.html" %}
+{% block title %}Painel administrativo{% endblock %}
+{% block admin %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6 col-xl-5">
+    <div class="auth-card">
+      <div class="auth-card-header">
+        <div class="auth-logo">
+          <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+        </div>
+        <h1 class="auth-title">Painel administrativo</h1>
+        <p class="auth-subtitle">Acesso restrito à equipe do Recibo Táxi</p>
+      </div>
+      <form action="{{ url_for('admin_login') }}" method="post" class="auth-form" novalidate>
+        <input type="hidden" name="proximo" value="{{ proximo or '' }}">
+        <div class="form-group-auth">
+          <label for="email" class="form-label-auth">E-mail</label>
+          <div class="input-icon-wrap">
+            <i class="bi bi-envelope input-icon"></i>
+            <input type="email" id="email" name="email" class="form-control form-control-auth"
+                   autocomplete="username" required value="{{ (form or {}).get('email', '') }}">
+          </div>
+        </div>
+        <div class="form-group-auth">
+          <label for="senha" class="form-label-auth">Senha</label>
+          <div class="input-icon-wrap">
+            <i class="bi bi-lock input-icon"></i>
+            <input type="password" id="senha" name="senha" class="form-control form-control-auth"
+                   autocomplete="current-password" required>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-auth-submit w-100">
+          <i class="bi bi-box-arrow-in-right me-2"></i>Entrar no painel
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

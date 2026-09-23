@@ -81,8 +81,10 @@ FREE_MONTHLY_LIMIT = 6
 # o que faz /assinar/business responder 400 para assinaturas novas.
 PAID_PLANS = ("pro", "business")
 
-# Gerador público: teto diário por IP, para o endpoint não virar porta aberta
-# de escrita no banco. É best-effort — ver comentário em client_ip().
+# Página do app na App Store. Mora aqui, e não nos templates, para a landing,
+# o rodapé e qualquer e-mail apontarem para o mesmo lugar.
+APP_STORE_URL = "https://apps.apple.com/br/app/id6811583712"
+
 MAX_RECEIPT_AMOUNT = Decimal("99999.99")
 
 # 14 dígitos hex = 2^56. Com 10 (2^40) a chance de colisão passava de 36% em
@@ -130,8 +132,6 @@ SIGNUP_FIELD_LIMITS = {
 # Teto por lote na limpeza, para a rotina não estourar o tempo da função
 # quando houver backlog grande.
 CLEANUP_BATCH_LIMIT = 500
-
-GUEST_DAILY_LIMIT = 20
 
 # Teto diario de recibos enviados por e-mail, por motorista. Existe para
 # proteger a reputacao do dominio: um endereco que dispara em volume vira spam
@@ -291,10 +291,10 @@ def phone_e164(value: str, ddi: str = "55") -> str:
 def razao_social_de(documento: str, valor: str) -> str:
     """Razao social so existe quando o documento e CNPJ.
 
-    A regra mora aqui, e nao so na tela: o gerador do site nao tem JavaScript
-    para esconder o campo, e um CPF com nome de empresa junto seria um recibo
-    que a contabilidade recusa. Quatorze digitos e CNPJ; qualquer outra coisa
-    devolve vazio.
+    A regra mora aqui, e nao so na tela do app: o servidor nao confia no
+    JavaScript que esconde o campo, e um CPF com nome de empresa junto seria
+    um recibo que a contabilidade recusa. Quatorze digitos e CNPJ; qualquer
+    outra coisa devolve vazio.
     """
     if len(re.sub(r"\D", "", documento or "")) != 14:
         return ""
@@ -499,8 +499,9 @@ def client_ip() -> str:
 
     Atrás de CDN isto é best-effort: se o proxy não sobrescrever o
     X-Forwarded-For, o valor pode ser forjado. Serve para conter abuso
-    casual do gerador público; contra um atacante determinado o caminho
-    é o WAF da Vercel, que age antes da função rodar.
+    casual (cadastro, pedido de nova senha, login do painel); contra um
+    atacante determinado o caminho é o WAF da Vercel, que age antes da
+    função rodar.
     """
     return (request.remote_addr or "desconhecido").strip()
 
@@ -1324,6 +1325,7 @@ def inject_globals() -> dict:
         "stripe_configured": bool(os.environ.get("STRIPE_SECRET_KEY")),
         "stripe_pub_key": os.environ.get("STRIPE_PUBLISHABLE_KEY", ""),
         "free_monthly_limit": FREE_MONTHLY_LIMIT,
+        "app_store_url": APP_STORE_URL,
     }
 
 
@@ -1742,105 +1744,18 @@ def recibo_criar():
     return redirect(url_for("recibo_view", rid=rid, created="1"))
 
 
-# ── Public generator (no login) ───────────────────────────────────────────────
+# ── Gerador público (desligado) ───────────────────────────────────────────────
 
-@app.route("/gerar", methods=["GET", "POST"])
+@app.get("/gerar")
+@login_required
 def gerador():
-    if g.user:
-        return redirect(url_for("dashboard"))
+    """Emitir recibo no site exige conta desde 2026-09-22.
 
-    if request.method == "POST":
-        erro_tamanho = field_limit_error(RECEIPT_FIELD_LIMITS)
-        if erro_tamanho:
-            flash(erro_tamanho, "danger")
-            return render_template(
-                "gerador.html", form=request.form, today=today_br()
-            ), 400
-
-        passenger = request.form.get("passageiro", "").strip()
-        trip_date = request.form.get("data", "").strip()
-        origin = request.form.get("origem", "").strip()
-        destination = request.form.get("destino", "").strip()
-        payment_method = request.form.get("forma_pagamento", "").strip() or "Pix"
-        driver_name = request.form.get("nome_motorista", "").strip()
-        driver_plate = request.form.get("placa", "").strip().upper()
-        driver_phone = request.form.get("whatsapp_motorista", "").strip()
-        driver_city = request.form.get("cidade_motorista", "").strip()
-        driver_vehicle = request.form.get("modelo_veiculo", "").strip()
-
-        if not all([passenger, trip_date, origin, destination, driver_name]):
-            flash("Preencha os campos obrigatórios para gerar o recibo.", "danger")
-            return render_template(
-                "gerador.html", form=request.form, today=today_br()
-            ), 400
-
-        try:
-            amount_value, amount_display = normalize_money(request.form.get("valor", ""))
-        except ValueError as exc:
-            flash(str(exc), "danger")
-            return render_template(
-                "gerador.html", form=request.form, today=today_br()
-            ), 400
-
-        # Só conta depois de validar: erro de preenchimento não gasta cota,
-        # mas um bot mandando payload válido esbarra no teto.
-        usados = get_store().bump_counter(f"gerar:{client_ip()}:{today_br()}")
-        if usados > GUEST_DAILY_LIMIT:
-            flash(
-                f"Limite de {GUEST_DAILY_LIMIT} recibos por dia no gerador sem "
-                "cadastro. Crie uma conta grátis para continuar emitindo.",
-                "warning",
-            )
-            return render_template(
-                "gerador.html", form=request.form, today=today_br()
-            ), 429
-
-        rid = uuid4().hex[:RID_LENGTH].upper()
-        receipt = {
-            "_id": rid,
-            "rid": rid,
-            "driver_id": None,
-            "is_guest": True,
-            "passenger": passenger,
-            "passenger_email": normalize_email(request.form.get("email_passageiro", "")),
-            "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
-            "passenger_document": format_document_br(
-                request.form.get("documento_passageiro", "")),
-            "passenger_company": razao_social_de(
-                request.form.get("documento_passageiro", ""),
-                request.form.get("razao_social", "")),
-            "trip_date": trip_date,
-            "trip_date_display": format_date_br(trip_date),
-            "trip_time": request.form.get("hora", "").strip(),
-            "origin": origin,
-            "destination": destination,
-            "amount_value": amount_value,
-            "amount_display": amount_display,
-            "payment_method": payment_method,
-            "notes": request.form.get("observacoes", "").strip(),
-            "created_at": now_iso(),
-            "driver_snapshot": {
-                "full_name": driver_name,
-                "email": "",
-                "whatsapp": driver_phone,
-                "city": driver_city,
-                "plate": driver_plate,
-                "vehicle_model": driver_vehicle,
-                "taxi_prefix": "",
-                "license_number": "",
-            },
-        }
-
-        get_store().create_receipt(receipt)
-
-        # Quem acabou de emitir não tem conta, mas é o dono legítimo deste
-        # recibo. A sessão é o que distingue ele de um visitante qualquer.
-        emitidos = session.get("guest_receipts", [])
-        session["guest_receipts"] = (emitidos + [rid])[-50:]
-
-        return redirect(url_for("recibo_view", rid=rid, created="1"))
-
-    return render_template("gerador.html", today=today_br())
+    O gerador sem cadastro foi desligado; a rota fica só para os links antigos
+    (favoritos, WhatsApp, resultado do Google) não caírem em 404. Sem sessão o
+    login_required manda para o login; com sessão, o painel já tem o formulário.
+    """
+    return redirect(url_for("dashboard"))
 
 
 # ── Pricing & Stripe ──────────────────────────────────────────────────────────
@@ -2458,7 +2373,7 @@ def webhook_revenuecat():
 
 @app.get("/tarefas/limpeza")
 def tarefa_limpeza():
-    """Apaga recibos do gerador público vencidos e contadores antigos.
+    """Apaga recibos sem conta (do antigo gerador público) vencidos e contadores antigos.
 
     Chamada pelo Cron da Vercel, que envia 'Authorization: Bearer $CRON_SECRET'.
     Sem CRON_SECRET definido a rota fica fechada — falha fechada, não aberta.
@@ -2504,7 +2419,7 @@ def tarefa_limpeza():
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="12 de setembro de 2026")
+    return render_template("privacidade.html", updated_at="22 de setembro de 2026")
 
 
 @app.get("/termos")
@@ -2976,19 +2891,6 @@ _SQL_ADMIN = {
                count(*) filter (where key like 'reset:email:%%') as emails_distintos,
                count(*) filter (where key like 'reset:ip:%%' and count >= %(teto_reset_ip)s) as ips_no_teto
           from public.rate_limits where key like 'reset:%%' group by 1 order by 1 desc""",
-    "ips_no_teto": r"""
-        select substring(key from '^gerar:(.+):\d{4}-\d{2}-\d{2}$') as ip,
-               substring(key from '(\d{4}-\d{2}-\d{2})$') as dia, count
-          from public.rate_limits where key like 'gerar:%%' and count >= %(teto_gerar)s
-         order by dia desc, count desc limit 50""",
-    "top_ips_hoje": r"""
-        select substring(key from '^gerar:(.+):\d{4}-\d{2}-\d{2}$') as ip, count
-          from public.rate_limits where key like 'gerar:%%' and key like %(sufixo_hoje)s
-         order by count desc limit 10""",
-    "guest_repetido": """
-        select driver_snapshot->>'full_name' as motorista, driver_snapshot->>'plate' as placa, count(*) as n
-          from public.receipts where is_guest and created_at >= now() - interval '24 hours'
-         group by 1, 2 having count(*) >= 10 order by n desc limit 10""",
     "tentativas_admin": """
         select key, count, created_at from public.rate_limits
          where key like 'admin_login:%%' order by count desc limit 20""",
@@ -3064,9 +2966,8 @@ def _saude_do_sistema() -> dict:
         },
         "constantes": [
             ("Recibos/mês no Grátis", FREE_MONTHLY_LIMIT),
-            ("Recibos/dia por IP no gerador", GUEST_DAILY_LIMIT),
             ("E-mails/dia por motorista", EMAIL_DAILY_LIMIT),
-            ("Retenção de recibos do gerador (dias)", GUEST_RETENTION_DAYS),
+            ("Retenção de recibos sem conta (dias)", GUEST_RETENTION_DAYS),
             ("Retenção de contadores (dias)", COUNTER_RETENTION_DAYS),
             ("Pedidos de nova senha/dia por e-mail", RESET_DAILY_LIMIT_EMAIL),
             ("Tentativas de login no painel/dia por IP", ADMIN_LOGIN_DAILY_LIMIT_IP),
@@ -3089,8 +2990,6 @@ def montar_dashboard_admin() -> dict:
         "limite": FREE_MONTHLY_LIMIT,
         "teto_email": EMAIL_DAILY_LIMIT,
         "teto_reset_ip": RESET_DAILY_LIMIT_IP,
-        "teto_gerar": GUEST_DAILY_LIMIT,
-        "sufixo_hoje": "%:" + today_br(),
         "corte_guest": to_utc_iso(agora - timedelta(days=GUEST_RETENTION_DAYS + 1)),
         "corte_contadores": to_utc_iso(agora - timedelta(days=COUNTER_RETENTION_DAYS + 1)),
     }

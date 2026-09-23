@@ -38,8 +38,7 @@
             Lei Geral de Proteção de Dados (Lei nº 13.709/2018 — LGPD).
           </p>
           <p>
-            Ela se aplica ao site, ao gerador de recibos sem cadastro e aos aplicativos móveis do
-            {{ app_name }}.
+            Ela se aplica ao site e aos aplicativos móveis do {{ app_name }}.
           </p>
 
           <h2 class="legal-h2">2. Dados que coletamos</h2>
@@ -62,11 +61,12 @@
             passageiro e ter base legal para registrar esses dados no recibo.
           </p>
 
-          <h3 class="legal-h3">2.3 Gerador sem cadastro</h3>
+          <h3 class="legal-h3">2.3 Recibos emitidos sem conta (gerador desativado)</h3>
           <p>
-            No gerador público, o recibo é salvo com os dados que você digitar, mas não é vinculado
-            a nenhuma conta. Por isso ele não aparece em nenhum histórico e só pode ser acessado por
-            quem tiver o link.
+            Até setembro de 2026 o site permitia gerar recibos sem cadastro. Esse gerador foi
+            desativado: hoje emitir recibo exige conta. Os recibos já criados por ele continuam
+            acessíveis por quem tiver o link, não estão vinculados a nenhuma conta e são removidos
+            automaticamente no prazo da seção 6.
           </p>
 
           <h3 class="legal-h3">2.4 Dados que <em>não</em> coletamos</h3>
@@ -105,7 +105,7 @@
                   <td>Execução de contrato (art. 7º, V)</td>
                 </tr>
                 <tr>
-                  <td>Conter abuso do gerador público</td>
+                  <td>Conter abuso em cadastro e recuperação de senha</td>
                   <td>Endereço IP, de forma agregada e temporária</td>
                   <td>Legítimo interesse (art. 7º, IX)</td>
                 </tr>
@@ -153,10 +153,10 @@
           <ul class="legal-list">
             <li><strong>Conta ativa:</strong> enquanto você mantiver a conta.</li>
             <li><strong>Após a exclusão da conta:</strong> seus dados e todos os seus recibos são apagados imediatamente e de forma definitiva.</li>
-            <li><strong>Recibos do gerador sem cadastro:</strong> mantidos por até 12 meses e
-              depois removidos automaticamente por rotina diária.</li>
-            <li><strong>Contadores de uso do gerador:</strong> guardamos por 7 dias um contador por
-              endereço IP, só para limitar abuso, e depois ele é apagado.</li>
+            <li><strong>Recibos emitidos sem conta (gerador desativado):</strong> mantidos por até
+              12 meses a partir da emissão e depois removidos automaticamente por rotina diária.</li>
+            <li><strong>Contadores antiabuso:</strong> guardamos por 7 dias um contador por
+              endereço IP (cadastro e recuperação de senha), só para limitar abuso, e depois ele é apagado.</li>
             <li><strong>Registros de conexão:</strong> não mantemos registros de acesso próprios.
               A infraestrutura de hospedagem (Vercel) mantém logs operacionais por período curto,
               sob a política dela.</li>

@@ -19,18 +19,25 @@
           Gere, compartilhe por WhatsApp ou e-mail e salve o histórico de todas as suas corridas. Sem papel, sem complicação.
         </p>
         <div class="hero-actions">
-          <a href="{{ url_for('gerador') }}" class="btn btn-hero-primary">
-            <i class="bi bi-lightning-fill me-2"></i>Gerar recibo agora
-            <small class="d-block" style="font-size:.68rem;font-weight:500;opacity:.82;margin-top:1px">Sem cadastro necessário</small>
+          <a href="{{ url_for('cadastro') }}" class="btn btn-hero-primary">
+            <i class="bi bi-lightning-fill me-2"></i>Criar conta grátis
+            <small class="d-block" style="font-size:.68rem;font-weight:500;opacity:.82;margin-top:1px">Leva menos de 1 minuto</small>
           </a>
-          <a href="{{ url_for('cadastro') }}" class="btn btn-hero-secondary">
-            Criar conta grátis <i class="bi bi-arrow-right ms-1"></i>
+          <a href="{{ url_for('login') }}" class="btn btn-hero-secondary">
+            Já tenho conta <i class="bi bi-arrow-right ms-1"></i>
           </a>
         </div>
         <div class="hero-trust">
           <span><i class="bi bi-check-circle-fill me-1"></i>100% gratuito para começar</span>
           <span><i class="bi bi-check-circle-fill me-1"></i>Sem cartão de crédito</span>
           <span><i class="bi bi-check-circle-fill me-1"></i>Recibo em 30 segundos</span>
+        </div>
+        <div class="hero-store">
+          <span class="hero-store-label">Também no iPhone</span>
+          <a href="{{ app_store_url }}" class="btn-store" target="_blank" rel="noopener">
+            <i class="bi bi-apple"></i>
+            <span class="btn-store-text"><small>Baixar na</small>App Store</span>
+          </a>
         </div>
       </div>
       <div class="col-lg-6">
@@ -91,16 +98,16 @@
         <div class="step-card">
           <div class="step-number">01</div>
           <div class="step-icon"><i class="bi bi-pencil-square"></i></div>
-          <h3 class="step-title">Preencha os dados</h3>
-          <p class="step-text">Informe passageiro, trajeto, valor e forma de pagamento em menos de 1 minuto.</p>
+          <h3 class="step-title">Crie sua conta grátis</h3>
+          <p class="step-text">Só e-mail e senha. Sem cartão de crédito, sem burocracia.</p>
         </div>
       </div>
       <div class="col-md-4">
         <div class="step-card step-card-featured">
           <div class="step-number">02</div>
           <div class="step-icon"><i class="bi bi-file-earmark-check-fill"></i></div>
-          <h3 class="step-title">Recibo gerado</h3>
-          <p class="step-text">O sistema gera um recibo com ID único, link compartilhável e QR Code na hora.</p>
+          <h3 class="step-title">Preencha e gere</h3>
+          <p class="step-text">Passageiro, trajeto, valor e pagamento. Sai um recibo com ID único, link e QR Code na hora.</p>
         </div>
       </div>
       <div class="col-md-4">
@@ -115,18 +122,22 @@
   </div>
 </section>
 
-<!-- ── No-login banner ───────────────────────────────────────────────────── -->
-<section class="guest-cta-section">
+<!-- ── App banner ────────────────────────────────────────────────────────── -->
+<section class="app-cta-section" id="app">
   <div class="container">
-    <div class="guest-cta-card">
-      <div class="guest-cta-icon"><i class="bi bi-lightning-charge-fill"></i></div>
-      <div class="guest-cta-content">
-        <h3 class="guest-cta-title">Experimente sem criar conta</h3>
-        <p class="guest-cta-text">Gere recibos agora mesmo. Cadastre-se depois para salvar o histórico.</p>
+    <div class="app-cta-card">
+      <div class="app-cta-icon"><i class="bi bi-phone-fill"></i></div>
+      <div class="app-cta-content">
+        <h3 class="app-cta-title">Leve o Recibo Táxi no bolso</h3>
+        <p class="app-cta-text">No app para iPhone você emite recibos até sem internet e sincroniza tudo com a sua conta.</p>
       </div>
-      <a href="{{ url_for('gerador') }}" class="btn btn-guest-cta">
-        Gerar recibo grátis <i class="bi bi-arrow-right ms-1"></i>
-      </a>
+      <div class="app-cta-actions">
+        <a href="{{ app_store_url }}" class="btn-store" target="_blank" rel="noopener">
+          <i class="bi bi-apple"></i>
+          <span class="btn-store-text"><small>Baixar na</small>App Store</span>
+        </a>
+        <span class="app-cta-soon"><i class="bi bi-google-play me-1"></i>Em breve no Google Play</span>
+      </div>
     </div>
   </div>
 </section>
@@ -150,7 +161,7 @@
           </div>
           <p class="pricing-tagline">Para quem quer experimentar</p>
           <ul class="pricing-features">
-            <li class="on"><i class="bi bi-check-lg"></i>Gerar recibos sem cadastro</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Site e app para iPhone</li>
             <li class="on"><i class="bi bi-check-lg"></i>Até {{ free_monthly_limit }} recibos/mês na conta</li>
             <li class="on"><i class="bi bi-check-lg"></i>WhatsApp e e-mail</li>
             <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>
@@ -208,11 +219,11 @@
       <h2 class="final-cta-title">Pronto para começar?</h2>
       <p class="final-cta-text">Não precisa de cartão de crédito. Seu primeiro recibo em 30 segundos.</p>
       <div class="d-flex gap-3 justify-content-center flex-wrap">
-        <a href="{{ url_for('gerador') }}" class="btn btn-cta-primary">
-          <i class="bi bi-lightning-fill me-2"></i>Gerar recibo agora
+        <a href="{{ url_for('cadastro') }}" class="btn btn-cta-primary">
+          <i class="bi bi-lightning-fill me-2"></i>Criar conta grátis
         </a>
-        <a href="{{ url_for('cadastro') }}" class="btn btn-cta-secondary">
-          Criar conta grátis
+        <a href="{{ url_for('login') }}" class="btn btn-cta-secondary">
+          Já tenho conta
         </a>
       </div>
     </div>

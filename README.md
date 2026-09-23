@@ -4,7 +4,8 @@ Aplicação Flask para taxistas emitirem e compartilharem recibos digitais.
 
 - Cadastro e login pelo **Supabase Auth**, com edição dos próprios dados em `/perfil`
 - Emissão de recibos, com histórico por conta
-- Gerador público, sem cadastro, para experimentar
+- Emitir recibo exige conta (o gerador público sem cadastro foi desligado em 2026-09-22; `/gerar` só redireciona)
+- App para iPhone na App Store (link em `APP_STORE_URL`)
 - Compartilhamento por WhatsApp ou e-mail, com link público e QR Code
 - Assinatura Pro via Stripe
 - Persistência em Postgres (Supabase)
@@ -97,7 +98,7 @@ Schema em `supabase/migrations/`. Quatro tabelas:
 - `drivers` — contas dos motoristas
 - `receipts` — recibos emitidos (`rid` de 14 hex; com 10 a chance de colisão
   passava de 36% em 1 milhão de recibos)
-- `rate_limits` — contador do gerador público
+- `rate_limits` — contadores antiabuso (cadastro, nova senha, login do painel)
 - `receipt_quotas` — cota mensal do plano Grátis
 
 Duas funções carregam a lógica que precisa ser atômica:
@@ -188,7 +189,7 @@ Grátis quando a assinatura é cancelada ou a cobrança falha em definitivo —
 
 ## Rotina de limpeza
 
-`GET /tarefas/limpeza` apaga recibos do gerador público com mais de 12 meses
+`GET /tarefas/limpeza` apaga recibos sem conta (do antigo gerador público) com mais de 12 meses
 (o que a Política de Privacidade promete) e contadores de rate limit antigos.
 
 Protegida por `Authorization: Bearer $CRON_SECRET`. O `vercel.json` agenda a
@@ -205,7 +206,7 @@ sobrou trabalho — a execução seguinte continua de onde parou.
 - Sessão com cookie `HttpOnly`, `SameSite=Lax` e `Secure` em produção
 - Senhas com hash `werkzeug` (PBKDF2 com sal)
 - Token de reset ligado ao hash da senha atual, o que o torna de uso único
-- Rate limit por IP no gerador público (best-effort; para abuso sério, WAF da Vercel)
+- Rate limit por IP em cadastro e nova senha (best-effort; para abuso sério, WAF da Vercel)
 
 ## E-mail
 
@@ -239,7 +240,7 @@ Arquivos que importam no deploy:
 
 ## Fluxo do produto
 
-1. O taxista cria a conta (ou usa `/gerar` sem cadastro).
+1. O taxista cria a conta (no site ou no app para iPhone).
 2. Preenche os dados da corrida.
 3. Gera o recibo.
 4. Compartilha o link por WhatsApp ou e-mail.

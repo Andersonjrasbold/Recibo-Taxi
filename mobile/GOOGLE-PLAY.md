@@ -105,9 +105,45 @@ mas com atrito — não serve para entregar a taxista.
 As capturas do iOS cruas **não servem**: 1320×2868 é mais alto que 9:16. As de `assets/loja` já vêm
 recortadas (sem a barra de status do iPhone) e centralizadas num fundo 1080×1920.
 
-**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **14**
-(15/09/2026, com o código do app após a correção do erro 23). Regerar com `./gradlew bundleRelease`
+**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **16**
+(19/09/2026: recuperação de senha pelo app, links de Termos e Privacidade na tela de
+assinatura, aviso de cancelamento "pelo Google Play" e a chave `goog_` do RevenueCat em
+`www/config.js`; o 14 foi publicado em teste fechado em 16/09 e o 15 subiu em 19/09 sem a
+chave). Gerar exige
+`JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`: o Java do
+Homebrew não está no PATH e o `java_home` do sistema não o enxerga. Regerar com `./gradlew bundleRelease`
 após `npx cap sync android` sempre que `www/` mudar.
+
+### Descrição completa (a da App Store, com o cancelamento "pelo Google Play" em vez de "pelos Ajustes do aparelho")
+
+```
+Recibo para o passageiro, na hora, sem depender de internet.
+
+O Recibo Táxi foi feito para quem trabalha dirigindo. Você preenche o nome do passageiro, de onde saiu, para onde foi e quanto deu. O recibo fica pronto na mesma tela, com seus dados de motorista, sua placa e seu telefone.
+
+FUNCIONA SEM SINAL
+Garagem, subsolo, estrada, túnel. O recibo é montado dentro do aparelho e guardado ali mesmo. Quando o sinal volta, ele sobe sozinho. Você nunca fica esperando a internet com o passageiro dentro do carro.
+
+ENTREGA DIRETO NO WHATSAPP DO PASSAGEIRO
+Digite o número e toque em enviar. O app abre a conversa certa, com a mensagem pronta e o link do recibo. Não precisa salvar o contato antes.
+
+TAMBÉM POR E-MAIL E EM PDF
+O recibo vira PDF no próprio aparelho, para compartilhar por onde você quiser. E dá para enviar por e-mail quando o passageiro pedir.
+
+PARA QUEM VIAJA A TRABALHO
+CPF ou CNPJ do passageiro no recibo, e razão social da empresa quando for CNPJ. É o que a contabilidade dele precisa para lançar a despesa.
+
+TRAZ CORRIDA DE VOLTA
+Todo recibo sai com seu WhatsApp e um convite para te chamar de novo. O recibo circula, e o telefone vai junto.
+
+HISTÓRICO SEMPRE À MÃO
+Toque em qualquer recibo do histórico para reenviar, mesmo dias depois.
+
+PLANO GRÁTIS E PLANO PRO
+O plano Grátis já resolve o dia a dia. O Pro libera recibos ilimitados e histórico permanente por R$ 19,90 por mês, renovado automaticamente, cancelável quando quiser pelo Google Play.
+
+Este recibo não é documento fiscal.
+```
 
 ## Segurança dos Dados — respostas
 
@@ -137,8 +173,13 @@ Nada de compra funciona antes disto, e a ordem não é negociável:
 3. Assinatura criada e **ativa** (produto, plano base, oferta).
 4. Service account convidada em *Usuários e permissões* com as quatro
    permissões: ver informações do app, ver dados financeiros, gerenciar pedidos
-   e assinaturas, gerenciar presença na loja.
-5. **Até 36 horas** para as credenciais propagarem. Antes disso o RevenueCat
-   responde "Invalid Play Store credentials" e a compra falha.
+   e assinaturas, gerenciar presença na loja. **Feito em 19/09/2026**
+   (`revenuecat@recibo-taxi.iam.gserviceaccount.com`, JSON em
+   `~/Credenciais/Recibo-Taxi/google-play/`). A página "Acesso à API" do console
+   não existe mais: a conta de serviço é convidada como usuário comum. O RevenueCat
+   também exige a API Pub/Sub ativada no projeto Cloud e o papel *Pub/Sub Admin*
+   para a conta de serviço (notificações em tempo real).
+5. **Até 36 horas** para as credenciais propagarem. Em 19/09 as leituras de catálogo
+   passaram na hora e só "validar compras" ficou pendente — é essa a que demora.
 
-Só depois disso a chave `goog_` entra em `www/config.js`.
+A chave `goog_VckMEzIGFTMkTrkmKdxCaRIXPBs` está em `www/config.js` desde o build 16.

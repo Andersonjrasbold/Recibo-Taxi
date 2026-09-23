@@ -858,6 +858,11 @@ async function iniciarCompras() {
 function abrirAssinatura(motivo) {
   $('motivo-pro').textContent = motivo || '';
   $('erro-pro').hidden = true;
+  // No Android a assinatura se cancela pelo Google Play, nao pelos Ajustes.
+  if (plataforma() === 'android') {
+    $('aviso-renovacao').textContent = 'Renova automaticamente. Cancele quando '
+      + 'quiser pelo Google Play, até 24 h antes da próxima cobrança.';
+  }
   mostrar('tela-assinatura');
 }
 

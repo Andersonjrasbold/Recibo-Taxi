@@ -59,21 +59,13 @@ def limpar_contas_de_teste():
     store = A.get_store()
     if getattr(store, "kind", "") == "postgres":
         with store.pool.connection() as conn:
-            # Recibos de convidado dos testes: o gerador publico grava 'Ze' como
-            # motorista, e os recibos montados a mao usam 'Teste' como passageiro.
+            # Recibos sem conta montados a mao pela suite usam 'Teste' como
+            # passageiro (o gerador publico, que gravava 'Ze', foi desligado).
             conn.execute("""
                 delete from public.receipts
-                 where is_guest
-                   and (driver_snapshot->>'full_name' = 'Ze' or passenger = 'Teste')
+                 where is_guest and passenger = 'Teste'
             """)
-            # Faixas reservadas para documentacao (RFC 5737) — so a suite usa.
-            conn.execute("""
-                delete from public.rate_limits
-                 where key like 'gerar:203.0.113.%%'
-                    or key like 'gerar:198.51.100.%%'
-                    or key like 'gerar:192.0.2.%%'
-                    or key like 'teste:%%'
-            """)
+            conn.execute("delete from public.rate_limits where key like 'teste:%%'")
             # Painel: admins de teste e tentativas de login da suite.
             conn.execute("delete from public.admin_users where email like '%%@teste.invalid'")
             conn.execute("delete from public.rate_limits where key like 'admin_login:%%'")
@@ -307,29 +299,18 @@ finally:
     A._STORE = None
 
 
-print("\n-- Rate limit do gerador publico --")
-def gerar(cli, i, ip):
-    return cli.post("/gerar", data={"passageiro":f"P{i}","data":"2026-09-12","origem":"A",
-        "destino":"B","valor":"20","nome_motorista":"Ze"},
-        environ_base={"REMOTE_ADDR": ip})
-
+print("\n-- Gerador publico desligado: emitir exige conta --")
 cg = A.app.test_client()
-ok = sum(1 for i in range(A.GUEST_DAILY_LIMIT) if gerar(cg, i, "203.0.113.7").status_code == 302)
-check(f"permite {A.GUEST_DAILY_LIMIT} recibos por IP/dia", ok == A.GUEST_DAILY_LIMIT, f"passaram {ok}")
-r = gerar(cg, 99, "203.0.113.7")
-check("o seguinte responde 429", r.status_code == 429, r.status_code)
-
-# outro IP tem cota propria
-r = gerar(A.app.test_client(), 0, "203.0.113.8")
-check("IP diferente tem cota propria", r.status_code == 302, r.status_code)
-
-# erro de preenchimento nao gasta cota
-cq = A.app.test_client()
-antes = A.get_store().bump_counter("gerar:203.0.113.9:" + A.today_br())
-cq.post("/gerar", data={"passageiro":"", "data":"", "origem":"", "destino":"", "nome_motorista":""},
-        environ_base={"REMOTE_ADDR": "203.0.113.9"})
-depois = A.get_store().bump_counter("gerar:203.0.113.9:" + A.today_br())
-check("submissao invalida nao gasta cota", depois == antes + 1, f"{antes} -> {depois}")
+r = cg.get("/gerar")
+check("GET /gerar sem sessao vai para o login", r.status_code == 302 and "/login" in r.headers.get("Location", ""),
+      f"{r.status_code} {r.headers.get('Location')}")
+r = cg.post("/gerar", data={"passageiro":"P","data":"2026-09-12","origem":"A","destino":"B",
+                            "valor":"20","nome_motorista":"Ze"}, environ_base={"REMOTE_ADDR": "203.0.113.7"})
+check("POST /gerar nao emite mais nada (405)", r.status_code == 405, r.status_code)
+cgl = novo_cliente("gerar@teste.invalid")
+r = cgl.get("/gerar")
+check("GET /gerar logado vai para o painel", r.status_code == 302 and "/dashboard" in r.headers.get("Location", ""),
+      f"{r.status_code} {r.headers.get('Location')}")
 
 print("\n-- Rotina de limpeza (retencao) --")
 os.environ.pop("CRON_SECRET", None)
@@ -423,10 +404,11 @@ uidb = A.get_store().get_user_by_email("bizz@teste.invalid")["_id"]
 A.get_store().update_user(uidb, {"plan": "business"})
 r = cb.post("/assinar/business")
 check("checkout de Business e recusado (400)", r.status_code == 400, r.status_code)
-# pro_anual e uma chave valida de checkout (sem Stripe configurado nos testes,
-# a rota redireciona pra /planos em vez de 400)
+# pro_anual e uma chave valida de checkout. Sem Stripe no .env a rota volta
+# para /planos (302); com as chaves de teste ela manda para o checkout da
+# Stripe (303). Os dois provam a rota; so 400 seria chave desconhecida.
 r = cb.post("/assinar/pro_anual")
-check("checkout do Pro anual e uma rota valida (nao 400)", r.status_code == 302, r.status_code)
+check("checkout do Pro anual e uma rota valida (nao 400)", r.status_code in (302, 303), r.status_code)
 check("plano_base reduz o anual ao Pro", A.plano_base("pro_anual") == "pro" and A.plano_base("pro") == "pro")
 
 # assinante antigo mantem recibos ilimitados
@@ -466,11 +448,6 @@ check("observacoes de 5000 chars e recusada", "/recibo/" not in r.headers.get("L
 r = cl.post("/recibo", data={"passageiro":"Maria","data":"2026-09-12","origem":"A",
     "destino":"B","valor":"10","observacoes":"tudo certo"})
 check("recibo normal continua passando", "/recibo/" in r.headers.get("Location",""))
-
-cg2 = A.app.test_client()
-r = cg2.post("/gerar", data={"passageiro":grande,"data":"2026-09-12","origem":"A","destino":"B",
-    "valor":"20","nome_motorista":"Ze"}, environ_base={"REMOTE_ADDR":"198.51.100.77"})
-check("gerador publico tambem recusa (400)", r.status_code == 400, r.status_code)
 
 cc = A.app.test_client()
 r = cc.post("/cadastro", data={"nome_completo":grande,"email":"x@teste.invalid","senha":"senha12345",
@@ -821,7 +798,7 @@ if _pdf:
 # -- Razao social do passageiro ------------------------------------------
 # CNPJ sozinho nao serve: a contabilidade da empresa precisa do nome da pessoa
 # juridica no recibo. Com CPF o campo nao existe, e a regra mora no servidor
-# porque o gerador do site nao tem JavaScript para esconder nada.
+# porque o servidor nao confia no JavaScript do app para esconder nada.
 print("\n-- Razao social do passageiro --")
 for _doc, _valor, _esperado, _porque in [
     ("12.345.678/0001-90", "Taxi Central Ltda", "Taxi Central Ltda", "CNPJ pontuado"),

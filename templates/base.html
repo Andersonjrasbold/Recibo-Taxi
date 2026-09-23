@@ -31,11 +31,9 @@
         <div class="nav-center d-none d-lg-flex align-items-center gap-1">
           <a href="{{ url_for('index') }}#como-funciona" class="nav-pill">Como funciona</a>
           <a href="{{ url_for('planos') }}" class="nav-pill">Planos</a>
-          {% if not current_user %}
-          <a href="{{ url_for('gerador') }}" class="nav-pill nav-pill-accent">
-            <i class="bi bi-lightning-fill me-1"></i>Gerar Recibo
+          <a href="{{ app_store_url }}" class="nav-pill nav-pill-accent" target="_blank" rel="noopener">
+            <i class="bi bi-apple me-1"></i>App para iPhone
           </a>
-          {% endif %}
         </div>
 
         <div class="nav-actions">
@@ -58,7 +56,6 @@
           </a>
           <a href="{{ url_for('sair') }}" class="btn btn-sm btn-nav-ghost">Sair</a>
           {% else %}
-          <a href="{{ url_for('gerador') }}" class="btn btn-sm btn-nav-ghost d-lg-none">Gerar</a>
           <a href="{{ url_for('login') }}" class="btn btn-sm btn-nav-ghost">Entrar</a>
           <a href="{{ url_for('cadastro') }}" class="btn btn-sm btn-nav-primary">Criar conta</a>
           {% endif %}
@@ -100,7 +97,7 @@
         </div>
         <div class="footer-links-col">
           <strong class="footer-col-title">Produto</strong>
-          <a href="{{ url_for('gerador') }}" class="footer-link">Gerar Recibo (grátis)</a>
+          <a href="{{ app_store_url }}" class="footer-link" target="_blank" rel="noopener">App para iPhone</a>
           <a href="{{ url_for('planos') }}" class="footer-link">Ver Planos</a>
           <a href="{{ url_for('cadastro') }}" class="footer-link">Criar Conta</a>
         </div>

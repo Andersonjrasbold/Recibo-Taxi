@@ -267,6 +267,36 @@ a { color: inherit; text-decoration: none; }
 }
 .hero-trust .bi { color: #5fcf80; }
 
+.hero-store {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 1.75rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(255,244,236,.1);
+}
+.hero-store-label { font-size: .82rem; font-weight: 700; color: rgba(255,244,236,.6); }
+
+/* Selo "Baixar na App Store": preto, cantos arredondados, maçã à esquerda */
+.btn-store {
+  display: inline-flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .45rem 1rem .45rem .85rem;
+  border-radius: .6rem;
+  background-color: #000;
+  color: #fff !important;
+  border: 1px solid rgba(255,255,255,.28);
+  text-decoration: none;
+  line-height: 1.05;
+  transition: transform .18s, border-color .18s;
+}
+.btn-store:hover { transform: translateY(-2px); border-color: rgba(255,255,255,.55); }
+.btn-store .bi { font-size: 1.55rem; }
+.btn-store-text { display: flex; flex-direction: column; font-family: "Sora", sans-serif; font-size: 1.05rem; font-weight: 600; letter-spacing: -.01em; }
+.btn-store-text small { font-size: .62rem; font-weight: 500; opacity: .85; letter-spacing: 0; }
+
 /* Hero mock receipt card */
 .hero-visual { position: relative; padding: .5rem 0 2rem; }
 
@@ -393,10 +423,10 @@ a { color: inherit; text-decoration: none; }
 .step-title  { font-size: 1.1rem; color: var(--paper); margin-bottom: .5rem; }
 .step-text   { font-size: .9rem; color: rgba(255,244,236,.65); margin: 0; }
 
-/* ── Guest CTA banner ───────────────────────────────────────────────────── */
-.guest-cta-section { padding: 2rem 0; }
+/* ── App banner (App Store) ─────────────────────────────────────────────── */
+.app-cta-section { padding: 2rem 0; }
 
-.guest-cta-card {
+.app-cta-card {
   display: flex;
   align-items: center;
   gap: 1.5rem;
@@ -406,27 +436,12 @@ a { color: inherit; text-decoration: none; }
   background: linear-gradient(135deg, rgba(236,85,67,.16), rgba(239,143,89,.09));
   border: 1px solid rgba(236,85,67,.22);
 }
-.guest-cta-icon    { font-size: 2rem; color: var(--coral); flex-shrink: 0; }
-.guest-cta-content { flex: 1; min-width: 200px; }
-.guest-cta-title   { font-size: 1.15rem; color: var(--paper); margin-bottom: .25rem; }
-.guest-cta-text    { font-size: .88rem; color: rgba(255,244,236,.68); margin: 0; }
-
-.btn-guest-cta {
-  display: inline-flex;
-  align-items: center;
-  padding: .75rem 1.5rem;
-  border-radius: var(--r-md);
-  font-weight: 800;
-  font-size: .9rem;
-  color: var(--ink) !important;
-  background-color: var(--ambar);
-  border: none;
-  box-shadow: 0 12px 28px rgba(236,85,67,.28);
-  text-decoration: none;
-  white-space: nowrap;
-  transition: transform .18s, box-shadow .18s;
-}
-.btn-guest-cta:hover { transform: translateY(-2px); box-shadow: 0 18px 36px rgba(236,85,67,.36); }
+.app-cta-icon    { font-size: 2rem; color: var(--coral); flex-shrink: 0; }
+.app-cta-content { flex: 1; min-width: 200px; }
+.app-cta-title   { font-size: 1.15rem; color: var(--paper); margin-bottom: .25rem; }
+.app-cta-text    { font-size: .88rem; color: rgba(255,244,236,.68); margin: 0; }
+.app-cta-actions { display: flex; flex-direction: column; align-items: flex-start; gap: .5rem; }
+.app-cta-soon    { font-size: .76rem; font-weight: 700; color: rgba(255,244,236,.5); padding-left: .25rem; }
 
 /* ── Pricing ────────────────────────────────────────────────────────────── */
 .pricing-section,
@@ -1340,7 +1355,7 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
   .receipt-detail-grid { grid-template-columns: 1fr; }
   .detail-item-full { grid-column: 1; }
   .gen-register-cta-inner { flex-direction: column; align-items: flex-start; }
-  .guest-cta-card { flex-direction: column; align-items: flex-start; }
+  .app-cta-card { flex-direction: column; align-items: flex-start; }
   .receipt-doc-header { flex-direction: column; align-items: flex-start; }
   .receipt-doc-id-wrap { text-align: left; }
   .mock-actions { grid-template-columns: 1fr 1fr; }

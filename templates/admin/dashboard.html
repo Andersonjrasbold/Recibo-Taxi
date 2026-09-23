@@ -171,7 +171,7 @@
       {% endif %}
     </div>
   </div>
-  <p class="adm-suave mt-3">Não dá para medir hoje: canal (site × app × gerador — só "sem login" se distingue), recibos abertos pelo passageiro, envios por WhatsApp.</p>
+  <p class="adm-suave mt-3">Não dá para medir hoje: canal (site × app — só os recibos antigos "sem login" se distinguem), recibos abertos pelo passageiro, envios por WhatsApp.</p>
 </section>
 
 {# ── 6. Engajamento ────────────────────────────────────────────────── #}
@@ -244,28 +244,7 @@
 <section class="adm-painel">
   <h2 class="adm-h2"><i class="bi bi-shield-exclamation me-2"></i>Abuso</h2>
   <div class="row g-4">
-    <div class="col-lg-4">
-      <h3 class="adm-h3">IPs que bateram o teto do gerador</h3>
-      {% if d.ips_no_teto is none %}{{ ui.indisponivel() }}{% else %}
-      <table class="adm-tabela adm-tabela-mini">
-        {% for l in d.ips_no_teto %}<tr><td>{{ l.dia }}</td><td><code>{{ l.ip }}</code></td><td class="adm-num">{{ l.count }}</td></tr>
-        {% else %}<tr><td class="adm-suave">Nenhum.</td></tr>{% endfor %}
-      </table>
-      {% endif %}
-      <h3 class="adm-h3 mt-3">Maiores IPs de hoje</h3>
-      <table class="adm-tabela adm-tabela-mini">
-        {% for l in d.top_ips_hoje or [] %}<tr><td><code>{{ l.ip }}</code></td><td class="adm-num">{{ l.count }}</td></tr>
-        {% else %}<tr><td class="adm-suave">Nenhum recibo sem login hoje.</td></tr>{% endfor %}
-      </table>
-    </div>
-    <div class="col-lg-4">
-      <h3 class="adm-h3">"Motorista" sem login repetido (10+ em 24 h)</h3>
-      <table class="adm-tabela adm-tabela-mini">
-        {% for l in d.guest_repetido or [] %}<tr><td>{{ l.motorista }}</td><td>{{ l.placa }}</td><td class="adm-num">{{ l.n }}</td></tr>
-        {% else %}<tr><td class="adm-suave">Nenhum.</td></tr>{% endfor %}
-      </table>
-    </div>
-    <div class="col-lg-4">
+    <div class="col-lg-6">
       <h3 class="adm-h3">Tentativas de login neste painel</h3>
       <table class="adm-tabela adm-tabela-mini">
         {% for l in d.tentativas_admin or [] %}<tr><td><code>{{ l.key }}</code></td><td class="adm-num">{{ l.count }}</td></tr>

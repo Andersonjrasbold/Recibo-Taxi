@@ -6,11 +6,9 @@
  * NÃO pode vir para cá é a secret key: ela vive só no servidor.
  *
  * Com a chave da plataforma vazia o app funciona normalmente; só a tela de
- * assinatura avisa que a compra ainda não está disponível. É o caso do Android
- * hoje: a chave goog_ só nasce depois que a conta do Google Play existe e o
- * app está criado lá dentro.
+ * assinatura avisa que a compra ainda não está disponível.
  */
 window.RC_CHAVES = {
   ios: 'appl_rvDzWnllpOOmfaHAKcbpDVYetps',
-  android: '',
+  android: 'goog_VckMEzIGFTMkTrkmKdxCaRIXPBs',
 };

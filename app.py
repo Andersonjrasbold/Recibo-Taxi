@@ -81,9 +81,11 @@ FREE_MONTHLY_LIMIT = 6
 # o que faz /assinar/business responder 400 para assinaturas novas.
 PAID_PLANS = ("pro", "business")
 
-# Página do app na App Store. Mora aqui, e não nos templates, para a landing,
+# Páginas do app nas lojas. Moram aqui, e não nos templates, para a landing,
 # o rodapé e qualquer e-mail apontarem para o mesmo lugar.
 APP_STORE_URL = "https://apps.apple.com/br/app/id6811583712"
+# Publicado em produção no Google Play em 2026-09-29.
+PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=br.com.recibotaxi.app"
 
 MAX_RECEIPT_AMOUNT = Decimal("99999.99")
 
@@ -1326,6 +1328,7 @@ def inject_globals() -> dict:
         "stripe_pub_key": os.environ.get("STRIPE_PUBLISHABLE_KEY", ""),
         "free_monthly_limit": FREE_MONTHLY_LIMIT,
         "app_store_url": APP_STORE_URL,
+        "play_store_url": PLAY_STORE_URL,
     }
 
 

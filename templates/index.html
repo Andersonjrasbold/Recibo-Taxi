@@ -33,10 +33,14 @@
           <span><i class="bi bi-check-circle-fill me-1"></i>Recibo em 30 segundos</span>
         </div>
         <div class="hero-store">
-          <span class="hero-store-label">Também no iPhone</span>
+          <span class="hero-store-label">Baixe o app</span>
           <a href="{{ app_store_url }}" class="btn-store" target="_blank" rel="noopener">
             <i class="bi bi-apple"></i>
             <span class="btn-store-text"><small>Baixar na</small>App Store</span>
+          </a>
+          <a href="{{ play_store_url }}" class="btn-store" target="_blank" rel="noopener">
+            <i class="bi bi-google-play"></i>
+            <span class="btn-store-text"><small>Disponível no</small>Google Play</span>
           </a>
         </div>
       </div>
@@ -129,14 +133,17 @@
       <div class="app-cta-icon"><i class="bi bi-phone-fill"></i></div>
       <div class="app-cta-content">
         <h3 class="app-cta-title">Leve o Recibo Táxi no bolso</h3>
-        <p class="app-cta-text">No app para iPhone você emite recibos até sem internet e sincroniza tudo com a sua conta.</p>
+        <p class="app-cta-text">No app para iPhone e Android você emite recibos até sem internet e sincroniza tudo com a sua conta.</p>
       </div>
       <div class="app-cta-actions">
         <a href="{{ app_store_url }}" class="btn-store" target="_blank" rel="noopener">
           <i class="bi bi-apple"></i>
           <span class="btn-store-text"><small>Baixar na</small>App Store</span>
         </a>
-        <span class="app-cta-soon"><i class="bi bi-google-play me-1"></i>Em breve no Google Play</span>
+        <a href="{{ play_store_url }}" class="btn-store" target="_blank" rel="noopener">
+          <i class="bi bi-google-play"></i>
+          <span class="btn-store-text"><small>Disponível no</small>Google Play</span>
+        </a>
       </div>
     </div>
   </div>
@@ -161,7 +168,7 @@
           </div>
           <p class="pricing-tagline">Para quem quer experimentar</p>
           <ul class="pricing-features">
-            <li class="on"><i class="bi bi-check-lg"></i>Site e app para iPhone</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Site e app para iPhone e Android</li>
             <li class="on"><i class="bi bi-check-lg"></i>Até {{ free_monthly_limit }} recibos/mês na conta</li>
             <li class="on"><i class="bi bi-check-lg"></i>WhatsApp e e-mail</li>
             <li class="on"><i class="bi bi-check-lg"></i>QR Code automático</li>

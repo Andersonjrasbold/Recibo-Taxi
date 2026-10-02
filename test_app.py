@@ -1105,6 +1105,13 @@ def _adm_post(cli, path, **data):
 r = _ca.get("/admin")
 check("sem sessao, /admin manda para o login", r.status_code == 302 and "/admin/login" in r.headers.get("Location", ""), r.status_code)
 check("/admin sai com noindex", r.headers.get("X-Robots-Tag", "").startswith("noindex"), r.headers.get("X-Robots-Tag"))
+# Sessao expirada + clique em "Sair": o login nao pode devolver para uma rota
+# so-POST, senao o admin entra e cai num 405.
+r = _ca.post("/admin/sair")
+check("POST sem sessao vai ao login sem 'proximo'",
+      r.status_code == 302 and r.headers.get("Location", "").endswith("/admin/login"), r.headers.get("Location"))
+r = _ca.get("/admin/motoristas")
+check("GET sem sessao guarda o caminho de volta", "proximo=/admin/motoristas" in r.headers.get("Location", ""), r.headers.get("Location"))
 r = _adm_post(_ca, "/admin/login", email=_email_adm, senha="errada")
 check("senha errada devolve 401", r.status_code == 401, r.status_code)
 r = _adm_post(_ca, "/admin/login", email=f"ninguem-{_sufixo_adm}@teste.invalid", senha="1234")
@@ -1119,6 +1126,8 @@ check("painel nao e cacheado", r.headers.get("Cache-Control") == "no-store", r.h
 for _secao in ("Receita", "Crescimento", "Funil", "Uso", "Engajamento", "E-mail", "Abuso", "Saúde"):
     check(f"dashboard tem a seção {_secao}", _secao in _html_adm)
 check("nenhuma seção indisponível", "Seção indisponível" not in _html_adm)
+check("seção de e-mail anuncia a retenção dos contadores",
+      f"E-mail (últimos {A.COUNTER_RETENTION_DAYS} dias" in _html_adm)
 _segredos = [k for k in ("STRIPE_SECRET_KEY", "RESEND_API_KEY", "STRIPE_WEBHOOK_SECRET", "SECRET_KEY", "SUPABASE_DB_URL")
              if os.environ.get(k) and os.environ[k] in _html_adm]
 check("dashboard nao vaza segredo de ambiente", not _segredos, str(_segredos))
@@ -1130,6 +1139,16 @@ _alvo_m = A.get_store().get_user_by_email("reset@teste.invalid")
 r = _ca.get("/admin/motoristas?q=teste.invalid"); _lista = r.get_data(as_text=True)
 check("lista acha as contas de teste", r.status_code == 200 and _alvo_m["_id"] in _lista, r.status_code)
 check("lista nao mostra CPF", "12345678900" not in _lista and "123.456.789-00" not in _lista)
+# CPF e WhatsApp ficam gravados como foram digitados. A busca tem de achar o
+# motorista com pontuacao no banco, na busca, nos dois ou em nenhum.
+with A.get_store().pool.connection() as _conn:
+    _conn.execute("update public.drivers set cpf = '123.456.789-00', whatsapp = '(11) 97777-6655' where id = %s",
+                  (_alvo_m["_id"],))
+for _busca in ("12345678900", "123.456.789-00", "(11) 97777-6655", "97777-6655", "977776655"):
+    r = _ca.get("/admin/motoristas", query_string={"q": _busca})
+    check(f"busca por '{_busca}' acha quem gravou com pontuação", _alvo_m["_id"] in r.get_data(as_text=True))
+r = _ca.get("/admin/motoristas", query_string={"q": "000999000999"})
+check("busca por dígitos que ninguém tem não traz o motorista", _alvo_m["_id"] not in r.get_data(as_text=True))
 r = _ca.get("/admin/motoristas?q=%25_x&plano=pro&origem=loja&so_teto=1&sem_recibo=1")
 check("filtros com % e _ nao quebram", r.status_code == 200, r.status_code)
 _tam = A.ADMIN_PAGE_SIZE; A.ADMIN_PAGE_SIZE = 2
@@ -1172,15 +1191,54 @@ _html_adm = _ca.get("/admin").get_data(as_text=True)
 _csrf_adm = _re_adm.search(r'name="csrf" value="([^"]+)"', _html_adm).group(1)
 r = _adm_post(_ca, "/admin/sair", csrf=_csrf_adm)
 check("sair encerra a sessao", r.status_code == 302 and _ca.get("/admin").status_code == 302)
-# teto de tentativas por e-mail
-_cc = A.app.test_client()
-_alvo_adm = f"teto-{_sufixo_adm}@teste.invalid"
-_codigos = [_adm_post(_cc, "/admin/login", email=_alvo_adm, senha="x").status_code
+# teto de tentativas: e do par e-mail + IP, para quem erra trancar so a si mesmo
+def _adm_login_de(ip, email, senha):
+    return A.app.test_client().post("/admin/login", data={"email": email, "senha": senha},
+                                    environ_base={"REMOTE_ADDR": ip})
+_ip_intruso, _ip_dono = "198.51.100.7", "198.51.100.8"
+_codigos = [_adm_login_de(_ip_intruso, _email_adm, "x").status_code
             for _ in range(A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL + 1)]
-check(f"apos {A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL} tentativas o login responde 429",
+check(f"apos {A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL} tentativas do mesmo IP o login responde 429",
       _codigos[-1] == 429 and _codigos[-2] == 401, str(_codigos[-3:]))
+r = _adm_login_de(_ip_intruso, _email_adm, "novaSenha123")
+check("IP no teto nao entra nem com a senha certa", r.status_code == 429, r.status_code)
+r = _adm_login_de(_ip_dono, _email_adm, "novaSenha123")
+check("tentativas de um IP nao trancam o dono em outro IP", r.status_code == 302, r.status_code)
+# teto total por e-mail: segura quem troca de IP a cada palpite
+_total = A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL_TOTAL; A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL_TOTAL = 2
+_alvo_adm = f"teto-{_sufixo_adm}@teste.invalid"
+_codigos = [_adm_login_de(f"198.51.100.{20 + i}", _alvo_adm, "x").status_code for i in range(3)]
+A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL_TOTAL = _total
+check("teto total por e-mail vale mesmo trocando de IP", _codigos == [401, 401, 429], str(_codigos))
 A.get_store().delete_admin(_adm["_id"])
 check("admin de teste apagado", A.get_store().get_admin_by_email(_email_adm) is None)
+
+# -- Data API do Supabase fechada (migracao 0006) ---------------------------
+# O app nao usa o PostgREST, mas o Supabase expoe o schema public por ele.
+# Tabela sem RLS ali e tabela legivel por quem tiver a chave publicavel.
+print("\n-- Data API fechada --")
+with A.get_store().pool.connection() as _conn:
+    _sem_rls = [l["relname"] for l in _conn.execute(
+        """select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity""").fetchall()]
+    _abertas = [l["table_name"] for l in _conn.execute(
+        """select distinct table_name from information_schema.role_table_grants
+            where table_schema = 'public' and grantee in ('anon', 'authenticated')""").fetchall()]
+check("toda tabela de public tem RLS ligado", not _sem_rls, str(_sem_rls))
+check("anon e authenticated nao tem privilegio em tabela nenhuma", not _abertas, str(_abertas))
+_sb_url, _sb_chave = os.environ.get("SUPABASE_URL", "").rstrip("/"), os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
+if _sb_url and _sb_chave:
+    import urllib.error, urllib.request
+    for _tabela in ("admin_users", "drivers", "receipts"):
+        _req = urllib.request.Request(
+            f"{_sb_url}/rest/v1/{_tabela}?select=*", method="HEAD",
+            headers={"apikey": _sb_chave, "Authorization": f"Bearer {_sb_chave}", "Prefer": "count=exact"})
+        try:
+            with urllib.request.urlopen(_req, timeout=20) as _resp:
+                _status, _faixa = _resp.status, _resp.headers.get("Content-Range", "")
+        except urllib.error.HTTPError as _erro:
+            _status, _faixa = _erro.code, ""
+        check(f"chave publicavel nao le {_tabela} pela Data API", _status >= 400, f"{_status} {_faixa}")
 
 _depois = limpar_contas_de_teste()
 print(f"\n  (limpeza final: {_depois} conta(s) de teste removida(s))")

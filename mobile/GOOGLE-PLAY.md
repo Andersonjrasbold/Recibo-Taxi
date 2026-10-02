@@ -105,8 +105,10 @@ mas com atrito — não serve para entregar a taxista.
 As capturas do iOS cruas **não servem**: 1320×2868 é mais alto que 9:16. As de `assets/loja` já vêm
 recortadas (sem a barra de status do iPhone) e centralizadas num fundo 1080×1920.
 
-**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **16**
-(19/09/2026: recuperação de senha pelo app, links de Termos e Privacidade na tela de
+**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **17**, versão 1.1
+(02/10/2026: plano anual na tela de assinatura, preço lido da loja; quem já assina vê a assinatura
+ativa em vez de outra compra, porque no Play o mensal e o anual são assinaturas separadas).
+Antes, versionCode 16 (19/09/2026: recuperação de senha pelo app, links de Termos e Privacidade na tela de
 assinatura, aviso de cancelamento "pelo Google Play" e a chave `goog_` do RevenueCat em
 `www/config.js`; o 14 foi publicado em teste fechado em 16/09 e o 15 subiu em 19/09 sem a
 chave). Gerar exige
@@ -140,7 +142,7 @@ HISTÓRICO SEMPRE À MÃO
 Toque em qualquer recibo do histórico para reenviar, mesmo dias depois.
 
 PLANO GRÁTIS E PLANO PRO
-O plano Grátis já resolve o dia a dia. O Pro libera recibos ilimitados e histórico permanente por R$ 19,90 por mês, renovado automaticamente, cancelável quando quiser pelo Google Play.
+O plano Grátis já resolve o dia a dia. O Pro libera recibos ilimitados e histórico permanente. Escolha o mensal, por R$ 19,90 por mês, ou o anual, que sai por quase metade do preço. Os dois renovam automaticamente e podem ser cancelados quando quiser no Google Play.
 
 Este recibo não é documento fiscal.
 ```

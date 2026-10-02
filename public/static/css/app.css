@@ -1568,6 +1568,8 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
 .adm-link { color:var(--ambar); font-weight:700; text-decoration:none; }
 .adm-link:hover { color:var(--paper); text-decoration:underline; }
 .adm-ok { color:#5fcf80; } .adm-falha { color:var(--coral); }
+.adm-perigo { border-color:rgba(236,85,67,.35); }
+.adm-perigo-aviso { font-size:.86rem; font-weight:700; margin-bottom:0; }
 .adm-num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .adm-tabela { width:100%; font-size:.88rem; color:var(--paper); border-collapse:collapse; }
 .adm-tabela th { font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; color:rgba(255,244,236,.5); text-align:left; padding:.45rem .5rem; border-bottom:1px solid rgba(255,244,236,.12); }

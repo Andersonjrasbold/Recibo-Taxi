@@ -179,6 +179,14 @@ por seção (uma consulta falhando marca só aquela seção como indisponível) 
 `statement_timeout` de 4 s; o resultado fica em cache no processo por 60 s
 (`?atualizar=1` força).
 
+**Excluir cadastro.** A ficha do motorista tem um bloco para apagar a conta de
+vez: login, perfil, recibos e cotas, pelo mesmo cascade do Supabase Auth que a
+exclusão feita pelo próprio motorista usa. Pede "EXCLUIR" digitado e uma
+confirmação no navegador. Assinatura da Stripe é cancelada antes; se a Stripe
+falhar, nada é apagado. Assinante pela App Store ou Google Play não pode ser
+apagado pelo painel, porque o servidor não consegue parar a cobrança da loja.
+Cada exclusão fica no log com o e-mail do admin.
+
 O que o painel ainda **não** mede, por falta de instrumentação: upgrades e
 cancelamentos por dia, mensal × anual, e-mails entregues × falhos, canal do
 recibo (site × app) e se o cron rodou. O caminho é uma tabela de eventos

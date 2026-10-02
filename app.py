@@ -3192,6 +3192,59 @@ def admin_motorista(driver_id):
     )
 
 
+@app.post("/admin/motoristas/<uuid:driver_id>/excluir")
+@admin_required
+def admin_excluir_motorista(driver_id):
+    """Exclui o cadastro de um motorista pelo painel.
+
+    Segue as mesmas travas da exclusão que o próprio motorista faz, menos a
+    senha dele. No lugar da senha entram a sessão de admin, o CSRF e o
+    "EXCLUIR" digitado.
+    """
+    did = str(driver_id)
+    motorista = get_store().get_user_by_id(did)
+    if not motorista:
+        abort(404)
+    voltar = redirect(url_for("admin_motorista", driver_id=did))
+
+    if request.form.get("confirmacao", "").strip().upper() != "EXCLUIR":
+        flash("Digite EXCLUIR para confirmar. Nada foi apagado.", "danger")
+        return voltar
+
+    # Apagar sem parar a cobrança deixaria uma assinatura órfã, cobrando
+    # alguém que já não tem conta para cancelar. Mesma regra do site e do app.
+    assinatura = motorista.get("stripe_subscription_id")
+    if assinatura:
+        stripe = get_stripe()
+        try:
+            if not stripe:
+                raise RuntimeError("Stripe não configurada")
+            stripe.Subscription.cancel(assinatura)
+        except Exception as exc:
+            app.logger.error("admin: não cancelou a assinatura %s: %s", assinatura, exc)
+            flash("Não consegui cancelar a assinatura na Stripe, então o cadastro "
+                  "não foi excluído. Tente de novo em alguns minutos.", "danger")
+            return voltar
+    elif motorista.get("plan") in PAID_PLANS:
+        # A Apple e a Google não deixam o servidor cancelar por fora.
+        flash("Este motorista assina pela App Store ou pelo Google Play. Ele precisa "
+              "cancelar na loja antes; apagar agora não para a cobrança de lá.", "danger")
+        return voltar
+
+    try:
+        # O cascade do Auth leva perfil, recibos e cotas junto.
+        auth_excluir_usuario(did)
+    except Exception as exc:
+        app.logger.error("admin: falha ao excluir %s no Auth: %s", did, exc)
+        flash("O Supabase recusou a exclusão. Nada foi apagado; tente de novo.", "danger")
+        return voltar
+
+    _ADMIN_CACHE.pop("dashboard", None)
+    app.logger.warning("admin %s excluiu o motorista %s (%s)", g.admin["email"], did, motorista.get("email"))
+    flash(f"Cadastro de {motorista.get('full_name') or motorista.get('email')} excluído, com todos os recibos.", "success")
+    return redirect(url_for("admin_motoristas"))
+
+
 # ── Filtros Jinja do painel ──────────────────────────────────────────────────
 
 @app.template_filter("brl")

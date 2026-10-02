@@ -1170,6 +1170,38 @@ check("id que nao e uuid da 404", _ca.get("/admin/motoristas/abc").status_code =
 check("ficha sai com no-referrer", r.headers.get("Referrer-Policy") == "no-referrer", r.headers.get("Referrer-Policy"))
 check("/admin nao vira /administrador", _ca.get("/administrador").headers.get("X-Robots-Tag") is None)
 
+# Excluir cadastro pelo painel
+_email_vit = f"excluir-{_sufixo_adm}@teste.invalid"
+novo_cliente(_email_vit)
+_vit = A.get_store().get_user_by_email(_email_vit)
+check("motorista para excluir foi criado", _vit is not None)
+_vid = _vit["_id"] if _vit else "00000000-0000-0000-0000-000000000000"
+_url_exc = f"/admin/motoristas/{_vid}/excluir"
+_csrf_exc = _re_adm.search(r'name="csrf" value="([^"]+)"', _ca.get("/admin").get_data(as_text=True)).group(1)
+r = _ca.get(f"/admin/motoristas/{_vid}")
+check("ficha mostra o formulario de exclusao", 'id="formExcluirMotorista"' in r.get_data(as_text=True))
+r = _adm_post(_ca, _url_exc, confirmacao="EXCLUIR")
+check("excluir sem CSRF e recusado (400)",
+      r.status_code == 400 and A.get_store().get_user_by_id(_vid) is not None, r.status_code)
+r = _adm_post(_ca, _url_exc, csrf=_csrf_exc, confirmacao="nao")
+check("sem digitar EXCLUIR nada e apagado",
+      r.status_code == 302 and A.get_store().get_user_by_id(_vid) is not None, r.status_code)
+A.get_store().update_user(_vid, {"plan": "pro", "subscription_status": "active"})
+r = _ca.get(f"/admin/motoristas/{_vid}")
+check("assinante da loja nao ve o formulario", 'id="formExcluirMotorista"' not in r.get_data(as_text=True))
+r = _adm_post(_ca, _url_exc, csrf=_csrf_exc, confirmacao="EXCLUIR")
+check("assinante da loja nao e apagado", A.get_store().get_user_by_id(_vid) is not None, r.status_code)
+A.get_store().update_user(_vid, {"plan": "free", "subscription_status": None})
+r = _adm_post(_ca, _url_exc, csrf=_csrf_exc, confirmacao="EXCLUIR")
+check("EXCLUIR apaga e volta para a lista",
+      r.status_code == 302 and r.headers.get("Location", "").endswith("/admin/motoristas"), r.headers.get("Location"))
+check("cadastro sumiu do banco", A.get_store().get_user_by_id(_vid) is None)
+with A.get_store().pool.connection() as _conn:
+    _n_auth = _conn.execute("select count(*) as n from auth.users where id = %s", (_vid,)).fetchone()["n"]
+check("login sumiu do Supabase Auth", _n_auth == 0, _n_auth)
+check("excluir de novo da 404",
+      _adm_post(_ca, _url_exc, csrf=_csrf_exc, confirmacao="EXCLUIR").status_code == 404)
+
 r = _adm_post(_ca, "/admin/senha", senha_atual="1234", senha="novaSenha123", confirmar_senha="novaSenha123")
 check("POST sem CSRF e recusado (400)", r.status_code == 400, r.status_code)
 _csrf_adm = _re_adm.search(r'name="csrf" value="([^"]+)"', _html_adm).group(1)

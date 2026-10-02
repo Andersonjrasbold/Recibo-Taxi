@@ -855,16 +855,107 @@ async function iniciarCompras() {
   }
 }
 
+// Pacotes da oferta atual, pelo identificador do RevenueCat. O preco de cada
+// um vem da loja, nunca escrito aqui: a Apple e o Google nao cobram o mesmo
+// valor no anual, e a tela tem que dizer exatamente o que a folha de pagamento
+// vai cobrar.
+const ANUAL = '$rc_annual';
+const MENSAL = '$rc_monthly';
+let pacotesPro = {};
+let planoEscolhido = MENSAL;
+let escolhidoNaTela = false;   // o toque do motorista vale mais que o padrao
+
+const assinaPeloServidor = () => ['pro', 'business'].includes(Guardado.get('plano'));
+
+function emReais(valor, moeda) {
+  try {
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: moeda || 'BRL' }).format(valor);
+  } catch {
+    return `R$ ${Number(valor).toFixed(2).replace('.', ',')}`;
+  }
+}
+
+function escolherPlano(id) {
+  planoEscolhido = id;
+  $('plano-anual').setAttribute('aria-checked', String(id === ANUAL));
+  $('plano-mensal').setAttribute('aria-checked', String(id === MENSAL));
+  $('btn-assinar').textContent = id === ANUAL ? 'Assinar o plano anual' : 'Assinar o plano mensal';
+}
+
+function mostrarPlanos() {
+  const anual = pacotesPro[ANUAL]?.product;
+  const mensal = pacotesPro[MENSAL]?.product;
+  if (mensal?.priceString) $('preco-mensal').textContent = `${mensal.priceString}/mês`;
+
+  // Sem o anual na resposta da loja (ainda em analise, ou sem rede na primeira
+  // abertura), a tela fica so com o mensal — nunca com um preco inventado.
+  $('plano-anual').hidden = !anual;
+  if (anual) {
+    $('preco-anual').textContent = `${anual.priceString}/ano`;
+    const porMes = anual.pricePerMonthString || emReais(anual.price / 12, anual.currencyCode);
+    $('nota-anual').textContent = `Cobrado uma vez por ano · equivale a ${porMes}/mês`;
+    const economia = mensal?.price ? Math.round((1 - anual.price / (mensal.price * 12)) * 100) : 0;
+    $('selo-anual').textContent = `economize ${economia}%`;
+    $('selo-anual').hidden = economia < 5;
+  }
+
+  if (!escolhidoNaTela) escolherPlano(anual ? ANUAL : MENSAL);
+  else if (!pacotesPro[planoEscolhido] && Object.keys(pacotesPro).length) escolherPlano(MENSAL);
+}
+
+async function buscarPacotes() {
+  const { Purchases } = P();
+  const ofertas = await Purchases.getOfferings();
+  const lista = ofertas?.current?.availablePackages || [];
+  pacotesPro = Object.fromEntries(lista.map((p) => [p.identifier, p]));
+  mostrarPlanos();
+}
+
+// Quem ja assina ve "ativa" e o link da loja, em vez de outra compra. Vale o
+// servidor OU a loja: logo depois de pagar, o webhook pode nao ter chegado
+// ainda, e o servidor continua dizendo Gratis por alguns segundos.
+function mostrarAssinaturaAtiva(link) {
+  $('pro-ativo').hidden = false;
+  $('planos-pro').hidden = true;
+  $('btn-assinar').hidden = true;
+  if (link) { $('link-gerenciar').href = link; $('link-gerenciar').hidden = false; }
+}
+
+async function conferirNaLoja() {
+  const { Purchases } = P();
+  if (!Purchases || !chaveDaLoja()) return;
+  try {
+    const { customerInfo } = await Purchases.getCustomerInfo();
+    if (customerInfo?.entitlements?.active?.pro || assinaPeloServidor()) {
+      mostrarAssinaturaAtiva(customerInfo?.managementURL || '');
+      return;
+    }
+  } catch { /* sem resposta da loja: segue o que o servidor disse */ }
+  try { await buscarPacotes(); } catch { /* o toque em Assinar tenta de novo e mostra o motivo */ }
+}
+
 function abrirAssinatura(motivo) {
   $('motivo-pro').textContent = motivo || '';
   $('erro-pro').hidden = true;
+  $('link-gerenciar').hidden = true;
+  escolhidoNaTela = false;
+
+  const jaAssina = assinaPeloServidor();
+  $('pro-ativo').hidden = !jaAssina;
+  $('planos-pro').hidden = jaAssina;
+  $('btn-assinar').hidden = jaAssina;
+  mostrarPlanos();
+
   // No Android a assinatura se cancela pelo Google Play, nao pelos Ajustes.
-  if (plataforma() === 'android') {
-    $('aviso-renovacao').textContent = 'Renova automaticamente. Cancele quando '
-      + 'quiser pelo Google Play, até 24 h antes da próxima cobrança.';
-  }
+  const onde = plataforma() === 'android' ? 'pelo Google Play' : 'pelos Ajustes do aparelho';
+  $('aviso-renovacao').textContent = 'Renova automaticamente ao fim de cada período, mensal ou '
+    + `anual. Cancele quando quiser ${onde}, até 24 h antes da próxima cobrança.`;
   mostrar('tela-assinatura');
+  conferirNaLoja();
 }
+
+$('plano-anual').addEventListener('click', () => { escolhidoNaTela = true; escolherPlano(ANUAL); });
+$('plano-mensal').addEventListener('click', () => { escolhidoNaTela = true; escolherPlano(MENSAL); });
 
 // A tela de assinatura tambem abre sozinha no 402. Este botao existe para o
 // caso em que ninguem bateu no limite ainda: sem ele a analise da Apple nao
@@ -927,13 +1018,17 @@ $('btn-assinar').addEventListener('click', async () => {
     erro.hidden = false;
     return;
   }
+  // O toque confirma o plano que esta marcado na tela. Sem isto, a busca logo
+  // abaixo podia trazer o anual e trocar a escolha do motorista antes da compra.
+  escolhidoNaTela = true;
   try {
-    const ofertas = await Purchases.getOfferings();
-    const pacotes = ofertas?.current?.availablePackages || [];
-    // Pelo identificador, nao pela posicao: se alguem acrescentar um pacote
-    // no painel do RevenueCat, o [0] viraria sorteio e o motorista poderia
-    // acabar comprando outra coisa.
-    const pacote = pacotes.find((p) => p.identifier === '$rc_monthly') || pacotes[0];
+    // A tela pode ter aberto sem rede, ou a loja ainda nao ter respondido.
+    // Buscar aqui de novo faz o erro de verdade (sem conexao, produto que a
+    // loja nao devolveu) chegar na tela com o motivo, em vez de "sem oferta".
+    if (!pacotesPro[planoEscolhido]) await buscarPacotes();
+    // Pelo identificador, nao pela posicao: o pacote e exatamente o que esta
+    // marcado na tela. Sem ele, nao compra outra coisa no lugar.
+    const pacote = pacotesPro[planoEscolhido];
     if (!pacote) throw new Error('sem oferta configurada');
     const r = await Purchases.purchasePackage({ aPackage: pacote });
     const virou = !!r?.customerInfo?.entitlements?.active?.pro;

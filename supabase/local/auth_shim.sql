@@ -19,6 +19,19 @@ create table if not exists auth.users (
   updated_at         timestamptz default now()
 );
 
+-- Papéis da Data API do Supabase. A migration 0006 tira os privilégios deles;
+-- sem os papéis, o revoke falha no Postgres local.
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'anon') then
+    create role anon nologin;
+  end if;
+  if not exists (select 1 from pg_roles where rolname = 'authenticated') then
+    create role authenticated nologin;
+  end if;
+end;
+$$;
+
 -- auth.uid() existe no Supabase e lê o JWT da requisição. Localmente o app
 -- conecta como dono e não usa RLS, então basta existir para nada quebrar.
 create or replace function auth.uid()

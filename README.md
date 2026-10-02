@@ -101,6 +101,12 @@ Schema em `supabase/migrations/`. Quatro tabelas:
 - `rate_limits` — contadores antiabuso (cadastro, nova senha, login do painel)
 - `receipt_quotas` — cota mensal do plano Grátis
 
+**Toda tabela de `public` tem RLS ligado e nenhuma policy** (migração 0006). O
+app conecta como `postgres`, dono das tabelas, e não é afetado; o que o RLS
+fecha é a Data API do Supabase, que expõe `public` para quem tiver a chave
+publicável. Migração que criar tabela nova precisa ligar o RLS nela — a suíte
+falha se alguma ficar sem.
+
 Duas funções carregam a lógica que precisa ser atômica:
 
 - `bump_counter(key)` — incremento do rate limit numa ida só ao banco
@@ -162,8 +168,10 @@ pelo site: o admin nasce pelo comando
 flask --app app criar-admin   # pede e-mail e senha; repetir o e-mail redefine a senha
 ```
 
-Proteções: teto de tentativas de login por dia (30 por IP, 10 por e-mail, zerado
-no login certo), sessão que expira em 12 h ou 60 min sem uso, CSRF em todo POST,
+Proteções: teto de tentativas de login por dia (20 por IP; 10 por e-mail vindo
+do mesmo IP, zerado no login certo; 100 por e-mail somando todos os IPs — o
+teto apertado é do par, para que errar a senha tranque quem errou e não o dono
+da conta), sessão que expira em 12 h ou 60 min sem uso, CSRF em todo POST,
 troca de senha derruba as outras sessões, `noindex` + `no-store` +
 `no-referrer` em tudo debaixo de `/admin`, e nada de `/admin` em página pública
 ou `robots.txt`. As consultas do dashboard rodam numa conexão só, com savepoint

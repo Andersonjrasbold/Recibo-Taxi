@@ -159,7 +159,8 @@ RESET_DAILY_LIMIT_IP = 30
 # e o que impede um script de adivinhar. A sessao do admin morre sozinha em
 # 12 horas; a do motorista dura 90 dias porque um recibo nao vale um CPF alheio.
 ADMIN_LOGIN_DAILY_LIMIT_IP = 20
-ADMIN_LOGIN_DAILY_LIMIT_EMAIL = 10
+ADMIN_LOGIN_DAILY_LIMIT_EMAIL = 10         # por e-mail vindo do mesmo IP
+ADMIN_LOGIN_DAILY_LIMIT_EMAIL_TOTAL = 100  # por e-mail, somando todos os IPs
 ADMIN_SESSION_HOURS = 12
 ADMIN_IDLE_MINUTES = 60
 ADMIN_PASSWORD_MIN = 8
@@ -2544,7 +2545,10 @@ def admin_required(view):
     def wrapped_view(*args, **kwargs):
         admin = admin_atual()
         if not admin:
-            return redirect(url_for("admin_login", proximo=request.path))
+            # So GET volta para onde estava: o login redireciona com GET, e
+            # mandar de volta para uma rota so-POST (sair, excluir) daria 405.
+            proximo = request.path if request.method == "GET" else None
+            return redirect(url_for("admin_login", proximo=proximo))
         if request.method == "POST" and not admin_csrf_ok():
             abort(400)
         g.admin = admin
@@ -2575,17 +2579,32 @@ def inject_admin() -> dict:
     }
 
 
-def _chave_login_admin(email: str) -> str:
-    # O e-mail tentado nao vai em claro para a tabela de contadores.
-    digest = hashlib.sha256(email.encode("utf-8")).hexdigest()[:16]
-    return f"admin_login:email:{digest}:{today_br()}"
+def _chave_login_admin(email: str, ip: str = "") -> str:
+    """Contador do e-mail no dia; com `ip`, o do par e-mail + IP.
+
+    O e-mail tentado nao vai em claro para a tabela de contadores.
+    """
+    digest = hashlib.sha256(f"{email}|{ip}".encode("utf-8")).hexdigest()[:16]
+    return f"admin_login:{'par' if ip else 'email'}:{digest}:{today_br()}"
 
 
 def pode_tentar_login_admin(email: str) -> bool:
+    """Tres tetos por dia, do mais barato de estourar para o mais caro.
+
+    O teto apertado e do par e-mail + IP: quem erra a senha dez vezes tranca a
+    si mesmo, nao o dono da conta. Quando o teto era so por e-mail, dez
+    tentativas de qualquer lugar trancavam o administrador ate a meia-noite.
+    O teto total por e-mail continua existindo, bem mais alto, para segurar
+    quem tenta adivinhar a senha trocando de IP.
+    """
     store = get_store()
-    por_ip = store.bump_counter(f"admin_login:ip:{client_ip()}:{today_br()}")
-    por_email = store.bump_counter(_chave_login_admin(email))
-    return por_ip <= ADMIN_LOGIN_DAILY_LIMIT_IP and por_email <= ADMIN_LOGIN_DAILY_LIMIT_EMAIL
+    ip = client_ip()
+    # Cada teto estourado para aqui: IP bloqueado nao gasta o total do e-mail.
+    if store.bump_counter(f"admin_login:ip:{ip}:{today_br()}") > ADMIN_LOGIN_DAILY_LIMIT_IP:
+        return False
+    if store.bump_counter(_chave_login_admin(email, ip)) > ADMIN_LOGIN_DAILY_LIMIT_EMAIL:
+        return False
+    return store.bump_counter(_chave_login_admin(email)) <= ADMIN_LOGIN_DAILY_LIMIT_EMAIL_TOTAL
 
 
 def _proximo_seguro(valor: str) -> str:
@@ -2618,9 +2637,9 @@ def admin_login():
             flash("E-mail ou senha inválidos.", "danger")
             return render_template("admin/login.html", form={"email": email}), 401
 
-        # Login certo zera as tentativas do e-mail: o dono errar a senha nove
-        # vezes num dia nao pode trancar a conta dele.
-        get_store().reset_counter(_chave_login_admin(email))
+        # Login certo zera as tentativas do par e-mail + IP: o dono errar a
+        # senha nove vezes num dia nao pode trancar a conta dele.
+        get_store().reset_counter(_chave_login_admin(email, client_ip()))
         iniciar_sessao_admin(admin, senha)
         app.logger.info("admin %s entrou de %s", admin["email"], client_ip())
         return redirect(_proximo_seguro(request.form.get("proximo", "")))
@@ -2975,6 +2994,9 @@ def _saude_do_sistema() -> dict:
             ("Pedidos de nova senha/dia por e-mail", RESET_DAILY_LIMIT_EMAIL),
             ("Tentativas de login no painel/dia por IP", ADMIN_LOGIN_DAILY_LIMIT_IP),
         ],
+        # Com nome, e nao pela posicao em `constantes`: o titulo da secao de
+        # e-mail lia o indice errado e anunciava 5 dias em vez de 7.
+        "retencao_contadores_dias": COUNTER_RETENTION_DAYS,
     }
 
 
@@ -3081,7 +3103,10 @@ def admin_motoristas():
         "cur_ts": cur_ts, "cur_id": cur_id,
         "plan": plano or None, "status": status or None, "origem": origem or None,
         "q": f"%{_escapar_like(q)}%" if q else None,
-        "qdig": f"{digitos}%" if len(digitos) >= 4 else None,
+        # CPF e WhatsApp sao gravados como o motorista digitou, com ou sem
+        # pontuacao: a comparacao e so de digitos, dos dois lados. "Contem" e
+        # nao "comeca com", para achar o telefone digitado sem o DDD.
+        "qdig": f"%{digitos}%" if len(digitos) >= 4 else None,
         "so_teto": so_teto, "sem_recibo": sem_recibo,
         "limite": FREE_MONTHLY_LIMIT, "n": tamanho + 1,
     }
@@ -3104,7 +3129,9 @@ def admin_motoristas():
                 or (%(origem)s = 'loja' and d.plan <> 'free' and d.stripe_subscription_id is null))
            and (%(q)s::text is null or d.email ilike %(q)s or d.full_name ilike %(q)s
                 or d.plate ilike %(q)s
-                or (%(qdig)s::text is not null and (d.whatsapp like %(qdig)s or d.cpf like %(qdig)s)))
+                or (%(qdig)s::text is not null
+                    and (regexp_replace(d.whatsapp, '\\D', '', 'g') like %(qdig)s
+                         or regexp_replace(d.cpf, '\\D', '', 'g') like %(qdig)s)))
            and (not %(so_teto)s or coalesce(q.used, 0) >= %(limite)s)
            and (not %(sem_recibo)s or s.n = 0)
          order by d.created_at desc, d.id desc

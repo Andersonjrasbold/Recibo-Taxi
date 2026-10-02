@@ -27,15 +27,15 @@
   <p class="adm-suave">MRR é uma faixa: o banco não diz quem é mensal ou anual na Stripe (piso = todos anuais a R$ 9,95/mês; teto = todos mensais a R$ 19,90) e a Apple fica com 15% do que vem da loja. Business legado não tem preço registrado{% if d.mrr.business_sem_preco %} ({{ d.mrr.business_sem_preco }} conta(s)){% endif %}.</p>
   <div class="row g-4">
     <div class="col-lg-8">
-      <h3 class="adm-h3">Assinantes ativos ({{ (d.pagantes or []) | length }}, mais recentes primeiro)</h3>
+      <h3 class="adm-h3">Assinantes ativos ({{ (d.pagantes or []) | length }}, alterados por último primeiro)</h3>
       {% if d.pagantes is none %}{{ ui.indisponivel() }}{% else %}
       <div class="table-responsive"><table class="adm-tabela">
-        <thead><tr><th>Motorista</th><th>Cidade</th><th>Plano</th><th>Origem</th><th>Desde</th></tr></thead>
+        <thead><tr><th>Motorista</th><th>Cidade</th><th>Plano</th><th>Origem</th><th>Cadastro</th><th>Última alteração</th></tr></thead>
         <tbody>
         {% for m in d.pagantes %}
         <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
-            <td>{{ m.city }}</td><td>{{ ui.plano(m) }}</td><td>{{ m.origem }}</td><td>{{ m.updated_at | data_br(false) }}</td></tr>
-        {% else %}<tr><td colspan="5" class="adm-suave">Nenhum assinante ainda.</td></tr>{% endfor %}
+            <td>{{ m.city }}</td><td>{{ ui.plano(m) }}</td><td>{{ m.origem }}</td><td>{{ m.created_at | data_br(false) }}</td><td>{{ m.updated_at | data_br(false) }}</td></tr>
+        {% else %}<tr><td colspan="6" class="adm-suave">Nenhum assinante ainda.</td></tr>{% endfor %}
         </tbody></table></div>
       {% endif %}
     </div>
@@ -212,7 +212,7 @@
 
 {# ── 7. E-mail ─────────────────────────────────────────────────────── #}
 <section class="adm-painel">
-  <h2 class="adm-h2"><i class="bi bi-envelope me-2"></i>E-mail (últimos {{ d.saude.constantes[4][1] }} dias, pelos contadores)</h2>
+  <h2 class="adm-h2"><i class="bi bi-envelope me-2"></i>E-mail (últimos {{ d.saude.retencao_contadores_dias }} dias, pelos contadores)</h2>
   <div class="row g-4">
     <div class="col-lg-6">
       <h3 class="adm-h3">Recibos enviados por e-mail</h3>

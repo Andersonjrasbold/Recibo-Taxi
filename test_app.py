@@ -1151,6 +1151,42 @@ r = _ca.get("/admin/motoristas", query_string={"q": "000999000999"})
 check("busca por dígitos que ninguém tem não traz o motorista", _alvo_m["_id"] not in r.get_data(as_text=True))
 r = _ca.get("/admin/motoristas?q=%25_x&plano=pro&origem=loja&so_teto=1&sem_recibo=1")
 check("filtros com % e _ nao quebram", r.status_code == 200, r.status_code)
+# Botoes dos cards de Engajamento: abrem a lista com o mesmo criterio do card.
+check("cada card de Engajamento tem botao para a lista filtrada",
+      all(f"/admin/motoristas?filtro={_f}" in _html_adm for _f in A._FILTROS_ENGAJAMENTO))
+# O cadastro pelo site nao passa pelo login do Auth: quem so se cadastrou
+# "nunca entrou". Quem faz login depois, entrou.
+_email_nunca, _email_entrou = f"nunca-{_sufixo_adm}@teste.invalid", f"entrou-{_sufixo_adm}@teste.invalid"
+novo_cliente(_email_nunca); novo_cliente(_email_entrou)
+A.app.test_client().post("/login", data={"email": _email_entrou, "senha": "senha12345"})
+_id_nunca = A.get_store().get_user_by_email(_email_nunca)["_id"]
+_id_entrou = A.get_store().get_user_by_email(_email_entrou)["_id"]
+_tam = A.ADMIN_PAGE_SIZE; A.ADMIN_PAGE_SIZE = 100
+_listas = {}
+for _f in A._FILTROS_ENGAJAMENTO:
+    r = _ca.get(f"/admin/motoristas?filtro={_f}"); _listas[_f] = r.get_data(as_text=True)
+    check(f"filtro {_f} abre", r.status_code == 200, r.status_code)
+_painel = A.montar_dashboard_admin()
+A.ADMIN_PAGE_SIZE = _tam
+check("'nunca entraram' traz quem so se cadastrou e deixa de fora quem fez login",
+      _id_nunca in _listas["nunca_logou"] and _id_entrou not in _listas["nunca_logou"])
+check("'entraram em 24 h' traz quem fez login e deixa de fora quem nunca entrou",
+      _id_entrou in _listas["login_24h"] and _id_nunca not in _listas["login_24h"])
+check("'inativos ha 30 dias' nao traz conta criada agora",
+      _id_nunca not in _listas["inativos_30d"] and _id_entrou not in _listas["inativos_30d"])
+# O numero do card e o tamanho da lista saem de consultas diferentes: tem de bater.
+for _f, _n_card in (("login_24h", _painel["logins"]["login_24h"]), ("login_7d", _painel["logins"]["login_7d"]),
+                    ("login_30d", _painel["logins"]["login_30d"]), ("nunca_logou", _painel["logins"]["nunca_logou"]),
+                    ("sessao_viva", _painel["sessoes"]["usuarios"]), ("inativos_30d", _painel["inativos_30d"]["n"])):
+    _n_lista = _listas[_f].count("/admin/motoristas/")
+    check(f"card e lista de {_f} mostram o mesmo numero", _n_card > 100 or _n_lista == _n_card, f"card {_n_card}, lista {_n_lista}")
+r = _ca.get("/admin/motoristas?filtro=nao_existe")
+check("filtro desconhecido e ignorado", r.status_code == 200 and "Filtro:" not in r.get_data(as_text=True), r.status_code)
+A.ADMIN_PAGE_SIZE = 1
+r = _ca.get("/admin/motoristas?filtro=nunca_logou&q=teste.invalid")
+check("proxima pagina mantem o filtro do card",
+      _re_adm.search(r'cursor=[^"]*filtro=nunca_logou|filtro=nunca_logou[^"]*cursor=', r.get_data(as_text=True)) is not None)
+A.ADMIN_PAGE_SIZE = _tam
 _tam = A.ADMIN_PAGE_SIZE; A.ADMIN_PAGE_SIZE = 2
 r = _ca.get("/admin/motoristas?q=teste.invalid"); _p1 = r.get_data(as_text=True)
 _cursor = _re_adm.search(r'cursor=([^&"]+)', _p1)

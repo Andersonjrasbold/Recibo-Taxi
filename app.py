@@ -3086,6 +3086,27 @@ def _escapar_like(valor: str) -> str:
     return valor.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# Botoes dos cards de Engajamento do dashboard: cada um abre a lista com um
+# destes filtros. A condicao e a mesma da consulta que gera o numero do card
+# (_SQL_ADMIN: logins, sessoes, inativos_30d). Mudou la, muda aqui — senao o
+# card diz 11 e a lista traz 9.
+_FILTROS_ENGAJAMENTO = {
+    "login_24h": ("Entraram nas últimas 24 h", "u.last_sign_in_at >= now() - interval '1 day'"),
+    "login_7d": ("Entraram nos últimos 7 dias", "u.last_sign_in_at >= now() - interval '7 days'"),
+    "login_30d": ("Entraram nos últimos 30 dias", "u.last_sign_in_at >= now() - interval '30 days'"),
+    "sessao_viva": ("Sessão viva nos últimos 7 dias", """exists (
+        select 1 from auth.sessions ss
+         where ss.user_id = d.id
+           and coalesce(ss.refreshed_at, ss.updated_at, ss.created_at) >= now() - interval '7 days'
+           and (ss.not_after is null or ss.not_after > now()))"""),
+    "inativos_30d": ("Inativos há 30 dias", """d.created_at < now() - interval '30 days'
+        and coalesce(u.last_sign_in_at, 'epoch') < now() - interval '30 days'
+        and not exists (select 1 from public.receipts r
+                         where r.driver_id = d.id and r.created_at >= now() - interval '30 days')"""),
+    "nunca_logou": ("Nunca entraram", "u.last_sign_in_at is null"),
+}
+
+
 @app.get("/admin/motoristas")
 @admin_required
 def admin_motoristas():
@@ -3095,6 +3116,9 @@ def admin_motoristas():
     origem = request.args.get("origem", "") if request.args.get("origem") in ("stripe", "loja") else ""
     so_teto = request.args.get("so_teto") == "1"
     sem_recibo = request.args.get("sem_recibo") == "1"
+    filtro = request.args.get("filtro", "") if request.args.get("filtro") in _FILTROS_ENGAJAMENTO else ""
+    # Vem do dicionario acima, nunca do pedido: pode entrar direto no SQL.
+    condicao_filtro = _FILTROS_ENGAJAMENTO[filtro][1] if filtro else "true"
     cur_ts, cur_id = _cursor_loads(request.args.get("cursor", ""))
     tamanho = max(1, min(int(ADMIN_PAGE_SIZE), 100))
 
@@ -3110,7 +3134,7 @@ def admin_motoristas():
         "so_teto": so_teto, "sem_recibo": sem_recibo,
         "limite": FREE_MONTHLY_LIMIT, "n": tamanho + 1,
     }
-    sql = """
+    sql = f"""
         select d.id, d.full_name, d.email, d.city, d.plate, d.plan, d.subscription_status,
                case when d.plan = 'free' then '-'
                     when d.stripe_subscription_id is not null then 'Stripe' else 'Loja' end as origem,
@@ -3134,6 +3158,7 @@ def admin_motoristas():
                          or regexp_replace(d.cpf, '\\D', '', 'g') like %(qdig)s)))
            and (not %(so_teto)s or coalesce(q.used, 0) >= %(limite)s)
            and (not %(sem_recibo)s or s.n = 0)
+           and ({condicao_filtro})
          order by d.created_at desc, d.id desc
          limit %(n)s"""
     with get_store().pool.connection() as conn:
@@ -3147,7 +3172,8 @@ def admin_motoristas():
     return render_template(
         "admin/motoristas.html", motoristas=linhas, proximo=proximo,
         filtros={"q": q, "plano": plano, "status": status, "origem": origem,
-                 "so_teto": so_teto, "sem_recibo": sem_recibo},
+                 "so_teto": so_teto, "sem_recibo": sem_recibo, "filtro": filtro},
+        filtros_engajamento={nome: rotulo for nome, (rotulo, _) in _FILTROS_ENGAJAMENTO.items()},
     )
 
 

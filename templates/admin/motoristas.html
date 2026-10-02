@@ -14,10 +14,19 @@
     <option value="stripe" {% if filtros.origem == 'stripe' %}selected{% endif %}>Stripe</option>
     <option value="loja" {% if filtros.origem == 'loja' %}selected{% endif %}>Loja</option>
   </select>
+  <select name="filtro" class="form-select form-control-auth" aria-label="Engajamento">
+    <option value="">Qualquer engajamento</option>
+    {% for nome, rotulo in filtros_engajamento.items() %}<option value="{{ nome }}" {% if filtros.filtro == nome %}selected{% endif %}>{{ rotulo }}</option>{% endfor %}
+  </select>
   <label class="adm-check"><input type="checkbox" name="so_teto" value="1" {% if filtros.so_teto %}checked{% endif %}> No teto este mês</label>
   <label class="adm-check"><input type="checkbox" name="sem_recibo" value="1" {% if filtros.sem_recibo %}checked{% endif %}> Sem recibo</label>
   <button type="submit" class="btn btn-auth-submit">Filtrar</button>
 </form>
+{% if filtros.filtro %}
+<p class="adm-suave"><i class="bi bi-funnel-fill me-1"></i>Filtro: <strong>{{ filtros_engajamento[filtros.filtro] }}</strong> ·
+  {{ motoristas | length }} motorista{{ '' if motoristas | length == 1 else 's' }}{% if proximo %} nesta página{% endif %} ·
+  <a href="{{ url_for('admin_motoristas') }}" class="adm-link">limpar</a></p>
+{% endif %}
 <div class="table-responsive"><table class="adm-tabela">
   <thead><tr><th>Motorista</th><th>Cidade · Placa</th><th>Plano</th><th>Origem</th><th class="adm-num">Recibos</th><th>Último recibo</th><th class="adm-num">Uso do mês</th><th>Cadastro</th><th>Último login</th></tr></thead>
   <tbody>
@@ -37,6 +46,6 @@
   </tbody>
 </table></div>
 {% if proximo %}
-<p class="mt-3"><a class="btn btn-auth-submit" href="{{ url_for('admin_motoristas', cursor=proximo, q=filtros.q, plano=filtros.plano, origem=filtros.origem, status=filtros.status, so_teto='1' if filtros.so_teto else none, sem_recibo='1' if filtros.sem_recibo else none) }}">Próxima página <i class="bi bi-arrow-right ms-1"></i></a></p>
+<p class="mt-3"><a class="btn btn-auth-submit" href="{{ url_for('admin_motoristas', cursor=proximo, q=filtros.q, plano=filtros.plano, origem=filtros.origem, status=filtros.status, filtro=filtros.filtro, so_teto='1' if filtros.so_teto else none, sem_recibo='1' if filtros.sem_recibo else none) }}">Próxima página <i class="bi bi-arrow-right ms-1"></i></a></p>
 {% endif %}
 {% endblock %}

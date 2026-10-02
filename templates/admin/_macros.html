@@ -1,10 +1,16 @@
 {# Pedacos repetidos do painel. Sem JavaScript: barras em CSS, dados no HTML. #}
-{% macro kpi(valor, rotulo, icone='bar-chart', cor='coral', sufixo='') -%}
+{# botoes: lista de (texto, href) — cada um abre a lista de motoristas ja filtrada. #}
+{% macro kpi(valor, rotulo, icone='bar-chart', cor='coral', sufixo='', botoes=None) -%}
 <div class="stat-card">
   <div class="stat-icon stat-icon-{{ cor }}"><i class="bi bi-{{ icone }}"></i></div>
   <div class="stat-body">
     <div class="stat-value">{{ valor }}{% if sufixo %}<span class="stat-limit">{{ sufixo }}</span>{% endif %}</div>
     <div class="stat-label">{{ rotulo }}</div>
+    {% if botoes %}
+    <div class="adm-card-botoes">
+      {% for texto, href in botoes %}<a href="{{ href }}" class="adm-card-botao" title="Ver estes motoristas na lista"><i class="bi bi-funnel-fill"></i>{{ texto }}</a>{% endfor %}
+    </div>
+    {% endif %}
   </div>
 </div>
 {%- endmacro %}

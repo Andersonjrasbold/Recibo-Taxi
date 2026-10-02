@@ -1564,6 +1564,15 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
 .adm-h2 { font-family:'Sora',sans-serif; font-size:1.15rem; font-weight:700; margin-bottom:.9rem; color:var(--paper); }
 .adm-h3 { font-size:.8rem; font-weight:800; letter-spacing:.02em; text-transform:uppercase; color:rgba(255,244,236,.55); margin-bottom:.6rem; }
 .adm-kpis { margin-bottom:.5rem; }
+/* Card com botoes nao cabe em duas colunas no telefone: a segunda sai da tela. */
+@media (max-width: 767.98px) { .adm-kpis-botoes { grid-template-columns:1fr; } }
+.adm-card-botoes { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.55rem; }
+.adm-card-botao {
+  display:inline-flex; align-items:center; gap:.3rem; padding:.22rem .6rem; border-radius:999px;
+  font-size:.72rem; font-weight:800; color:var(--ambar); text-decoration:none;
+  background:rgba(255,244,236,.05); border:1px solid rgba(255,244,236,.16);
+}
+.adm-card-botao:hover, .adm-card-botao:focus-visible { color:var(--coal); background:var(--ambar); border-color:var(--ambar); }
 .adm-suave { color:rgba(255,244,236,.5); font-size:.84rem; }
 .adm-link { color:var(--ambar); font-weight:700; text-decoration:none; }
 .adm-link:hover { color:var(--paper); text-decoration:underline; }

@@ -160,6 +160,11 @@ e-mail, abuso e saúde do sistema. Mais lista de motoristas com busca, filtros e
 paginação por cursor, e ficha por motorista com CPF e dados do passageiro
 mascarados.
 
+Os cards de Engajamento têm botões que abrem a lista de motoristas já filtrada
+(`?filtro=login_24h`, `sessao_viva`, `inativos_30d`, `nunca_logou`…). A condição
+de cada filtro (`_FILTROS_ENGAJAMENTO`) repete a da consulta que gera o número
+do card; a suíte confere que card e lista mostram o mesmo número.
+
 **Administrador não é motorista.** Tabela própria (`admin_users`, migração
 0005), senha com hash do werkzeug, sessão própria (`admin_id`). Não há cadastro
 pelo site: o admin nasce pelo comando

@@ -178,11 +178,17 @@
 <section class="adm-painel">
   <h2 class="adm-h2"><i class="bi bi-activity me-2"></i>Engajamento</h2>
   {% set lg = d.logins or {} %}{% set ss = d.sessoes or {} %}
-  <div class="db-stats adm-kpis">
-    {{ ui.kpi(lg.login_24h, 'Logins em 24 h', 'box-arrow-in-right', 'green', ' / ' ~ lg.login_7d ~ ' em 7 d / ' ~ lg.login_30d ~ ' em 30 d') }}
-    {{ ui.kpi(ss.usuarios, 'Motoristas com sessão viva (7 d)', 'phone', 'blue', ' em ' ~ ss.sessoes ~ ' sessões') }}
-    {{ ui.kpi((d.inativos_30d or {}).n, 'Inativos há 30 dias', 'moon', 'orange') }}
-    {{ ui.kpi(lg.nunca_logou, 'Nunca entraram', 'person-x', 'coral') }}
+  <div class="db-stats adm-kpis adm-kpis-botoes">
+    {{ ui.kpi(lg.login_24h, 'Logins em 24 h', 'box-arrow-in-right', 'green', ' / ' ~ lg.login_7d ~ ' em 7 d / ' ~ lg.login_30d ~ ' em 30 d',
+              botoes=[('24 h', url_for('admin_motoristas', filtro='login_24h')),
+                      ('7 d', url_for('admin_motoristas', filtro='login_7d')),
+                      ('30 d', url_for('admin_motoristas', filtro='login_30d'))]) }}
+    {{ ui.kpi(ss.usuarios, 'Motoristas com sessão viva (7 d)', 'phone', 'blue', ' em ' ~ ss.sessoes ~ ' sessões',
+              botoes=[('Ver motoristas', url_for('admin_motoristas', filtro='sessao_viva'))]) }}
+    {{ ui.kpi((d.inativos_30d or {}).n, 'Inativos há 30 dias', 'moon', 'orange',
+              botoes=[('Ver motoristas', url_for('admin_motoristas', filtro='inativos_30d'))]) }}
+    {{ ui.kpi(lg.nunca_logou, 'Nunca entraram', 'person-x', 'coral',
+              botoes=[('Ver motoristas', url_for('admin_motoristas', filtro='nunca_logou'))]) }}
   </div>
   <p class="adm-suave mt-2">Ressalva: o último login só muda em login com senha. Quem fica logado no app renovando o token parece inativo. A melhor medida de atividade é recibo emitido.</p>
   <div class="row g-4">

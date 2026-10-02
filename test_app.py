@@ -1040,6 +1040,33 @@ check("o voltar fecha o menu do perfil antes de sair",
 check("so sai do app na tela inicial", "exitApp()" in _appjs)
 check("o app linka os Termos de Uso", "/termos" in _html_app)
 
+# -- Tela de assinatura: mensal e anual ----------------------------------
+# O preco vem da loja (a Apple e o Google cobram valores diferentes no anual);
+# o pacote comprado e o que esta marcado, pelo identificador; e quem ja assina
+# nao ve outra compra — no Google Play mensal e anual sao assinaturas
+# separadas, e comprar a outra cobraria as duas.
+print("\n-- Tela de assinatura --")
+_tela_pro = _html_app.split('id="tela-assinatura"', 1)[1].split("</section>", 1)[0]
+check("a tela oferece o anual e o mensal",
+      'id="plano-anual"' in _tela_pro and 'id="plano-mensal"' in _tela_pro)
+check("o app compra pelo identificador do pacote",
+      "'$rc_annual'" in _appjs and "'$rc_monthly'" in _appjs and "pacotesPro[planoEscolhido]" in _appjs)
+check("nenhum preco do anual escrito no app",
+      not _re.search(r"119[,.]\d", _html_app + _appjs))
+check("o preco do anual vem da loja", "anual.priceString" in _appjs)
+check("quem ja assina nao ve outra compra",
+      "mostrarAssinaturaAtiva" in _appjs and "entitlements?.active?.pro" in _appjs)
+check("o aviso de renovacao cita o anual", "mensal ou anual" in _tela_pro)
+check("Termos e Privacidade na propria tela de assinatura (3.1.2)",
+      "/termos" in _tela_pro and "/privacidade" in _tela_pro)
+_pbx = io.open("mobile/ios/App/App.xcodeproj/project.pbxproj", encoding="utf-8").read()
+_gradle = io.open("mobile/android/app/build.gradle", encoding="utf-8").read()
+_ver_ios = set(_re.findall(r"MARKETING_VERSION = ([0-9.]+);", _pbx))
+_ver_and = _re.search(r'versionName "([0-9.]+)"', _gradle)
+check("iPhone e Android com o mesmo numero de versao",
+      len(_ver_ios) == 1 and _ver_and and _ver_ios == {_ver_and.group(1)},
+      f"ios={_ver_ios} android={_ver_and.group(1) if _ver_and else None}")
+
 # A pagina publica do recibo nao pode ser indexada: mostra nome e CPF.
 _html_rec = A.app.test_client().get("/recibo/E9CB5C97A3C444").get_data(as_text=True)
 check("a pagina do recibo pede noindex", 'content="noindex, nofollow"' in _html_rec)

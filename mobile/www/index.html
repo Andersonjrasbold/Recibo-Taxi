@@ -235,8 +235,29 @@
 
   <p id="motivo-pro" class="ajuda"></p>
 
+  <!-- Quem ja assina nao ve outra compra. No Google Play o mensal e o anual
+       sao assinaturas separadas: comprar a outra cobraria as duas. -->
+  <div id="pro-ativo" class="aviso" hidden>
+    Sua assinatura Pro está ativa.
+    <a id="link-gerenciar" href="#" class="ligacao" hidden>Gerenciar assinatura</a>
+  </div>
+
+  <!-- O preco de cada opcao vem da loja quando a tela abre. O anual so aparece
+       se a loja o devolveu; o mensal tem o valor de sempre como reserva. -->
+  <div id="planos-pro" class="planos-pro" role="radiogroup" aria-label="Escolha o plano">
+    <button type="button" id="plano-anual" class="plano-pro" role="radio" aria-checked="false" hidden>
+      <span class="plano-topo"><strong>Anual</strong><span id="selo-anual" class="selo-pro" hidden></span></span>
+      <span id="preco-anual" class="plano-preco"></span>
+      <span id="nota-anual" class="plano-nota"></span>
+    </button>
+    <button type="button" id="plano-mensal" class="plano-pro" role="radio" aria-checked="true">
+      <span class="plano-topo"><strong>Mensal</strong></span>
+      <span id="preco-mensal" class="plano-preco">R$ 19,90/mês</span>
+      <span class="plano-nota">Cobrado todo mês</span>
+    </button>
+  </div>
+
   <div class="cartao-pro">
-    <div class="preco-pro"><span class="preco-moeda">R$</span>19,90<span class="preco-periodo">/mês</span></div>
     <ul class="lista-pro">
       <li>Recibos ilimitados</li>
       <li>Histórico completo e permanente</li>
@@ -245,13 +266,13 @@
     </ul>
   </div>
 
-  <button id="btn-assinar" class="primario">Assinar</button>
+  <button id="btn-assinar" class="primario">Assinar o plano mensal</button>
   <button id="btn-restaurar" class="secundario">Restaurar compra</button>
   <p id="erro-pro" class="erro" hidden></p>
 
   <p id="aviso-renovacao" class="ajuda" style="margin-top:1.2rem">
-    Renova automaticamente. Cancele quando quiser pelos Ajustes do aparelho,
-    até 24 h antes da próxima cobrança.
+    Renova automaticamente ao fim de cada período, mensal ou anual. Cancele
+    quando quiser pelos Ajustes do aparelho, até 24 h antes da próxima cobrança.
   </p>
   <p class="ajuda">
     <a href="https://recibo-taxi.vercel.app/termos" class="ligacao">Termos de Uso</a>

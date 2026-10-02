@@ -174,10 +174,25 @@ button:disabled { opacity:.5; }
   background:var(--coal-soft); border:1px solid var(--linha);
   border-radius:20px; padding:1.5rem; margin:1rem 0 .5rem;
 }
-.preco-pro { font-size:2.6rem; font-weight:800; line-height:1; color:var(--ambar); }
-.preco-moeda { font-size:1.2rem; font-weight:700; margin-right:.2rem; vertical-align:.6rem; }
-.preco-periodo { font-size:1rem; font-weight:600; color:var(--muted); }
-.lista-pro { list-style:none; margin:1.3rem 0 0; padding:0; }
+/* Opcoes de plano. O valor cobrado e o maior texto de cada uma: a Apple
+   (3.1.2) exige que o preco do periodo seja o destaque, e o "equivale a" por
+   mes fica menor, embaixo. */
+.planos-pro { display:grid; gap:.7rem; margin:1rem 0 .4rem; }
+.plano-pro {
+  display:grid; gap:.2rem; width:100%; text-align:left;
+  padding:1rem 1.1rem; border-radius:18px;
+  color:var(--paper); background:var(--coal-soft); border:2px solid var(--linha);
+}
+.plano-pro[aria-checked="true"] { border-color:var(--ambar); background:rgba(255,197,49,.08); }
+.plano-topo { display:flex; align-items:center; justify-content:space-between; gap:.6rem; font-size:1rem; }
+.selo-pro {
+  font-size:.72rem; font-weight:800; color:var(--ink); background:var(--ambar);
+  padding:.18rem .6rem; border-radius:999px; white-space:nowrap;
+}
+.plano-preco { font-size:1.5rem; font-weight:800; line-height:1.2; color:var(--ambar); }
+.plano-nota { font-size:.82rem; color:var(--muted); }
+#pro-ativo .ligacao { display:block; margin-top:.4rem; }
+.lista-pro { list-style:none; margin:0; padding:0; }
 .lista-pro li { padding:.5rem 0 .5rem 1.7rem; position:relative; font-size:.94rem; }
 .lista-pro li::before {
   content:"✓"; position:absolute; left:0; color:var(--ambar); font-weight:800;

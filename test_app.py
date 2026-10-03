@@ -1438,7 +1438,7 @@ r = _cli_em.post(f"/emails/sair/{_tok_em}", data="List-Unsubscribe=One-Click",
                  content_type="application/x-www-form-urlencoded")
 check("descadastro de um clique do Gmail (RFC 8058)", r.status_code == 200 and _optout_em() is not None, r.status_code)
 check("token adulterado da 404", _cli_em.get(f"/emails/sair/{_tok_em}x").status_code == 404)
-check("cron de e-mails sem segredo da 401", _cli_em.get("/tarefas/emails").status_code in (401, 503))
+check("cron de e-mails fica fechado sem o segredo", _cli_em.get("/tarefas/emails").status_code in (401, 503))
 check("/baixar no iPhone vai a App Store", _cli_em.get("/baixar", headers={
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"}).headers.get("Location") == A.APP_STORE_URL)
 check("/baixar no Android vai ao Google Play", _cli_em.get("/baixar", headers={

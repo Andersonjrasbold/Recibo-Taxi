@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import smtplib
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -28,7 +29,8 @@ from flask import (
     session,
     url_for,
 )
-from itsdangerous import BadSignature, URLSafeTimedSerializer
+from itsdangerous import BadSignature, URLSafeSerializer, URLSafeTimedSerializer
+from markupsafe import Markup, escape
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -166,6 +168,29 @@ ADMIN_IDLE_MINUTES = 60
 ADMIN_PASSWORD_MIN = 8
 ADMIN_PAGE_SIZE = 50
 RESET_TOKEN_SALT = "recibo-taxi-redefinir-senha"
+
+# Automação de e-mails para quem ainda não assinou (/admin/emails). Fora desta
+# faixa (horário de Brasília) o motor não manda nada, mesmo com e-mail vencido:
+# oferta às 23h irrita e vai para o spam.
+EMAIL_AUTO_HORA_INICIO = 8
+EMAIL_AUTO_HORA_FIM = 20  # inclusive: a última leva sai entre 20h e 21h
+# Quem ficou para trás mais que isto não recebe mais aquele e-mail. É o que
+# impede que ligar o motor mande a régua inteira de uma vez para a base antiga:
+# quem se cadastrou há 40 dias não recebe o "dia 3", o "dia 7" e o "dia 30".
+EMAIL_AUTO_JANELA_DIAS = 3
+EMAIL_AUTO_JANELA_CAMPANHA_DIAS = 7
+# Por execução do cron. Com a pausa entre envios, cabe folgado no tempo da função.
+EMAIL_AUTO_LOTE = 60
+EMAIL_AUTO_PAUSA_S = 0.6  # o Resend aceita 2 pedidos por segundo por conta
+EMAIL_AUTO_TESTES_DIA = 30  # e-mails de teste por administrador por dia
+# Nunca entram na automação: contas da suíte (TLD reservada) e contas nossas,
+# como a de demonstração da Apple — o domínio não recebe e-mail, e cada
+# devolução pesa na reputação de quem manda.
+EMAIL_AUTO_SUFIXOS_EXCLUIDOS = (".invalid", "@recibotaxi.com.br")
+DESCADASTRO_SALT = "recibo-taxi-descadastro-email"
+PRECO_PRO_MENSAL = "R$ 19,90"
+# Vai depois do botão, em todo e-mail automático: no texto ela ficaria antes dele.
+EMAIL_ASSINATURA = "Equipe Recibo Táxi"
 
 # Os scripts inline carregam um nonce por requisição, então script-src dispensa
 # 'unsafe-inline'. style-src ainda precisa: o Bootstrap injeta estilos inline em
@@ -1111,44 +1136,67 @@ def enviar_por_resend(to_address: str, subject: str, body: str, timeout: int = 1
     do SMTP (EHLO, STARTTLS, AUTH, MAIL FROM, RCPT TO, DATA) são várias idas e
     voltas; aqui é um POST só.
     """
-    chave = os.environ.get("RESEND_API_KEY", "").strip()
-    if not chave:
-        return False
-
-    payload = json.dumps(
+    ok, _, _, _ = chamar_resend(
         {
             "from": f"{APP_NAME} <{remetente_padrao()}>",
             "to": [to_address],
             "subject": subject,
             "text": body,
-        }
-    ).encode("utf-8")
+        },
+        timeout=timeout,
+    )
+    return ok
+
+
+def chamar_resend(payload: dict, timeout: int = 15, idempotency_key: str = "") -> tuple[bool, str, str, bool]:
+    """POST /emails no Resend. Devolve (aceito, id do Resend, erro, vale_tentar_de_novo).
+
+    "Vale tentar de novo" quando o problema não é deste e-mail: 429, 5xx, falha
+    de rede, e também 401/403 — chave ou domínio mal configurados, que voltam a
+    funcionar quando alguém corrigir. Os outros 4xx (endereço inválido, campo
+    recusado) não melhoram tentando outra vez.
+    """
+    chave = os.environ.get("RESEND_API_KEY", "").strip()
+    if not chave:
+        return False, "", "RESEND_API_KEY ausente", False
+
+    destino = ", ".join(payload.get("to") or [])
+    cabecalhos = {
+        "Authorization": f"Bearer {chave}",
+        "Content-Type": "application/json",
+        # Sem User-Agent próprio o Cloudflare do Resend devolve 403 com
+        # "error code: 1010" — bloqueia o padrão do urllib.
+        "User-Agent": f"{APP_NAME.replace(' ', '-')}/1.0",
+    }
+    if idempotency_key:
+        # O Resend ignora o segundo pedido com a mesma chave por 24 h: se a
+        # função morrer entre enviar e anotar, a próxima tentativa não duplica.
+        cabecalhos["Idempotency-Key"] = idempotency_key
 
     requisicao = urllib.request.Request(
         "https://api.resend.com/emails",
-        data=payload,
+        data=json.dumps(payload).encode("utf-8"),
         method="POST",
-        headers={
-            "Authorization": f"Bearer {chave}",
-            "Content-Type": "application/json",
-            # Sem User-Agent próprio o Cloudflare do Resend devolve 403 com
-            # "error code: 1010" — bloqueia o padrão do urllib.
-            "User-Agent": f"{APP_NAME.replace(' ', '-')}/1.0",
-        },
+        headers=cabecalhos,
     )
 
     try:
         with urllib.request.urlopen(requisicao, timeout=timeout) as resposta:
-            return 200 <= resposta.status < 300
+            corpo = resposta.read() or b"{}"
+            try:
+                provider_id = str(json.loads(corpo).get("id") or "")
+            except ValueError:
+                provider_id = ""
+            return 200 <= resposta.status < 300, provider_id, "", False
     except urllib.error.HTTPError as exc:
         detalhe = (exc.read() or b"")[:200].decode("utf-8", "replace")
         app.logger.error(
-            "Resend recusou o e-mail para %s (HTTP %s): %s", to_address, exc.code, detalhe
+            "Resend recusou o e-mail para %s (HTTP %s): %s", destino, exc.code, detalhe
         )
-        return False
+        return False, "", f"HTTP {exc.code}: {detalhe}", exc.code in (401, 403, 429) or exc.code >= 500
     except Exception as exc:
-        app.logger.error("Falha ao chamar o Resend para %s: %s", to_address, exc)
-        return False
+        app.logger.error("Falha ao chamar o Resend para %s: %s", destino, exc)
+        return False, "", str(exc)[:200], True
 
 
 def send_email(to_address: str, subject: str, body: str, timeout: int = 15) -> bool:
@@ -1370,6 +1418,23 @@ def index():
     if g.user:
         return redirect(url_for("dashboard"))
     return render_template("index.html")
+
+
+@app.get("/baixar")
+def baixar_app():
+    """Manda para a loja do celular de quem clicou. É o link de venda dos e-mails.
+
+    A assinatura se faz dentro do app (a Stripe do site não está em produção),
+    e o e-mail é quase sempre lido no celular: no iPhone cai na App Store, no
+    Android no Google Play — e, com o app instalado, a loja mostra "Abrir". No
+    computador vai para a seção do app na página inicial.
+    """
+    agente = request.headers.get("User-Agent", "")
+    if re.search(r"iPhone|iPad|iPod", agente):
+        return redirect(APP_STORE_URL)
+    if "Android" in agente:
+        return redirect(PLAY_STORE_URL)
+    return redirect(url_for("index") + "#app")
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -2375,16 +2440,11 @@ def webhook_revenuecat():
 
 # ── Manutenção ────────────────────────────────────────────────────────────────
 
-@app.get("/tarefas/limpeza")
-def tarefa_limpeza():
-    """Apaga recibos sem conta (do antigo gerador público) vencidos e contadores antigos.
-
-    Chamada pelo Cron da Vercel, que envia 'Authorization: Bearer $CRON_SECRET'.
-    Sem CRON_SECRET definido a rota fica fechada — falha fechada, não aberta.
-    """
+def exigir_cron() -> None:
+    """Só o Cron da Vercel passa. Sem CRON_SECRET a rota fica fechada (503)."""
     secret = os.environ.get("CRON_SECRET", "").strip()
     if not secret:
-        app.logger.warning("CRON_SECRET não definido — /tarefas/limpeza desativada.")
+        app.logger.warning("CRON_SECRET não definido — %s desativada.", request.path)
         abort(503)
 
     # compare_digest levanta TypeError com str não-ASCII; comparar bytes evita
@@ -2392,6 +2452,15 @@ def tarefa_limpeza():
     enviado = request.headers.get("Authorization", "").encode("utf-8", "replace")
     if not hmac.compare_digest(enviado, f"Bearer {secret}".encode("utf-8")):
         abort(401)
+
+
+@app.get("/tarefas/limpeza")
+def tarefa_limpeza():
+    """Apaga recibos sem conta (do antigo gerador público) vencidos e contadores antigos.
+
+    Chamada pelo Cron da Vercel, que envia 'Authorization: Bearer $CRON_SECRET'.
+    """
+    exigir_cron()
 
     store = get_store()
     now = datetime.now(timezone.utc)
@@ -2419,11 +2488,489 @@ def tarefa_limpeza():
     )
 
 
+# ── Automação de e-mails ──────────────────────────────────────────────────────
+#
+# Régua de e-mails para quem tem conta e ainda está no Grátis. Cada modelo
+# (email_templates) é um e-mail com a sua programação; o cron /tarefas/emails
+# roda de hora em hora, acha quem está na vez de cada modelo e manda.
+#
+# Garantias, da mais importante para a menos:
+#   1. Nunca o mesmo e-mail duas vezes: a linha de email_sends nasce antes do
+#      envio, com unique (modelo, motorista, dedupe_key).
+#   2. Assinou, parou: a consulta só pega plan = 'free' na hora do envio.
+#   3. Descadastrou, parou: link no rodapé e List-Unsubscribe de um clique.
+#   4. No máximo um e-mail por motorista a cada N horas (email_settings).
+#   5. Teto diário somando todos os motoristas, para não tomar a cota do
+#      Resend que o e-mail de senha e o de recibo também usam.
+
+EMAIL_GATILHOS = {
+    # chave: (rótulo no painel, unidade do número)
+    "signup": ("Dias depois do cadastro", "dias"),
+    "no_receipt": ("Dias depois do cadastro, se ainda não emitiu nenhum recibo", "dias"),
+    "monthly_usage": ("Quando chegar a N recibos no mês (uma vez por mês)", "recibos"),
+    "inactive": ("Dias sem emitir recibo (só quem já emitiu algum)", "dias"),
+    "scheduled": ("Campanha em data marcada", "dias de cadastro, no mínimo"),
+}
+
+EMAIL_VARIAVEIS = {
+    "nome": "Primeiro nome do motorista",
+    "cidade": "Cidade do cadastro",
+    "recibos_mes": "Recibos emitidos neste mês",
+    "restantes": "Recibos grátis que ainda restam no mês",
+    "recibos_total": "Recibos emitidos desde o cadastro",
+    "limite": f"Recibos por mês no Grátis (hoje {FREE_MONTHLY_LIMIT})",
+    "mes": "Nome do mês atual",
+    "preco": f"Preço do Pro mensal ({PRECO_PRO_MENSAL})",
+    "link_app": "Abre a loja do app certa para o celular (App Store ou Google Play)",
+    "link_planos": "Página de planos no site",
+    "link_painel": "Painel do motorista no site",
+    "link_iphone": "App na App Store",
+    "link_android": "App no Google Play",
+}
+
+MESES_PT = ("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
+            "agosto", "setembro", "outubro", "novembro", "dezembro")
+
+_VARIAVEL_RE = re.compile(r"\{\{\s*([A-Za-z_]+)\s*\}\}")
+_TZ_SQL = "'America/Sao_Paulo'"
+
+
+def descrever_gatilho(modelo: dict) -> str:
+    """Frase curta para a lista do painel: "3 dias depois do cadastro, a partir das 10h"."""
+    n = int(modelo.get("trigger_value") or 0)
+    hora = f"a partir das {int(modelo.get('send_hour') or 0)}h"
+    gatilho = modelo.get("trigger")
+    if gatilho == "signup":
+        quando = "no dia do cadastro" if n == 0 else f"{n} dia{'s' if n != 1 else ''} depois do cadastro"
+        return f"{quando}, {hora}"
+    if gatilho == "no_receipt":
+        return f"{n} dia{'s' if n != 1 else ''} depois do cadastro, sem nenhum recibo, {hora}"
+    if gatilho == "monthly_usage":
+        return f"ao chegar a {n} recibo{'s' if n != 1 else ''} no mês, {hora}"
+    if gatilho == "inactive":
+        return f"{n} dia{'s' if n != 1 else ''} sem emitir recibo, {hora}"
+    if gatilho == "scheduled":
+        quando = modelo.get("scheduled_at")
+        data = filtro_data_br(quando) if quando else "data não marcada"
+        return f"campanha em {data}" + (f", para quem tem {n}+ dias de cadastro" if n else "")
+    return gatilho or "-"
+
+
+def variaveis_desconhecidas(*textos: str) -> list[str]:
+    return sorted({v for t in textos for v in _VARIAVEL_RE.findall(t or "") if v not in EMAIL_VARIAVEIS})
+
+
+def _preencher(texto: str, valores: dict) -> str:
+    return _VARIAVEL_RE.sub(lambda m: str(valores.get(m.group(1), m.group(0))), texto or "")
+
+
+def _primeiro_nome(nome_completo: str) -> str:
+    primeiro = (nome_completo or "").strip().split(" ")[0] if (nome_completo or "").strip() else ""
+    # Cadastro todo em maiúsculas (ou minúsculas) vira "Carlos", não "CARLOS".
+    if primeiro.isupper() or primeiro.islower():
+        primeiro = primeiro.capitalize()
+    return primeiro or "motorista"
+
+
+def valores_do_email(motorista: dict, agora: datetime | None = None) -> dict:
+    """Valores das {{variáveis}} para um motorista."""
+    agora_br = (agora or datetime.now(timezone.utc)).astimezone(BR_TZ)
+    recibos_mes = int(motorista.get("recibos_mes") or 0)
+    return {
+        "nome": _primeiro_nome(motorista.get("full_name", "")),
+        "cidade": (motorista.get("city") or "").strip() or "sua cidade",
+        "recibos_mes": recibos_mes,
+        "restantes": max(FREE_MONTHLY_LIMIT - recibos_mes, 0),
+        "recibos_total": int(motorista.get("recibos_total") or 0),
+        "limite": FREE_MONTHLY_LIMIT,
+        "mes": MESES_PT[agora_br.month - 1],
+        "preco": PRECO_PRO_MENSAL,
+        "link_app": absolute_url("baixar_app"),
+        "link_planos": absolute_url("planos"),
+        "link_painel": absolute_url("dashboard"),
+        "link_iphone": APP_STORE_URL,
+        "link_android": PLAY_STORE_URL,
+    }
+
+
+# Motorista de mentira para a prévia e para o e-mail de teste do painel.
+MOTORISTA_EXEMPLO = {"full_name": "Carlos Pereira", "city": "Cascavel", "recibos_mes": 4, "recibos_total": 11}
+
+
+def _formatar_linha(texto: str) -> str:
+    """Escapa e aplica o pouco de formatação aceito: **negrito** e links."""
+    s = str(escape(texto))
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    return re.sub(r"(https?://[^\s<]+)", r'<a href="\1" style="color:#c2402f;">\1</a>', s)
+
+
+def corpo_em_html(corpo: str) -> Markup:
+    """Texto do modelo em HTML: linha em branco separa parágrafo, "- " vira lista."""
+    estilo_p = "margin:0 0 16px 0;"
+    partes = []
+    for bloco in re.split(r"\n\s*\n", (corpo or "").strip()):
+        paragrafo, itens = [], []
+
+        def fechar_paragrafo():
+            if paragrafo:
+                partes.append(f'<p style="{estilo_p}">' + "<br>".join(paragrafo) + "</p>")
+                paragrafo.clear()
+
+        def fechar_lista():
+            if itens:
+                partes.append('<ul style="margin:0 0 16px 0;padding-left:22px;">'
+                              + "".join(f'<li style="margin:0 0 6px 0;">{i}</li>' for i in itens) + "</ul>")
+                itens.clear()
+
+        for linha in bloco.split("\n"):
+            linha = linha.rstrip()
+            if linha.lstrip().startswith("- "):
+                fechar_paragrafo()
+                itens.append(_formatar_linha(linha.lstrip()[2:]))
+            elif linha.strip():
+                fechar_lista()
+                paragrafo.append(_formatar_linha(linha.strip()))
+        fechar_paragrafo()
+        fechar_lista()
+    return Markup("".join(partes))
+
+
+def token_descadastro(driver_id: str) -> str:
+    # Sem validade de propósito: link de descadastro tem que funcionar no
+    # e-mail de meses atrás.
+    return URLSafeSerializer(app.config["SECRET_KEY"], salt=DESCADASTRO_SALT).dumps(str(driver_id))
+
+
+def ler_token_descadastro(token: str) -> str | None:
+    try:
+        return str(URLSafeSerializer(app.config["SECRET_KEY"], salt=DESCADASTRO_SALT).loads(token))
+    except Exception:
+        return None
+
+
+def montar_email_automacao(modelo: dict, valores: dict, link_sair: str) -> dict:
+    """Assunto, HTML e texto puro prontos para o envio."""
+    assunto = " ".join(_preencher(modelo["subject"], valores).split())
+    corpo = _preencher(modelo["body"], valores)
+    botao_texto = _preencher(modelo.get("button_text") or "", valores).strip()
+    botao_link = _preencher(modelo.get("button_url") or "", valores).strip()
+    if not (botao_texto and botao_link):
+        botao_texto = botao_link = ""
+
+    # Primeira frase depois da saudação: é o que o Gmail mostra ao lado do assunto.
+    paragrafos = [p for p in re.split(r"\n\s*\n", corpo.strip()) if p.strip()]
+    resumo = paragrafos[1] if len(paragrafos) > 1 else (paragrafos[0] if paragrafos else "")
+    resumo = " ".join(resumo.replace("**", "").split())[:140]
+
+    html = render_template(
+        "emails/automacao.html",
+        assunto=assunto, resumo=resumo, corpo=corpo_em_html(corpo),
+        botao_texto=botao_texto, botao_link=botao_link, link_sair=link_sair,
+        link_iphone=APP_STORE_URL, link_android=PLAY_STORE_URL, assinatura=EMAIL_ASSINATURA,
+    )
+    texto = corpo.replace("**", "")
+    if botao_texto:
+        texto += f"\n\n{botao_texto}: {botao_link}"
+    texto += f"\n\n{EMAIL_ASSINATURA}"
+    texto += (
+        "\n\n—\n"
+        f"Você recebe este e-mail porque tem cadastro no {APP_NAME}.\n"
+        f"Para não receber mais: {link_sair}\n"
+    )
+    return {"assunto": assunto, "html": html, "texto": texto, "link_sair": link_sair}
+
+
+def remetente_automacao() -> str:
+    return os.environ.get("EMAIL_FROM_AUTOMACAO", "").strip() or remetente_padrao()
+
+
+def endereco_de_resposta() -> str:
+    """Para onde vão as respostas. Sem isto elas voltam para o nao-responda@,
+    que não tem caixa — e vários modelos pedem "responda este e-mail"."""
+    return os.environ.get("EMAIL_REPLY_TO", "").strip()
+
+
+def enviar_email_automacao(destino: str, msg: dict, idempotency_key: str = "") -> tuple[bool, str, str, bool]:
+    payload = {
+        "from": f"{APP_NAME} <{remetente_automacao()}>",
+        "to": [destino],
+        "subject": msg["assunto"],
+        "html": msg["html"],
+        "text": msg["texto"],
+        # Descadastro de um clique (RFC 8058): o Gmail e o Yahoo mostram o botão
+        # "Cancelar inscrição" ao lado do remetente e fazem o POST sozinhos.
+        "headers": {
+            "List-Unsubscribe": f"<{msg['link_sair']}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+        "tags": [{"name": "categoria", "value": "automacao"}],
+    }
+    if endereco_de_resposta():
+        payload["reply_to"] = endereco_de_resposta()
+    return chamar_resend(payload, timeout=10, idempotency_key=idempotency_key)
+
+
+def config_email(conn) -> dict:
+    row = conn.execute(
+        "select enabled, daily_cap, min_gap_hours, updated_at from public.email_settings where id"
+    ).fetchone()
+    return dict(row) if row else {"enabled": False, "daily_cap": 0, "min_gap_hours": 24, "updated_at": None}
+
+
+def _sql_email_aceito(coluna: str) -> str:
+    # Os sufixos são constantes do código, nunca dado de fora.
+    return " and ".join(f"lower({coluna}) not like '%%{sufixo}'" for sufixo in EMAIL_AUTO_SUFIXOS_EXCLUIDOS)
+
+
+def _sql_candidatos(gatilho: str, restringir: bool) -> str:
+    """SELECT de quem está na vez de um modelo. Tudo que vem do pedido é parâmetro."""
+    def vence(base: str) -> str:
+        # Dia (em Brasília) do evento + N dias + a hora do modelo.
+        return (f"((date_trunc('day', {base} at time zone {_TZ_SQL}) "
+                f"+ make_interval(days => %(n)s, hours => %(hora)s)) at time zone {_TZ_SQL})")
+
+    janela = "make_interval(days => %(janela)s)"
+    chave = "''"
+    if gatilho in ("signup", "no_receipt"):
+        v = vence("d.created_at")
+        condicao = f"{v} <= %(agora)s and {v} > %(agora)s - {janela}"
+        if gatilho == "no_receipt":
+            condicao += " and rc.total = 0"
+    elif gatilho == "inactive":
+        v = vence("rc.ultimo")
+        condicao = f"rc.ultimo is not null and {v} <= %(agora)s and {v} > %(agora)s - {janela}"
+        # Volta a valer se ele emitir de novo e parar outra vez.
+        chave = f"to_char(rc.ultimo at time zone {_TZ_SQL}, 'YYYY-MM-DD')"
+    elif gatilho == "monthly_usage":
+        # Só o modelo de maior N que ele já alcançou, entre os desta passada:
+        # quem chegou a 6 recebe o "limite atingido", e não também o "faltam 0".
+        condicao = f"""coalesce(q.used, 0) >= %(n)s
+            and extract(hour from %(agora)s at time zone {_TZ_SQL}) >= %(hora)s
+            and not exists (select 1 from public.email_templates t2
+                             where t2.id = any(%(passada)s::uuid[]) and t2.trigger = 'monthly_usage'
+                               and t2.trigger_value > %(n)s and coalesce(q.used, 0) >= t2.trigger_value)"""
+        chave = "to_char(public.br_period(%(agora)s), 'YYYY-MM')"
+    elif gatilho == "scheduled":
+        condicao = (f"%(agendado)s::timestamptz <= %(agora)s and %(agendado)s::timestamptz > %(agora)s - {janela}"
+                    " and d.created_at <= %(agora)s - make_interval(days => %(n)s)")
+    else:
+        raise ValueError(f"gatilho desconhecido: {gatilho}")
+
+    quem = "d.id = any(%(ids)s::uuid[])" if restringir else _sql_email_aceito("d.email")
+
+    return f"""
+        select d.id, d.email, d.full_name, d.city,
+               coalesce(q.used, 0) as recibos_mes, rc.total as recibos_total,
+               {chave} as dedupe_key
+          from public.drivers d
+          left join public.receipt_quotas q
+                 on q.driver_id = d.id and q.period = public.br_period(%(agora)s)
+          cross join lateral (
+                select count(*) as total, max(r.created_at) as ultimo
+                  from public.receipts r where r.driver_id = d.id) rc
+         where d.plan = 'free'
+           and d.marketing_optout_at is null
+           and d.email like '%%_@_%%'
+           and {quem}
+           and {condicao}
+           and not exists (select 1 from public.email_sends s
+                            where s.driver_id = d.id
+                              and s.created_at > %(agora)s - make_interval(hours => %(intervalo)s))
+           and not exists (select 1 from public.email_sends s
+                            where s.template_id = %(modelo)s and s.driver_id = d.id
+                              and s.dedupe_key = {chave})
+         order by d.created_at
+         limit %(lote)s
+    """
+
+
+def candidatos_do_modelo(conn, modelo: dict, agora: datetime, intervalo_horas: int,
+                         lote: int, restringir_a: list[str] | None = None,
+                         passada: list | None = None) -> list[dict]:
+    """Quem está na vez de `modelo`. `passada`: ids dos modelos rodando juntos."""
+    janela = EMAIL_AUTO_JANELA_CAMPANHA_DIAS if modelo["trigger"] == "scheduled" else EMAIL_AUTO_JANELA_DIAS
+    params = {
+        "agora": agora, "n": int(modelo["trigger_value"]), "hora": int(modelo["send_hour"]),
+        "janela": janela, "intervalo": int(intervalo_horas), "modelo": modelo["id"],
+        "agendado": modelo.get("scheduled_at"), "lote": int(lote),
+        "ids": list(restringir_a or []), "passada": list(passada or [modelo["id"]]),
+    }
+    if modelo["trigger"] == "scheduled" and not modelo.get("scheduled_at"):
+        return []
+    sql = _sql_candidatos(modelo["trigger"], restringir_a is not None)
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def rodar_automacao_email(agora: datetime | None = None, enviar=None, restringir_a: list[str] | None = None,
+                          modelos: list[str] | None = None, ignorar_desligado: bool = False,
+                          pausa: float = EMAIL_AUTO_PAUSA_S) -> dict:
+    """Uma passada do motor. Chamada pelo cron e pelo botão "Rodar agora".
+
+    `enviar`, `restringir_a`, `modelos` e `ignorar_desligado` existem para a
+    suíte: ela roda contra o banco de produção e nunca pode mandar e-mail de
+    verdade nem mexer no interruptor do motor. Com `modelos`, roda só aqueles,
+    mesmo desativados: a suíte cria os seus desligados, e assim o cron de
+    produção nunca os pega.
+
+    Precisa de contexto de requisição (url_for e render_template): o cron e o
+    painel já têm; fora deles, use app.test_request_context().
+    """
+    agora = agora or datetime.now(timezone.utc)
+    store = get_store()
+    resultado = {"ok": True, "enviados": 0, "falhas": 0, "motivo": "", "por_modelo": {}}
+
+    with store.pool.connection() as conn:
+        cfg = config_email(conn)
+        if not cfg["enabled"] and not ignorar_desligado:
+            return dict(resultado, motivo="desligado")
+        hora_br = agora.astimezone(BR_TZ).hour
+        if not (EMAIL_AUTO_HORA_INICIO <= hora_br <= EMAIL_AUTO_HORA_FIM):
+            return dict(resultado, motivo="fora_do_horario")
+        if enviar is None and not os.environ.get("RESEND_API_KEY", "").strip():
+            return dict(resultado, ok=False, motivo="sem_resend")
+
+        inicio_dia = agora.astimezone(BR_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        usados_hoje = conn.execute(
+            "select count(*) as n from public.email_sends where created_at >= %s and status <> 'failed'",
+            (inicio_dia,)).fetchone()["n"]
+        lista = conn.execute(
+            """select * from public.email_templates
+                where (%(todos)s and active) or id = any(%(ids)s::uuid[])
+                order by position, created_at""",
+            {"todos": modelos is None, "ids": list(modelos or [])}).fetchall()
+
+    restante = min(int(cfg["daily_cap"]) - int(usados_hoje), EMAIL_AUTO_LOTE)
+    if restante <= 0:
+        return dict(resultado, motivo="teto_diario")
+
+    enviar = enviar or enviar_email_automacao
+    primeiro = True
+    recusados: set = set()  # endereço recusado não tenta outro modelo nesta passada
+    parar = False
+    for modelo in lista:
+        if parar:
+            break
+        if restante <= 0:
+            resultado["motivo"] = "teto_diario"
+            break
+        with store.pool.connection() as conn:
+            candidatos = candidatos_do_modelo(conn, modelo, agora, cfg["min_gap_hours"], restante, restringir_a,
+                                              passada=[m["id"] for m in lista])
+        enviados_modelo = 0
+        for c in candidatos:
+            if restante <= 0 or parar:
+                break
+            if c["id"] in recusados:
+                continue
+            # Reserva primeiro, manda depois. Outra execução que chegue junto
+            # bate no unique e pula.
+            with store.pool.connection() as conn:
+                reserva = conn.execute(
+                    """insert into public.email_sends (template_id, driver_id, dedupe_key, created_at)
+                       values (%s, %s, %s, %s) on conflict do nothing returning id""",
+                    (modelo["id"], c["id"], c["dedupe_key"], agora)).fetchone()
+            if not reserva:
+                continue
+            if not primeiro and pausa:
+                time.sleep(pausa)
+            primeiro = False
+
+            msg = montar_email_automacao(
+                modelo, valores_do_email(c, agora),
+                absolute_url("email_descadastro", token=token_descadastro(c["id"])))
+            ok, provider_id, erro, transitorio = enviar(c["email"], msg, f"auto-{reserva['id']}-{c['id']}")
+            with store.pool.connection() as conn:
+                if ok:
+                    conn.execute(
+                        "update public.email_sends set status = 'sent', sent_at = now(), provider_id = %s where id = %s",
+                        (provider_id or None, reserva["id"]))
+                elif transitorio:
+                    # Problema no caminho: solta a reserva para a próxima hora.
+                    conn.execute("delete from public.email_sends where id = %s", (reserva["id"],))
+                else:
+                    conn.execute(
+                        "update public.email_sends set status = 'failed', error = %s where id = %s",
+                        ((erro or "")[:300], reserva["id"]))
+            if ok:
+                resultado["enviados"] += 1
+                enviados_modelo += 1
+                restante -= 1
+            else:
+                resultado["falhas"] += 1
+                recusados.add(c["id"])
+                if transitorio:
+                    # Resend fora do ar, limitando ou mal configurado: insistir só piora.
+                    resultado["motivo"] = "provedor_indisponivel"
+                    parar = True
+        if enviados_modelo:
+            resultado["por_modelo"][modelo["name"]] = enviados_modelo
+
+    app.logger.info("Automação de e-mails: %s enviados, %s falhas%s.", resultado["enviados"],
+                    resultado["falhas"], f" ({resultado['motivo']})" if resultado["motivo"] else "")
+    return resultado
+
+
+def _migracao_email_pendente(exc: Exception) -> bool:
+    return psycopg is not None and isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn))
+
+
+@app.get("/tarefas/emails")
+def tarefa_emails():
+    """Passada de hora em hora do motor de e-mails. Chamada pelo Cron da Vercel."""
+    exigir_cron()
+    try:
+        return jsonify(rodar_automacao_email())
+    except Exception as exc:
+        if _migracao_email_pendente(exc):
+            app.logger.warning("Automação de e-mails: migração 0007 ainda não aplicada.")
+            return jsonify({"ok": False, "motivo": "migracao_0007_pendente"})
+        raise
+
+
+@app.route("/emails/sair/<token>", methods=["GET", "POST"])
+def email_descadastro(token: str):
+    """Descadastro da automação. GET só mostra o botão; quem descadastra é o POST.
+
+    GET não pode descadastrar: antivírus de e-mail e o "link seguro" do Outlook
+    abrem todo link da mensagem antes da pessoa, e descadastrariam todo mundo.
+    O POST serve ao botão da página e ao descadastro de um clique do Gmail
+    (RFC 8058), que chega com o corpo "List-Unsubscribe=One-Click".
+    """
+    driver_id = ler_token_descadastro(token)
+    store = get_store()
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "select email, marketing_optout_at from public.drivers where id = %s",
+                (driver_id,)).fetchone() if driver_id else None
+            if not row:
+                return render_template("email_descadastro.html", estado="invalido"), 404
+
+            estado = "ja_saiu" if row["marketing_optout_at"] else "confirmar"
+            if request.method == "POST":
+                if request.form.get("acao") == "voltar":
+                    conn.execute("update public.drivers set marketing_optout_at = null where id = %s", (driver_id,))
+                    estado = "voltou"
+                else:
+                    conn.execute(
+                        "update public.drivers set marketing_optout_at = coalesce(marketing_optout_at, now()) where id = %s",
+                        (driver_id,))
+                    estado = "saiu"
+    except psycopg.errors.InvalidTextRepresentation:
+        return render_template("email_descadastro.html", estado="invalido"), 404
+    except Exception as exc:
+        if _migracao_email_pendente(exc):
+            abort(503)
+        raise
+    return render_template("email_descadastro.html", estado=estado, token=token,
+                           email=filtro_mascarar_email(row["email"]))
+
+
 # ── Legal ─────────────────────────────────────────────────────────────────────
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="22 de setembro de 2026")
+    return render_template("privacidade.html", updated_at="2 de outubro de 2026")
 
 
 @app.get("/termos")
@@ -2975,6 +3522,9 @@ def _saude_do_sistema() -> dict:
             ("Resend (e-mail)", tem("RESEND_API_KEY"), os.environ.get("EMAIL_FROM", "").strip()),
             ("RevenueCat (webhook)", tem("REVENUECAT_WEBHOOK_SECRET"), ""),
             ("Cron de limpeza", tem("CRON_SECRET"), "04:00 UTC, diário"),
+            ("Cron da automação de e-mails", tem("CRON_SECRET"), "de hora em hora"),
+            ("Resposta dos e-mails automáticos (EMAIL_REPLY_TO)", tem("EMAIL_REPLY_TO"),
+             os.environ.get("EMAIL_REPLY_TO", "").strip()),
             ("APP_BASE_URL", tem("APP_BASE_URL"), os.environ.get("APP_BASE_URL", "").strip()),
             ("Supabase (URL)", tem("SUPABASE_URL"), ""),
             ("Supabase (chave de serviço)", tem("SUPABASE_SECRET_KEY") or tem("SUPABASE_SERVICE_ROLE_KEY"), ""),
@@ -3209,11 +3759,24 @@ def admin_motorista(driver_id):
             sessoes = None
         emails_hoje = conn.execute(
             "select count from public.rate_limits where key = %s", (f"email:{did}:{today_br()}",)).fetchone()
+        try:
+            with conn.transaction():
+                automacao = conn.execute(
+                    """select d.marketing_optout_at,
+                              count(s.id) filter (where s.status = 'sent') as recebidos,
+                              max(s.created_at) filter (where s.status = 'sent') as ultimo
+                         from public.drivers d
+                         left join public.email_sends s on s.driver_id = d.id
+                        where d.id = %s
+                        group by d.id""", (did,)).fetchone()
+        except Exception:
+            automacao = None  # migração 0007 ainda não aplicada
     recibos = store.list_receipts_by_driver(did, limit=20)
     app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
     return render_template(
         "admin/motorista.html", m=dict(perfil), totais=dict(totais), cotas=[dict(c) for c in cotas],
         sessoes=sessoes, emails_hoje=(emails_hoje or {}).get("count", 0), recibos=recibos,
+        automacao=dict(automacao) if automacao else None,
         limite=FREE_MONTHLY_LIMIT,
     )
 
@@ -3269,6 +3832,343 @@ def admin_excluir_motorista(driver_id):
     app.logger.warning("admin %s excluiu o motorista %s (%s)", g.admin["email"], did, motorista.get("email"))
     flash(f"Cadastro de {motorista.get('full_name') or motorista.get('email')} excluído, com todos os recibos.", "success")
     return redirect(url_for("admin_motoristas"))
+
+
+# ── Painel: automação de e-mails ─────────────────────────────────────────────
+
+EMAIL_MOTIVOS = {
+    "desligado": "O motor está desligado — nada saiu.",
+    "fora_do_horario": f"Fora do horário de envio ({EMAIL_AUTO_HORA_INICIO}h às {EMAIL_AUTO_HORA_FIM + 1}h, Brasília).",
+    "teto_diario": "O teto diário de e-mails foi atingido.",
+    "sem_resend": "RESEND_API_KEY não está configurada.",
+    "provedor_indisponivel": "O Resend recusou (excesso, fora do ar ou chave/domínio mal configurados); a próxima hora tenta de novo.",
+}
+
+
+def _modelo_ou_404(conn, modelo_id) -> dict:
+    row = conn.execute("select * from public.email_templates where id = %s", (str(modelo_id),)).fetchone()
+    if not row:
+        abort(404)
+    return dict(row)
+
+
+def _para_formulario(m: dict) -> dict:
+    """Linha do banco no formato dos campos do formulário."""
+    f = dict(m)
+    quando = m.get("scheduled_at")
+    f["scheduled_local"] = quando.astimezone(BR_TZ).strftime("%Y-%m-%dT%H:%M") if isinstance(quando, datetime) else (quando or "")
+    return f
+
+
+def _ler_formulario_modelo() -> tuple[dict, list[str]]:
+    f = request.form
+    erros: list[str] = []
+
+    def inteiro(campo: str, minimo: int, maximo: int, rotulo: str) -> int:
+        try:
+            valor = int(f.get(campo, "").strip())
+        except ValueError:
+            erros.append(f"{rotulo}: informe um número.")
+            return minimo
+        if not minimo <= valor <= maximo:
+            erros.append(f"{rotulo}: use um número de {minimo} a {maximo}.")
+        return valor
+
+    dados = {
+        "name": f.get("name", "").strip(),
+        "subject": " ".join(f.get("subject", "").split()),
+        "body": f.get("body", "").replace("\r\n", "\n").strip(),
+        "button_text": f.get("button_text", "").strip(),
+        "button_url": f.get("button_url", "").strip(),
+        "trigger": f.get("trigger", ""),
+        "trigger_value": inteiro("trigger_value", 0, 365, "Número do gatilho"),
+        "send_hour": inteiro("send_hour", 0, 23, "Hora"),
+        "position": inteiro("position", 0, 999, "Ordem"),
+        "active": f.get("active") == "1",
+        "scheduled_at": None,
+        "scheduled_local": f.get("scheduled_at", "").strip(),
+    }
+    for campo, rotulo, maximo in (("name", "Nome interno", 80), ("subject", "Assunto", 150), ("body", "Texto", 5000)):
+        if not dados[campo]:
+            erros.append(f"{rotulo}: obrigatório.")
+        elif len(dados[campo]) > maximo:
+            erros.append(f"{rotulo}: no máximo {maximo} caracteres.")
+    if len(dados["button_text"]) > 60 or len(dados["button_url"]) > 300:
+        erros.append("Botão: texto até 60 caracteres e link até 300.")
+    if bool(dados["button_text"]) != bool(dados["button_url"]):
+        erros.append("Botão: preencha o texto e o link, ou deixe os dois vazios.")
+    if dados["trigger"] not in EMAIL_GATILHOS:
+        erros.append("Escolha quando o e-mail sai.")
+    desconhecidas = variaveis_desconhecidas(dados["subject"], dados["body"], dados["button_text"], dados["button_url"])
+    if desconhecidas:
+        erros.append("Variáveis que não existem: " + ", ".join("{{" + v + "}}" for v in desconhecidas) + ".")
+    elif dados["button_url"]:
+        link = _preencher(dados["button_url"], valores_do_email(MOTORISTA_EXEMPLO))
+        if not re.match(r"^https?://[^\s]+$", link):
+            erros.append("Link do botão: use um endereço começando com https:// ou uma variável como {{link_planos}}.")
+    if dados["trigger"] == "scheduled":
+        if dados["scheduled_local"]:
+            try:
+                dados["scheduled_at"] = datetime.strptime(dados["scheduled_local"], "%Y-%m-%dT%H:%M").replace(tzinfo=BR_TZ)
+            except ValueError:
+                erros.append("Data da campanha inválida.")
+        elif dados["active"]:
+            erros.append("Campanha ativa precisa de data e hora.")
+    return dados, erros
+
+
+_COLUNAS_MODELO = ("name", "subject", "body", "button_text", "button_url", "trigger",
+                   "trigger_value", "send_hour", "scheduled_at", "position", "active")
+
+
+def painel_emails() -> dict:
+    store = get_store()
+    agora = datetime.now(timezone.utc)
+    params = {"ini_hoje": _inicio_dia_br(0), "ini_7d": _inicio_dia_br(6), "ini_30d": _inicio_dia_br(29)}
+    with store.pool.connection() as conn:
+        cfg = config_email(conn)
+        modelos = [dict(r) for r in conn.execute(
+            """select t.*,
+                      count(s.id) filter (where s.status = 'sent') as enviados,
+                      count(s.id) filter (where s.status = 'sent' and s.created_at >= %(ini_7d)s) as enviados_7d,
+                      count(s.id) filter (where s.status = 'failed') as falhas,
+                      count(distinct s.driver_id) filter (where s.status = 'sent' and d.plan <> 'free') as viraram_pro
+                 from public.email_templates t
+                 left join public.email_sends s on s.template_id = t.id
+                 left join public.drivers d on d.id = s.driver_id
+                group by t.id
+                order by t.position, t.created_at""", params).fetchall()]
+        totais = dict(conn.execute(
+            """select count(*) filter (where status <> 'failed' and created_at >= %(ini_hoje)s) as hoje,
+                      count(*) filter (where status = 'sent' and created_at >= %(ini_7d)s) as d7,
+                      count(*) filter (where status = 'sent' and created_at >= %(ini_30d)s) as d30,
+                      count(*) filter (where status = 'failed') as falhas,
+                      count(*) filter (where status = 'sending' and created_at < now() - interval '1 hour') as presos,
+                      count(distinct driver_id) filter (where status = 'sent') as alcancados
+                 from public.email_sends""", params).fetchone())
+        totais.update(conn.execute(
+            f"""select count(*) filter (where plan = 'free' and marketing_optout_at is null
+                                          and {_sql_email_aceito('email')}) as publico,
+                       count(*) filter (where marketing_optout_at is not null) as descadastrados,
+                       count(*) filter (where plan <> 'free' and exists (
+                           select 1 from public.email_sends s
+                            where s.driver_id = drivers.id and s.status = 'sent')) as convertidos
+                  from public.drivers""").fetchone())
+        # Quem cada modelo ativo pegaria se o motor rodasse agora (sem contar
+        # teto diário e horário). Um motorista pode aparecer em dois modelos;
+        # o intervalo mínimo faz ele receber só um por vez.
+        ativos = [m["id"] for m in modelos if m["active"]]
+        for m in modelos:
+            m["na_vez"] = (len(candidatos_do_modelo(conn, m, agora, cfg["min_gap_hours"], 1000, passada=ativos))
+                           if m["active"] else None)
+            m["quando"] = descrever_gatilho(m)
+        ultimos = [dict(r) for r in conn.execute(
+            """select s.created_at, s.status, s.error, t.name as modelo, d.id as driver_id, d.full_name
+                 from public.email_sends s
+                 join public.email_templates t on t.id = s.template_id
+                 join public.drivers d on d.id = s.driver_id
+                order by s.created_at desc limit 30""").fetchall()]
+    return {"cfg": cfg, "modelos": modelos, "totais": totais, "ultimos": ultimos,
+            "reply_to": endereco_de_resposta(), "remetente": remetente_automacao(),
+            "resend_ok": bool(os.environ.get("RESEND_API_KEY", "").strip()),
+            "agora_br": agora.astimezone(BR_TZ)}
+
+
+@app.get("/admin/emails")
+@admin_required
+def admin_emails():
+    try:
+        dados = painel_emails()
+    except Exception as exc:
+        if _migracao_email_pendente(exc):
+            return render_template("admin/emails.html", pendente=True)
+        raise
+    return render_template("admin/emails.html", d=dados, pendente=False,
+                           hora_inicio=EMAIL_AUTO_HORA_INICIO, hora_fim=EMAIL_AUTO_HORA_FIM + 1,
+                           janela=EMAIL_AUTO_JANELA_DIAS)
+
+
+@app.post("/admin/emails/motor")
+@admin_required
+def admin_emails_motor():
+    ligar = request.form.get("ligar") == "1"
+    with get_store().pool.connection() as conn:
+        conn.execute("update public.email_settings set enabled = %s, updated_at = now() where id", (ligar,))
+    app.logger.info("admin %s %s a automação de e-mails", g.admin["email"], "ligou" if ligar else "desligou")
+    flash("Motor ligado: os modelos ativos saem a partir da próxima hora cheia." if ligar
+          else "Motor desligado: nenhum e-mail automático sai até você ligar de novo.", "success")
+    return redirect(url_for("admin_emails"))
+
+
+@app.post("/admin/emails/config")
+@admin_required
+def admin_emails_config():
+    try:
+        teto = int(request.form.get("daily_cap", ""))
+        intervalo = int(request.form.get("min_gap_hours", ""))
+    except ValueError:
+        flash("Use números inteiros no teto e no intervalo.", "danger")
+        return redirect(url_for("admin_emails"))
+    if not (0 <= teto <= 10000 and 0 <= intervalo <= 720):
+        flash("Teto de 0 a 10.000 por dia e intervalo de 0 a 720 horas.", "danger")
+        return redirect(url_for("admin_emails"))
+    with get_store().pool.connection() as conn:
+        conn.execute("update public.email_settings set daily_cap = %s, min_gap_hours = %s, updated_at = now() where id",
+                     (teto, intervalo))
+    app.logger.info("admin %s mudou a automação: teto %s/dia, intervalo %sh", g.admin["email"], teto, intervalo)
+    flash("Configuração salva.", "success")
+    return redirect(url_for("admin_emails"))
+
+
+@app.post("/admin/emails/rodar")
+@admin_required
+def admin_emails_rodar():
+    r = rodar_automacao_email()
+    texto = f"{r['enviados']} e-mail(s) enviado(s)" + (f", {r['falhas']} falha(s)" if r["falhas"] else "") + "."
+    if r["motivo"]:
+        texto += " " + EMAIL_MOTIVOS.get(r["motivo"], r["motivo"])
+    app.logger.info("admin %s rodou a automação de e-mails: %s", g.admin["email"], r)
+    flash(texto, "success" if r["enviados"] else "info")
+    return redirect(url_for("admin_emails"))
+
+
+def _render_modelo(m: dict, novo: bool, status: int = 200):
+    previa = None
+    if not novo and not variaveis_desconhecidas(m.get("subject", ""), m.get("body", "")):
+        previa = montar_email_automacao(m, valores_do_email(MOTORISTA_EXEMPLO), absolute_url("email_descadastro", token="exemplo"))
+    return render_template("admin/email_modelo.html", m=m, novo=novo, previa=previa,
+                           gatilhos=EMAIL_GATILHOS, variaveis=EMAIL_VARIAVEIS,
+                           exemplo=valores_do_email(MOTORISTA_EXEMPLO)), status
+
+
+@app.route("/admin/emails/novo", methods=["GET", "POST"])
+@admin_required
+def admin_email_novo():
+    if request.method == "POST":
+        dados, erros = _ler_formulario_modelo()
+        if erros:
+            for e in erros:
+                flash(e, "danger")
+            return _render_modelo(dados, novo=True, status=400)
+        with get_store().pool.connection() as conn:
+            novo = conn.execute(
+                f"""insert into public.email_templates ({", ".join(_COLUNAS_MODELO)})
+                    values ({", ".join("%(" + c + ")s" for c in _COLUNAS_MODELO)}) returning id""",
+                dados).fetchone()
+        app.logger.info("admin %s criou o modelo de e-mail %s", g.admin["email"], novo["id"])
+        flash("Modelo criado.", "success")
+        return redirect(url_for("admin_email_modelo", modelo_id=novo["id"]))
+
+    with get_store().pool.connection() as conn:
+        proxima = conn.execute("select coalesce(max(position), 0) + 1 as p from public.email_templates").fetchone()["p"]
+    vazio = {"name": "", "subject": "", "body": "Olá, {{nome}}.\n\n", "button_text": "",
+             "button_url": "", "trigger": "signup", "trigger_value": 1, "send_hour": 10, "position": proxima,
+             "active": False, "scheduled_local": ""}
+    return _render_modelo(vazio, novo=True)
+
+
+@app.route("/admin/emails/<uuid:modelo_id>", methods=["GET", "POST"])
+@admin_required
+def admin_email_modelo(modelo_id):
+    with get_store().pool.connection() as conn:
+        atual = _modelo_ou_404(conn, modelo_id)
+    if request.method == "POST":
+        dados, erros = _ler_formulario_modelo()
+        if erros:
+            for e in erros:
+                flash(e, "danger")
+            return _render_modelo(dict(dados, id=atual["id"]), novo=False, status=400)
+        with get_store().pool.connection() as conn:
+            conn.execute(
+                f"""update public.email_templates
+                       set {", ".join(c + " = %(" + c + ")s" for c in _COLUNAS_MODELO)}, updated_at = now()
+                     where id = %(id)s""",
+                dict(dados, id=atual["id"]))
+        app.logger.info("admin %s editou o modelo de e-mail %s", g.admin["email"], atual["id"])
+        flash("Modelo salvo.", "success")
+        return redirect(url_for("admin_email_modelo", modelo_id=atual["id"]))
+    return _render_modelo(_para_formulario(atual), novo=False)
+
+
+@app.post("/admin/emails/<uuid:modelo_id>/ativo")
+@admin_required
+def admin_email_ativo(modelo_id):
+    with get_store().pool.connection() as conn:
+        m = _modelo_ou_404(conn, modelo_id)
+        if not m["active"] and m["trigger"] == "scheduled" and not m["scheduled_at"]:
+            flash("Marque a data da campanha antes de ativar.", "danger")
+            return redirect(url_for("admin_email_modelo", modelo_id=m["id"]))
+        conn.execute("update public.email_templates set active = not active, updated_at = now() where id = %s", (m["id"],))
+    app.logger.info("admin %s %s o modelo de e-mail %s", g.admin["email"], "desativou" if m["active"] else "ativou", m["id"])
+    flash(f"“{m['name']}” {'desativado' if m['active'] else 'ativado'}.", "success")
+    if request.form.get("voltar") == "modelo":
+        return redirect(url_for("admin_email_modelo", modelo_id=m["id"]))
+    return redirect(url_for("admin_emails"))
+
+
+@app.post("/admin/emails/<uuid:modelo_id>/duplicar")
+@admin_required
+def admin_email_duplicar(modelo_id):
+    with get_store().pool.connection() as conn:
+        m = _modelo_ou_404(conn, modelo_id)
+        copia = dict(m, name=f"Cópia de {m['name']}"[:80], active=False,
+                     position=conn.execute("select coalesce(max(position), 0) + 1 as p from public.email_templates").fetchone()["p"])
+        novo = conn.execute(
+            f"""insert into public.email_templates ({", ".join(_COLUNAS_MODELO)})
+                values ({", ".join("%(" + c + ")s" for c in _COLUNAS_MODELO)}) returning id""",
+            copia).fetchone()
+    flash("Cópia criada, desativada. Ajuste e ative quando quiser.", "success")
+    return redirect(url_for("admin_email_modelo", modelo_id=novo["id"]))
+
+
+@app.post("/admin/emails/<uuid:modelo_id>/excluir")
+@admin_required
+def admin_email_excluir(modelo_id):
+    with get_store().pool.connection() as conn:
+        m = _modelo_ou_404(conn, modelo_id)
+        envios = conn.execute("select count(*) as n from public.email_sends where template_id = %s", (m["id"],)).fetchone()["n"]
+        if envios:
+            # O histórico é o que impede reenviar o mesmo e-mail e o que mede
+            # quem virou Pro. Apagar o modelo levaria os dois.
+            flash(f"“{m['name']}” já foi enviado {envios} vez(es) e guarda esse histórico. Desative em vez de excluir.", "danger")
+            return redirect(url_for("admin_email_modelo", modelo_id=m["id"]))
+        conn.execute("delete from public.email_templates where id = %s", (m["id"],))
+    app.logger.info("admin %s excluiu o modelo de e-mail %s", g.admin["email"], m["id"])
+    flash(f"“{m['name']}” excluído.", "success")
+    return redirect(url_for("admin_emails"))
+
+
+@app.post("/admin/emails/<uuid:modelo_id>/teste")
+@admin_required
+def admin_email_teste(modelo_id):
+    with get_store().pool.connection() as conn:
+        m = _modelo_ou_404(conn, modelo_id)
+    if get_store().bump_counter(f"email_teste:{g.admin['_id']}:{today_br()}") > EMAIL_AUTO_TESTES_DIA:
+        flash(f"Limite de {EMAIL_AUTO_TESTES_DIA} e-mails de teste por dia atingido.", "danger")
+        return redirect(url_for("admin_email_modelo", modelo_id=m["id"]))
+    msg = montar_email_automacao(m, valores_do_email(MOTORISTA_EXEMPLO), absolute_url("email_descadastro", token="exemplo"))
+    msg["assunto"] = f"[Teste] {msg['assunto']}"
+    ok, _, erro, _ = enviar_email_automacao(g.admin["email"], msg)
+    if ok:
+        flash(f"Teste enviado para {g.admin['email']}, com os dados de um motorista de exemplo.", "success")
+    else:
+        flash(f"O teste não saiu: {erro or 'erro desconhecido'}.", "danger")
+    return redirect(url_for("admin_email_modelo", modelo_id=m["id"]))
+
+
+@app.get("/admin/emails/<uuid:modelo_id>/previa")
+@admin_required
+def admin_email_previa(modelo_id):
+    """O HTML do e-mail, para o iframe da página do modelo. Sem script nenhum."""
+    with get_store().pool.connection() as conn:
+        m = _modelo_ou_404(conn, modelo_id)
+    msg = montar_email_automacao(m, valores_do_email(MOTORISTA_EXEMPLO), absolute_url("email_descadastro", token="exemplo"))
+    resposta = app.response_class(msg["html"], mimetype="text/html")
+    # Só esta resposta pode ir num iframe, e só dentro do próprio site.
+    resposta.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; frame-ancestors 'self'")
+    resposta.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return resposta
 
 
 # ── Filtros Jinja do painel ──────────────────────────────────────────────────

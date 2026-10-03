@@ -89,17 +89,21 @@ reservadas para documentação.
 | `RESEND_API_KEY` | para o reset de senha | Vazio: cai para SMTP |
 | `EMAIL_FROM` | recomendada | Remetente. Exige domínio verificado no Resend |
 | `SMTP_HOST` e `SMTP_*` | alternativa ao Resend | Ignorado se houver `RESEND_API_KEY` |
-| `CRON_SECRET` | para a limpeza | Vazio: `/tarefas/limpeza` responde 503 |
+| `CRON_SECRET` | para os crons | Vazio: `/tarefas/limpeza` e `/tarefas/emails` respondem 503 |
+| `EMAIL_REPLY_TO` | para a automação | Caixa que recebe as respostas dos e-mails automáticos. Sem ela, as respostas se perdem |
+| `EMAIL_FROM_AUTOMACAO` | não | Remetente dos e-mails automáticos. Padrão: o `EMAIL_FROM` |
 
 ## Banco
 
-Schema em `supabase/migrations/`. Quatro tabelas:
+Schema em `supabase/migrations/`. Tabelas principais:
 
 - `drivers` — contas dos motoristas
 - `receipts` — recibos emitidos (`rid` de 14 hex; com 10 a chance de colisão
   passava de 36% em 1 milhão de recibos)
 - `rate_limits` — contadores antiabuso (cadastro, nova senha, login do painel)
 - `receipt_quotas` — cota mensal do plano Grátis
+- `email_templates`, `email_sends` e `email_settings` — automação de e-mails
+  (migração 0007; ver a seção própria)
 
 **Toda tabela de `public` tem RLS ligado e nenhuma policy** (migração 0006). O
 app conecta como `postgres`, dono das tabelas, e não é afetado; o que o RLS
@@ -196,6 +200,65 @@ O que o painel ainda **não** mede, por falta de instrumentação: upgrades e
 cancelamentos por dia, mensal × anual, e-mails entregues × falhos, canal do
 recibo (site × app) e se o cron rodou. O caminho é uma tabela de eventos
 alimentada pelos webhooks e pelo cron.
+
+## Automação de e-mails (`/admin/emails`)
+
+Régua de e-mails para quem tem conta e ainda está no Grátis. Cada **modelo** é
+um e-mail com a sua programação, editável no painel (assunto, texto, botão,
+gatilho, hora, ordem, ativo). A migração 0007 traz 13 modelos prontos; o do
+plano anual e a campanha de exemplo nascem desligados.
+
+| Gatilho | Sai quando |
+|---|---|
+| `signup` | N dias depois do cadastro |
+| `no_receipt` | N dias depois do cadastro, se ainda não emitiu nenhum recibo |
+| `monthly_usage` | chegou a N recibos no mês (uma vez por mês; só o modelo de maior N alcançado) |
+| `inactive` | N dias sem emitir, para quem já emitiu (volta a valer se ele emitir e parar de novo) |
+| `scheduled` | campanha em data marcada, para quem tem N+ dias de cadastro |
+
+O cron `GET /tarefas/emails` roda de hora em hora (minuto 5) e só manda das 8h
+às 21h de Brasília. O que garante o comportamento:
+
+- **Nunca duas vezes:** a linha de `email_sends` nasce antes do envio, com
+  unique (modelo, motorista, `dedupe_key`), e o Resend recebe um
+  `Idempotency-Key`.
+- **Assinou ou descadastrou, para:** a consulta só pega `plan = 'free'` e
+  `marketing_optout_at` vazio na hora do envio.
+- **Não é retroativo:** quem passou mais de 3 dias do ponto de um e-mail (7
+  para campanha) não recebe mais aquele. Ligar o motor não despeja a régua
+  inteira em quem se cadastrou há meses; para a base antiga, use campanha.
+- **Um por vez:** no máximo um e-mail por motorista a cada N horas (padrão 20)
+  e um teto diário somando todos (padrão 80), editáveis no painel. O teto
+  existe porque a cota do Resend é a mesma do e-mail de senha e de recibo.
+- **Falhas:** 429, 5xx, rede e 401/403 (chave ou domínio mal configurados)
+  soltam a reserva e encerram a passada — a próxima hora tenta de novo. Os
+  outros 4xx marcam `failed` e não repetem.
+- **Fora da régua:** contas `.invalid` (suíte) e `@recibotaxi.com.br` (como a
+  de demonstração da Apple — o domínio não recebe e-mail).
+
+**Descadastro.** Todo e-mail tem link no rodapé e os cabeçalhos
+`List-Unsubscribe` + `List-Unsubscribe-Post` (RFC 8058), que dão o botão
+"Cancelar inscrição" do Gmail. `GET /emails/sair/<token>` só mostra o botão:
+antivírus de e-mail abrem todo link da mensagem, e um GET que descadastrasse
+tiraria todo mundo da lista. O token é assinado e não expira.
+
+**Links.** Os botões de venda usam `{{link_app}}` → `/baixar`, que manda para a
+App Store ou o Google Play conforme o celular (no computador, para a seção do
+app na home). A assinatura acontece no app; o checkout do site depende da
+Stripe em produção.
+
+**Medição.** O painel mostra, por modelo, quantos receberam e quantos dos que
+receberam são Pro hoje — correlação, não prova de que o e-mail vendeu. Aberturas
+e cliques não são medidos.
+
+Os modelos "Quase no limite do mês" (gatilho 4) e "Limite do mês atingido"
+(gatilho 6) têm o número fixo no gatilho; o texto usa `{{limite}}`. Mudou o
+`FREE_MONTHLY_LIMIT`, ajuste os dois gatilhos no painel.
+
+O motor nasce **desligado** (`email_settings.enabled = false`). Para ligar:
+aplicar a migração 0007, definir `EMAIL_REPLY_TO`, revisar os modelos (o botão
+"Enviar teste para mim" manda a versão salva para o e-mail do admin) e clicar
+em "Ligar o motor".
 
 ## Planos
 

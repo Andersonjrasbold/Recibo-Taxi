@@ -23,6 +23,7 @@
         <tr><td>Último login</td><td>{{ m.last_sign_in_at | data_br }}</td></tr>
         <tr><td>Sessões vivas</td><td>{{ sessoes if sessoes is not none else '-' }}</td></tr>
         <tr><td>E-mails enviados hoje</td><td>{{ emails_hoje }}</td></tr>
+        <tr><td>E-mails automáticos</td><td>{% if automacao is none %}-{% elif automacao.marketing_optout_at %}<span class="adm-falha">descadastrado em {{ automacao.marketing_optout_at | data_br }}</span>{% else %}{{ automacao.recebidos }} recebido(s){% if automacao.ultimo %}, o último em {{ automacao.ultimo | data_br }}{% endif %}{% endif %}</td></tr>
         {% if m.banned_until %}<tr><td>Bloqueado até</td><td class="adm-falha">{{ m.banned_until | data_br }}</td></tr>{% endif %}
       </table>
       <p class="adm-suave">CPF mascarado de propósito: o painel não precisa do número inteiro para dar suporte.</p>

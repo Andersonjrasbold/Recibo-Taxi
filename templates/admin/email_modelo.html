@@ -1,0 +1,133 @@
+{% extends "admin/layout.html" %}
+{% block title %}{{ 'Novo modelo' if novo else m.name }} — E-mails{% endblock %}
+{% block admin %}
+<p><a href="{{ url_for('admin_emails') }}" class="adm-link"><i class="bi bi-arrow-left me-1"></i>E-mails</a></p>
+<div class="adm-cabecalho">
+  <h1 class="admin-titulo">{{ 'Novo modelo' if novo else m.name }}</h1>
+  {% if not novo %}
+  <div class="adm-acoes">
+    <form action="{{ url_for('admin_email_teste', modelo_id=m.id) }}" method="post" class="d-inline">
+      <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+      <button type="submit" class="adm-botao" title="Manda a versão salva para {{ admin_user.email }}"><i class="bi bi-send me-1"></i>Enviar teste para mim</button>
+    </form>
+    <form action="{{ url_for('admin_email_duplicar', modelo_id=m.id) }}" method="post" class="d-inline">
+      <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+      <button type="submit" class="adm-botao"><i class="bi bi-files me-1"></i>Duplicar</button>
+    </form>
+    <form action="{{ url_for('admin_email_excluir', modelo_id=m.id) }}" method="post" class="d-inline" id="formExcluirModelo">
+      <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+      <button type="submit" class="adm-botao adm-botao-perigo"><i class="bi bi-trash3 me-1"></i>Excluir</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <section class="adm-painel">
+      <form method="post" action="{{ url_for('admin_email_novo') if novo else url_for('admin_email_modelo', modelo_id=m.id) }}">
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <div class="row g-3">
+          <div class="col-sm-9">
+            <label for="name" class="adm-h3">Nome interno</label>
+            <input type="text" id="name" name="name" maxlength="80" value="{{ m.name }}" class="form-control form-control-auth" required>
+          </div>
+          <div class="col-sm-3">
+            <label for="position" class="adm-h3">Ordem</label>
+            <input type="number" id="position" name="position" min="0" max="999" value="{{ m.position }}" class="form-control form-control-auth" required>
+          </div>
+        </div>
+        <p class="adm-suave mt-1">Quando dois e-mails vencem juntos, sai o de menor ordem; o outro espera o intervalo mínimo.</p>
+
+        <h2 class="adm-h2 mt-4">Quando sai</h2>
+        <label for="trigger" class="adm-h3">Gatilho</label>
+        <select id="trigger" name="trigger" class="form-select form-control-auth">
+          {% for chave, (rotulo, unidade) in gatilhos.items() %}
+          <option value="{{ chave }}" data-unidade="{{ unidade }}" {% if m.trigger == chave %}selected{% endif %}>{{ rotulo }}</option>
+          {% endfor %}
+        </select>
+        <div class="row g-3 mt-1">
+          <div class="col-sm-4">
+            <label for="trigger_value" class="adm-h3">Número (<span id="unidade">{{ gatilhos[m.trigger][1] if m.trigger in gatilhos else 'dias' }}</span>)</label>
+            <input type="number" id="trigger_value" name="trigger_value" min="0" max="365" value="{{ m.trigger_value }}" class="form-control form-control-auth" required>
+          </div>
+          <div class="col-sm-4">
+            <label for="send_hour" class="adm-h3">A partir das (hora)</label>
+            <input type="number" id="send_hour" name="send_hour" min="0" max="23" value="{{ m.send_hour }}" class="form-control form-control-auth" required>
+          </div>
+          <div class="col-sm-4" id="campoData">
+            <label for="scheduled_at" class="adm-h3">Data da campanha</label>
+            <input type="datetime-local" id="scheduled_at" name="scheduled_at" value="{{ m.scheduled_local }}" class="form-control form-control-auth">
+          </div>
+        </div>
+        <p class="adm-suave mt-2">Horário de Brasília. O motor só manda das 8h às 21h; o que vencer fora disso sai na manhã seguinte.</p>
+
+        <h2 class="adm-h2 mt-4">Conteúdo</h2>
+        <label for="subject" class="adm-h3">Assunto</label>
+        <input type="text" id="subject" name="subject" maxlength="150" value="{{ m.subject }}" class="form-control form-control-auth" required>
+        <label for="body" class="adm-h3 mt-3">Texto</label>
+        <textarea id="body" name="body" rows="16" maxlength="5000" class="form-control form-control-auth adm-textarea" required>{{ m.body }}</textarea>
+        <p class="adm-suave mt-1">Linha em branco separa parágrafos. Linha começando com "- " vira item de lista. <code>**assim**</code> vira negrito. A assinatura ("Equipe Recibo Táxi"), depois do botão, e o rodapé com o link de descadastro entram sozinhos.</p>
+        <div class="row g-3">
+          <div class="col-sm-5">
+            <label for="button_text" class="adm-h3">Texto do botão</label>
+            <input type="text" id="button_text" name="button_text" maxlength="60" value="{{ m.button_text }}" class="form-control form-control-auth" placeholder="Opcional">
+          </div>
+          <div class="col-sm-7">
+            <label for="button_url" class="adm-h3">Link do botão</label>
+            <input type="text" id="button_url" name="button_url" maxlength="300" value="{{ m.button_url }}" class="form-control form-control-auth" placeholder="{{ '{{link_planos}}' }}">
+          </div>
+        </div>
+        <label class="adm-check mt-3"><input type="checkbox" name="active" value="1" {% if m.active %}checked{% endif %}> Ativo: sai sozinho quando o motor estiver ligado</label>
+        <button type="submit" class="btn btn-auth-submit mt-3">Salvar</button>
+      </form>
+    </section>
+  </div>
+
+  <div class="col-lg-5">
+    {% if previa %}
+    <section class="adm-painel">
+      <h2 class="adm-h2">Prévia</h2>
+      <p class="adm-suave">Versão salva, com um motorista de exemplo. O teste também manda a versão salva.</p>
+      <p class="mb-2"><span class="adm-h3">Assunto</span><br>{{ previa.assunto }}</p>
+      <iframe src="{{ url_for('admin_email_previa', modelo_id=m.id) }}" class="adm-previa" title="Prévia do e-mail" sandbox></iframe>
+      <details class="mt-2">
+        <summary class="adm-suave">Versão em texto puro</summary>
+        <pre class="adm-texto">{{ previa.texto }}</pre>
+      </details>
+    </section>
+    {% endif %}
+    <section class="adm-painel">
+      <h2 class="adm-h2">Variáveis</h2>
+      <p class="adm-suave">Valem no assunto, no texto e no botão.</p>
+      <table class="adm-tabela adm-tabela-mini">
+        {% for nome, descricao in variaveis.items() %}
+        <tr><td><code>{{ '{{' ~ nome ~ '}}' }}</code></td><td class="adm-quebra">{{ descricao }}<br><small class="adm-suave">ex.: {{ exemplo[nome] }}</small></td></tr>
+        {% endfor %}
+      </table>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+  var gatilho = document.getElementById('trigger');
+  function atualizarGatilho() {
+    var opcao = gatilho.options[gatilho.selectedIndex];
+    document.getElementById('unidade').textContent = opcao.getAttribute('data-unidade');
+    document.getElementById('campoData').hidden = gatilho.value !== 'scheduled';
+  }
+  gatilho.addEventListener('change', atualizarGatilho);
+  atualizarGatilho();
+
+  var formExcluir = document.getElementById('formExcluirModelo');
+  if (formExcluir) {
+    formExcluir.addEventListener('submit', function (event) {
+      if (!window.confirm('Excluir este modelo? Não dá para desfazer.')) {
+        event.preventDefault();
+      }
+    });
+  }
+</script>
+{% endblock %}

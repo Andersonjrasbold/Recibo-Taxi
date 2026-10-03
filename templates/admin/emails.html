@@ -1,0 +1,166 @@
+{% extends "admin/layout.html" %}
+{% import "admin/_macros.html" as ui %}
+{% block title %}E-mails — Painel{% endblock %}
+{% block admin %}
+{% if pendente %}
+<h1 class="admin-titulo">Automação de e-mails</h1>
+<section class="adm-painel">
+  <p><i class="bi bi-exclamation-triangle-fill adm-falha me-2"></i><strong>Falta aplicar a migração <code>0007_automacao_email.sql</code> no Supabase.</strong></p>
+  <p class="adm-suave mb-0">Cole o arquivo <code>supabase/migrations/0007_automacao_email.sql</code> no SQL Editor do Supabase e rode. Até lá o cron de e-mails não faz nada.</p>
+</section>
+{% else %}
+{% set cfg = d.cfg %}
+<div class="adm-cabecalho">
+  <h1 class="admin-titulo">Automação de e-mails</h1>
+  <div class="adm-acoes">
+    <span class="adm-motor {{ 'adm-motor-ligado' if cfg.enabled else 'adm-motor-desligado' }}">
+      <i class="bi bi-{{ 'play-circle-fill' if cfg.enabled else 'pause-circle-fill' }} me-1"></i>Motor {{ 'ligado' if cfg.enabled else 'desligado' }}
+    </span>
+    <form action="{{ url_for('admin_emails_motor') }}" method="post" class="d-inline" id="formMotor" data-ligar="{{ '0' if cfg.enabled else '1' }}">
+      <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+      <input type="hidden" name="ligar" value="{{ '0' if cfg.enabled else '1' }}">
+      <button type="submit" class="adm-botao {{ '' if cfg.enabled else 'adm-botao-primario' }}">
+        {{ 'Desligar' if cfg.enabled else 'Ligar o motor' }}
+      </button>
+    </form>
+  </div>
+</div>
+
+{% if not d.resend_ok %}
+<div class="alert alert-danger" role="alert"><i class="bi bi-x-octagon-fill me-2"></i><strong>RESEND_API_KEY não está configurada.</strong> Nenhum e-mail sai, nem o de teste.</div>
+{% endif %}
+{% if not d.reply_to %}
+<div class="alert alert-warning" role="alert">
+  <i class="bi bi-reply-fill me-2"></i><strong>As respostas se perdem.</strong>
+  Os e-mails saem de <code>{{ d.remetente }}</code>, e o domínio não recebe e-mail. Vários modelos pedem "responda este e-mail":
+  defina <code>EMAIL_REPLY_TO</code> na Vercel com uma caixa que alguém leia.
+</div>
+{% endif %}
+{% if d.totais.presos %}
+<div class="alert alert-warning" role="alert"><i class="bi bi-hourglass-split me-2"></i>{{ d.totais.presos }} envio(s) ficaram pela metade (a função caiu no meio). Não são repetidos; veja no Resend se saíram.</div>
+{% endif %}
+
+<p class="adm-suave">
+  Recebe quem está no plano Grátis e não se descadastrou. Assinou, para na hora. O cron roda de hora em hora e só manda das
+  {{ hora_inicio }}h às {{ hora_fim }}h (Brasília). Cada e-mail sai uma vez por motorista; quem passou mais de {{ janela }} dias do
+  ponto de um e-mail não recebe mais aquele — ligar o motor não despeja a régua inteira em quem se cadastrou há meses.
+  Para falar com a base antiga, use uma campanha com data.
+</p>
+
+<div class="db-stats adm-kpis">
+  {{ ui.kpi(d.totais.hoje, 'Enviados hoje', 'send', 'coral', sufixo='/' ~ cfg.daily_cap) }}
+  {{ ui.kpi(d.totais.d7, 'Nos últimos 7 dias', 'calendar-week', 'blue') }}
+  {{ ui.kpi(d.totais.publico, 'No Grátis, recebendo', 'people', 'orange') }}
+  {{ ui.kpi(d.totais.convertidos, 'Receberam e hoje são Pro', 'star', 'green', sufixo=' de ' ~ d.totais.alcancados) }}
+  {{ ui.kpi(d.totais.descadastrados, 'Descadastrados', 'envelope-x', 'coral') }}
+</div>
+
+<section class="adm-painel">
+  <div class="adm-cabecalho">
+    <h2 class="adm-h2 mb-0">Modelos</h2>
+    <div class="adm-acoes">
+      <form action="{{ url_for('admin_emails_rodar') }}" method="post" class="d-inline">
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <button type="submit" class="adm-botao" {% if not cfg.enabled %}disabled title="Ligue o motor primeiro"{% endif %}>
+          <i class="bi bi-lightning-charge me-1"></i>Rodar agora
+        </button>
+      </form>
+      <a href="{{ url_for('admin_email_novo') }}" class="adm-botao adm-botao-primario"><i class="bi bi-plus-lg me-1"></i>Novo modelo</a>
+    </div>
+  </div>
+  <div class="table-responsive"><table class="adm-tabela">
+    <thead><tr>
+      <th class="adm-num">#</th><th>Modelo</th><th>Quando sai</th>
+      <th class="adm-num" title="Quem receberia se o motor rodasse agora, sem contar teto e horário">Na vez</th>
+      <th class="adm-num">Enviados</th>
+      <th class="adm-num" title="Quem recebeu este e-mail e hoje está no Pro. Não prova que assinou por causa dele.">Hoje Pro</th>
+      <th>Situação</th>
+    </tr></thead>
+    <tbody>
+    {% for m in d.modelos %}
+      <tr class="{{ '' if m.active else 'adm-inativo' }}">
+        <td class="adm-num">{{ m.position }}</td>
+        <td><a href="{{ url_for('admin_email_modelo', modelo_id=m.id) }}" class="adm-link">{{ m.name }}</a><br><small class="adm-suave">{{ m.subject }}</small></td>
+        <td>{{ m.quando }}</td>
+        <td class="adm-num">{{ m.na_vez if m.na_vez is not none else '-' }}</td>
+        <td class="adm-num">{{ m.enviados }}{% if m.enviados_7d %}<br><small class="adm-suave">{{ m.enviados_7d }} em 7 dias</small>{% endif %}{% if m.falhas %}<br><small class="adm-falha">{{ m.falhas }} falha(s)</small>{% endif %}</td>
+        <td class="adm-num">{{ m.viraram_pro }}</td>
+        <td>
+          <form action="{{ url_for('admin_email_ativo', modelo_id=m.id) }}" method="post" class="d-inline">
+            <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+            <button type="submit" class="adm-chave {{ 'adm-chave-on' if m.active else '' }}" title="Clique para {{ 'desativar' if m.active else 'ativar' }}">{{ 'Ativo' if m.active else 'Inativo' }}</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="adm-suave">Nenhum modelo ainda.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<div class="row g-4">
+  <div class="col-lg-5">
+    <section class="adm-painel">
+      <h2 class="adm-h2">Regras gerais</h2>
+      <form action="{{ url_for('admin_emails_config') }}" method="post">
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <label for="daily_cap" class="adm-h3">Teto de e-mails por dia, somando todos</label>
+        <input type="number" id="daily_cap" name="daily_cap" min="0" max="10000" value="{{ cfg.daily_cap }}" class="form-control form-control-auth" required>
+        <p class="adm-suave mt-1">O plano grátis do Resend manda 100 por dia, e essa conta inclui os e-mails de senha e de recibo. Deixe folga.</p>
+        <label for="min_gap_hours" class="adm-h3 mt-2">Horas mínimas entre dois e-mails para a mesma pessoa</label>
+        <input type="number" id="min_gap_hours" name="min_gap_hours" min="0" max="720" value="{{ cfg.min_gap_hours }}" class="form-control form-control-auth" required>
+        <button type="submit" class="btn btn-auth-submit mt-3">Salvar</button>
+      </form>
+      <table class="adm-tabela adm-tabela-mini mt-3">
+        <tr><td>Remetente</td><td>{{ d.remetente }}</td></tr>
+        <tr><td>Respostas vão para</td><td>{% if d.reply_to %}{{ d.reply_to }}{% else %}<span class="adm-falha">ninguém (falta EMAIL_REPLY_TO)</span>{% endif %}</td></tr>
+        <tr><td>Horário de envio</td><td>{{ hora_inicio }}h às {{ hora_fim }}h, Brasília</td></tr>
+        <tr><td>Agora</td><td>{{ d.agora_br.strftime('%d/%m/%Y %H:%M') }}</td></tr>
+      </table>
+    </section>
+  </div>
+  <div class="col-lg-7">
+    <section class="adm-painel">
+      <h2 class="adm-h2">Últimos envios</h2>
+      <div class="table-responsive"><table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Quando</th><th>Motorista</th><th>Modelo</th><th>Situação</th></tr></thead>
+        <tbody>
+        {% for e in d.ultimos %}
+          <tr>
+            <td>{{ e.created_at | data_br }}</td>
+            <td><a href="{{ url_for('admin_motorista', driver_id=e.driver_id) }}" class="adm-link">{{ e.full_name or '-' }}</a></td>
+            <td>{{ e.modelo }}</td>
+            <td>
+              {% if e.status == 'sent' %}<span class="adm-ok">enviado</span>
+              {% elif e.status == 'failed' %}<span class="adm-falha" title="{{ e.error }}">falhou</span>
+              {% else %}<span class="adm-suave">enviando</span>{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="adm-suave">Nenhum envio ainda.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </section>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+  var formMotor = document.getElementById('formMotor');
+  if (formMotor) {
+    formMotor.addEventListener('submit', function (event) {
+      var ligar = formMotor.getAttribute('data-ligar') === '1';
+      var texto = ligar
+        ? 'Ligar o motor? Os modelos ativos passam a sair para os motoristas de verdade a partir da próxima hora cheia.'
+        : 'Desligar o motor? Nenhum e-mail automático sai até você ligar de novo.';
+      if (!window.confirm(texto)) {
+        event.preventDefault();
+      }
+    });
+  }
+</script>
+{% endblock %}

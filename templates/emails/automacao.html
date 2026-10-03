@@ -1,0 +1,49 @@
+<!doctype html>
+{# E-mail da automação. Leitor de e-mail não é navegador: layout em tabela,
+   estilo inline, nada de CSS externo, fonte web ou script. #}
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{ assunto }}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#fff4ec;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#fff4ec;">{{ resumo }}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#fff4ec;">
+  <tr>
+    <td align="center" style="padding:28px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;">
+        <tr>
+          <td style="padding:0 6px 18px 6px;font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:bold;color:#100d0d;">
+            <span style="color:#ec5543;">&#9632;</span> Recibo Táxi
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color:#ffffff;border-radius:14px;padding:30px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;color:#2b2523;">
+            {{ corpo }}
+            {% if botao_texto %}
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 4px 0;">
+              <tr>
+                <td style="border-radius:10px;background-color:#ec5543;">
+                  <a href="{{ botao_link }}" style="display:inline-block;padding:13px 24px;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:10px;">{{ botao_texto }}</a>
+                </td>
+              </tr>
+            </table>
+            {% endif %}
+            <p style="margin:{{ '20px' if botao_texto else '0' }} 0 0 0;">{{ assinatura }}</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:18px 6px 0 6px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;color:#7a6e68;">
+            Baixe o app: <a href="{{ link_iphone }}" style="color:#7a6e68;">iPhone</a> · <a href="{{ link_android }}" style="color:#7a6e68;">Android</a><br>
+            Você recebe este e-mail porque tem cadastro no Recibo Táxi.
+            <a href="{{ link_sair }}" style="color:#7a6e68;">Não quero mais receber estes e-mails</a>.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

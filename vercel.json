@@ -24,6 +24,10 @@
     {
       "path": "/tarefas/limpeza",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/tarefas/emails",
+      "schedule": "5 * * * *"
     }
   ],
   "regions": [

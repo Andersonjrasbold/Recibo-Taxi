@@ -69,6 +69,15 @@ def limpar_contas_de_teste():
             # Painel: admins de teste e tentativas de login da suite.
             conn.execute("delete from public.admin_users where email like '%%@teste.invalid'")
             conn.execute("delete from public.rate_limits where key like 'admin_login:%%'")
+            # Automacao de e-mails: modelos da suite que sobraram de uma execucao
+            # interrompida. Os envios das contas de teste ja sairam no cascade.
+            try:
+                with conn.transaction():
+                    conn.execute("""delete from public.email_sends where template_id in (
+                                      select id from public.email_templates where name like 'teste-suite-%%')""")
+                    conn.execute("delete from public.email_templates where name like 'teste-suite-%%'")
+            except A.psycopg.errors.UndefinedTable:
+                pass  # migracao 0007 ainda nao aplicada
     return removidas
 
 
@@ -1307,6 +1316,179 @@ A.ADMIN_LOGIN_DAILY_LIMIT_EMAIL_TOTAL = _total
 check("teto total por e-mail vale mesmo trocando de IP", _codigos == [401, 401, 429], str(_codigos))
 A.get_store().delete_admin(_adm["_id"])
 check("admin de teste apagado", A.get_store().get_admin_by_email(_email_adm) is None)
+
+# -- Automacao de e-mails (/admin/emails, migracao 0007) ---------------------
+# Roda contra producao, entao: o envio e um stub (nada sai pelo Resend), so as
+# contas da suite entram (restringir_a), os modelos da suite nascem DESLIGADOS
+# (o cron de producao nunca os ve) e o relogio e de janeiro de 2020 — o teto
+# diario e o intervalo minimo nao enxergam os envios de verdade de hoje.
+# Nada aqui chama /admin/emails/rodar, /tarefas/emails com o segredo, o envio
+# de teste, nem muda o interruptor ou o teto: tudo isso agiria em producao.
+print("\n-- Automacao de e-mails --")
+from datetime import datetime as _dt_em, timedelta as _td_em
+_suf_em = os.urandom(3).hex()
+_agora_em = _dt_em(2020, 1, 15, 14, 0, tzinfo=A.BR_TZ)
+_st_em = A.get_store()
+
+
+def _motorista_em(nome, criado, plano="free", usados_mes=0, optout=False):
+    email = f"em-{nome}-{_suf_em}@teste.invalid"
+    novo_cliente(email)
+    did = _st_em.get_user_by_email(email)["_id"]
+    with _st_em.pool.connection() as conn:
+        conn.execute("update public.drivers set created_at = %s, plan = %s, marketing_optout_at = %s where id = %s",
+                     (criado, plano, _agora_em if optout else None, did))
+        if usados_mes:
+            conn.execute("""insert into public.receipt_quotas (driver_id, period, used)
+                            values (%s, public.br_period(%s), %s)""", (did, _agora_em, usados_mes))
+    return did
+
+
+def _modelo_em(nome, gatilho, n, hora, posicao):
+    with _st_em.pool.connection() as conn:
+        return str(conn.execute(
+            """insert into public.email_templates
+                 (name, subject, body, button_text, button_url, trigger, trigger_value, send_hour, position, active)
+               values (%s, %s, %s, 'Abrir', '{{link_app}}', %s, %s, %s, %s, false) returning id""",
+            (f"teste-suite-{_suf_em}-{nome}", f"{nome} {{{{nome}}}}",
+             "Olá, {{nome}}.\n\nVocê usou {{recibos_mes}} de {{limite}}.\n\n- item **um**",
+             gatilho, n, hora, posicao)).fetchone()["id"])
+
+
+_m_em = {
+    "boas": _modelo_em("boas", "signup", 0, 8, 1),
+    "lembrete": _modelo_em("lembrete", "no_receipt", 4, 10, 2),
+    "quase": _modelo_em("quase", "monthly_usage", 4, 9, 3),
+    "limite": _modelo_em("limite", "monthly_usage", 6, 8, 4),
+}
+_d_em = {
+    "ana": _motorista_em("ana", _agora_em - _td_em(hours=5)),                 # cadastro hoje
+    "bia": _motorista_em("bia", _agora_em - _td_em(days=4)),                  # 4 dias, sem recibo
+    "eva": _motorista_em("eva", _agora_em - _td_em(days=20), usados_mes=6),   # bateu o limite
+    "fabi": _motorista_em("fabi", _agora_em - _td_em(days=20), usados_mes=4), # quase
+    "gil": _motorista_em("gil", _agora_em - _td_em(hours=5), plano="pro"),    # assinante
+    "hugo": _motorista_em("hugo", _agora_em - _td_em(hours=5), optout=True),  # descadastrado
+}
+_nome_em = {v: k for k, v in _d_em.items()}
+_saiu_em = []
+
+
+def _stub_em(destino, msg, chave=""):
+    _saiu_em.append((destino, msg, chave))
+    return True, "re_suite", "", False
+
+
+def _rodar_em(**kw):
+    with A.app.test_request_context("/"):
+        return A.rodar_automacao_email(**dict(dict(agora=_agora_em, enviar=_stub_em, pausa=0, ignorar_desligado=True,
+                                                   restringir_a=list(_d_em.values()), modelos=list(_m_em.values())), **kw))
+
+
+def _envios_em():
+    with _st_em.pool.connection() as conn:
+        linhas = conn.execute("""select s.driver_id, t.name, s.status from public.email_sends s
+                                   join public.email_templates t on t.id = s.template_id
+                                  where t.id = any(%s::uuid[])""", (list(_m_em.values()),)).fetchall()
+    return {(_nome_em[str(l["driver_id"])], l["name"].rsplit("-", 1)[1], l["status"]) for l in linhas}
+
+
+r = _rodar_em(agora=_dt_em(2020, 1, 15, 22, 0, tzinfo=A.BR_TZ))
+check("motor nao manda fora do horario", r["motivo"] == "fora_do_horario" and not _saiu_em, str(r))
+r = _rodar_em()
+_esperado_em = {("ana", "boas", "sent"), ("bia", "lembrete", "sent"), ("eva", "limite", "sent"), ("fabi", "quase", "sent")}
+check("cada motorista recebe o e-mail da sua vez", _envios_em() == _esperado_em, str(sorted(_envios_em() ^ _esperado_em)))
+check("assinante e descadastrado ficam de fora",
+      not {d for d, _, _ in _saiu_em} & {f"em-gil-{_suf_em}@teste.invalid", f"em-hugo-{_suf_em}@teste.invalid"})
+check("quem bateu 6 nao recebe tambem o 'faltam 0'", ("eva", "quase", "sent") not in _envios_em())
+_msg_em = next(m for d, m, _ in _saiu_em if d.startswith("em-fabi-"))
+check("variaveis preenchidas no e-mail", _msg_em["assunto"] == "quase Ana" and "Você usou 4 de 6." in _msg_em["texto"],
+      _msg_em["assunto"])
+check("e-mail tem botao para /baixar e link de descadastro",
+      "/baixar" in _msg_em["html"] and "/emails/sair/" in _msg_em["html"] and _msg_em["link_sair"] in _msg_em["texto"])
+_antes_em = len(_saiu_em)
+r = _rodar_em()
+check("segunda passada nao repete ninguem", len(_saiu_em) == _antes_em and r["enviados"] == 0, str(r))
+
+# Falha temporaria solta a reserva; falha definitiva fica marcada e nao repete.
+with _st_em.pool.connection() as _conn:
+    _conn.execute("delete from public.email_sends where driver_id = %s", (_d_em["ana"],))
+r = _rodar_em(restringir_a=[_d_em["ana"]], enviar=lambda d, m, c="": (False, "", "HTTP 500", True))
+check("erro 500 encerra a passada e solta a reserva",
+      r["motivo"] == "provedor_indisponivel" and ("ana", "boas", "sent") not in _envios_em()
+      and not any(d == "ana" for d, _, _ in _envios_em()), str(r))
+r = _rodar_em(restringir_a=[_d_em["ana"]], enviar=lambda d, m, c="": (False, "", "HTTP 422", False))
+check("erro 422 fica marcado como falha", ("ana", "boas", "failed") in _envios_em(), str(_envios_em()))
+r = _rodar_em(restringir_a=[_d_em["ana"]])
+check("falha definitiva nao e reenviada", r["enviados"] == 0, str(r))
+
+# Descadastro: GET so mostra o botao (antivirus abre todo link do e-mail).
+_cli_em = A.app.test_client()
+_tok_em = A.token_descadastro(_d_em["fabi"])
+def _optout_em():
+    with _st_em.pool.connection() as conn:
+        return conn.execute("select marketing_optout_at from public.drivers where id = %s",
+                            (_d_em["fabi"],)).fetchone()["marketing_optout_at"]
+r = _cli_em.get(f"/emails/sair/{_tok_em}")
+check("GET do descadastro nao descadastra", r.status_code == 200 and _optout_em() is None, r.status_code)
+r = _cli_em.post(f"/emails/sair/{_tok_em}", data={"acao": "sair"})
+check("POST descadastra", r.status_code == 200 and _optout_em() is not None, r.status_code)
+r = _cli_em.post(f"/emails/sair/{_tok_em}", data={"acao": "voltar"})
+check("'foi engano' volta para a lista", r.status_code == 200 and _optout_em() is None, r.status_code)
+r = _cli_em.post(f"/emails/sair/{_tok_em}", data="List-Unsubscribe=One-Click",
+                 content_type="application/x-www-form-urlencoded")
+check("descadastro de um clique do Gmail (RFC 8058)", r.status_code == 200 and _optout_em() is not None, r.status_code)
+check("token adulterado da 404", _cli_em.get(f"/emails/sair/{_tok_em}x").status_code == 404)
+check("cron de e-mails fica fechado sem o segredo", _cli_em.get("/tarefas/emails").status_code in (401, 503))
+check("/baixar no iPhone vai a App Store", _cli_em.get("/baixar", headers={
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"}).headers.get("Location") == A.APP_STORE_URL)
+check("/baixar no Android vai ao Google Play", _cli_em.get("/baixar", headers={
+    "User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location") == A.PLAY_STORE_URL)
+
+# Painel: so leitura e um modelo criado e apagado (desligado).
+_adm_em = _st_em.upsert_admin(f"admin-em-{_suf_em}@teste.invalid", _gph("senha-da-suite-123"))
+_ce = A.app.test_client()
+_adm_post(_ce, "/admin/login", email=f"admin-em-{_suf_em}@teste.invalid", senha="senha-da-suite-123")
+with _ce.session_transaction() as _s:
+    _csrf_em = _s.get("admin_csrf", "")
+r = _ce.get("/admin/emails"); _html_em = r.get_data(as_text=True)
+check("painel de e-mails abre", r.status_code == 200 and "Automação de e-mails" in _html_em, r.status_code)
+check("painel lista os modelos da suite", f"teste-suite-{_suf_em}-boas" in _html_em)
+r = _ce.get(f"/admin/emails/{_m_em['quase']}")
+check("pagina do modelo abre", r.status_code == 200, r.status_code)
+check("paginas do painel continuam fora de iframe", "frame-ancestors 'none'" in r.headers.get("Content-Security-Policy", ""))
+r = _ce.get(f"/admin/emails/{_m_em['quase']}/previa")
+check("previa so pode ir em iframe do proprio site",
+      r.status_code == 200 and "frame-ancestors 'self'" in r.headers.get("Content-Security-Policy", "")
+      and "script-src" not in r.headers.get("Content-Security-Policy", ""), r.headers.get("Content-Security-Policy"))
+_form_em = {"csrf": _csrf_em, "name": f"teste-suite-{_suf_em}-form", "subject": "Oi {{nome}}", "body": "Olá",
+            "trigger": "signup", "trigger_value": "1", "send_hour": "10", "position": "99",
+            "button_text": "", "button_url": ""}
+r = _ce.post("/admin/emails/novo", data=dict(_form_em, subject="Oi {{nomee}}"))
+check("variavel inexistente e recusada", r.status_code == 400 and "{{nomee}}" in r.get_data(as_text=True), r.status_code)
+r = _ce.post("/admin/emails/novo", data=dict(_form_em, button_text="Ir", button_url="javascript:alert(1)"))
+check("link do botao javascript: e recusado", r.status_code == 400, r.status_code)
+r = _ce.post("/admin/emails/novo", data={k: v for k, v in _form_em.items() if k != "csrf"})
+check("criar modelo sem csrf da 400", r.status_code == 400, r.status_code)
+r = _ce.post("/admin/emails/novo", data=_form_em)
+_novo_em = r.headers.get("Location", "").rstrip("/").rsplit("/", 1)[-1]
+check("modelo novo nasce desligado", r.status_code == 302 and _novo_em, r.status_code)
+if _novo_em:
+    r = _ce.post(f"/admin/emails/{_novo_em}/excluir", data={"csrf": _csrf_em})
+    with _st_em.pool.connection() as _conn:
+        _resta = _conn.execute("select count(*) as n from public.email_templates where id = %s", (_novo_em,)).fetchone()["n"]
+    check("modelo sem envios pode ser excluido", _resta == 0)
+r = _ce.post(f"/admin/emails/{_m_em['boas']}/excluir", data={"csrf": _csrf_em})
+with _st_em.pool.connection() as _conn:
+    _resta = _conn.execute("select count(*) as n from public.email_templates where id = %s", (_m_em["boas"],)).fetchone()["n"]
+check("modelo com historico nao e excluido", _resta == 1)
+r = _ce.get(f"/admin/motoristas/{_d_em['fabi']}")
+check("ficha mostra a situacao na automacao",
+      r.status_code == 200 and "descadastrado em" in r.get_data(as_text=True), r.status_code)
+
+_st_em.delete_admin(_adm_em["_id"])
+with _st_em.pool.connection() as _conn:
+    _conn.execute("delete from public.email_sends where template_id = any(%s::uuid[])", (list(_m_em.values()),))
+    _conn.execute("delete from public.email_templates where id = any(%s::uuid[])", (list(_m_em.values()),))
 
 # -- Data API do Supabase fechada (migracao 0006) ---------------------------
 # O app nao usa o PostgREST, mas o Supabase expoe o schema public por ele.

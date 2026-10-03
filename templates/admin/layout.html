@@ -11,6 +11,9 @@
       <a href="{{ url_for('admin_motoristas') }}" class="admin-nav-link {% if request.endpoint in ('admin_motoristas', 'admin_motorista') %}ativo{% endif %}">
         <i class="bi bi-people me-1"></i>Motoristas
       </a>
+      <a href="{{ url_for('admin_emails') }}" class="admin-nav-link {% if request.endpoint and request.endpoint.startswith('admin_email') %}ativo{% endif %}">
+        <i class="bi bi-envelope-paper me-1"></i>E-mails
+      </a>
       <a href="{{ url_for('admin_senha') }}" class="admin-nav-link {% if request.endpoint == 'admin_senha' %}ativo{% endif %}">
         <i class="bi bi-key me-1"></i>Minha senha
       </a>

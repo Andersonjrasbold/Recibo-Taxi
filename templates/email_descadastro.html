@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}E-mails do Recibo Táxi{% endblock %}
+{% block head %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-md-10 col-lg-8 col-xl-6">
+        <div class="auth-card">
+          <div class="auth-card-header">
+            <div class="auth-logo">
+              <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+            </div>
+            {% if estado == 'invalido' %}
+            <h1 class="auth-title">Link inválido</h1>
+            <p class="auth-subtitle">
+              Este link de descadastro não é válido ou a conta não existe mais.
+              Se você continua recebendo nossos e-mails, escreva para
+              <a href="mailto:suporte@recibotaxi.com.br" class="auth-switch-link">suporte@recibotaxi.com.br</a>.
+            </p>
+            {% elif estado == 'confirmar' %}
+            <h1 class="auth-title">Parar de receber nossos e-mails?</h1>
+            <p class="auth-subtitle">
+              <strong>{{ email }}</strong> deixa de receber dicas e ofertas do Recibo Táxi.
+              E-mails da sua conta, como o de nova senha, continuam chegando.
+            </p>
+            {% elif estado in ('saiu', 'ja_saiu') %}
+            <h1 class="auth-title">Pronto, você saiu da lista</h1>
+            <p class="auth-subtitle">
+              <strong>{{ email }}</strong> não recebe mais dicas e ofertas do Recibo Táxi.
+              E-mails da sua conta, como o de nova senha, continuam chegando.
+            </p>
+            {% elif estado == 'voltou' %}
+            <h1 class="auth-title">Você voltou para a lista</h1>
+            <p class="auth-subtitle">
+              <strong>{{ email }}</strong> volta a receber dicas e novidades do Recibo Táxi.
+            </p>
+            {% endif %}
+          </div>
+
+          {% if estado == 'confirmar' %}
+          <form action="{{ url_for('email_descadastro', token=token) }}" method="post" class="auth-form">
+            <input type="hidden" name="acao" value="sair">
+            <button type="submit" class="btn btn-auth-submit w-100">
+              <i class="bi bi-envelope-x me-2"></i>Não quero mais receber
+            </button>
+          </form>
+          {% elif estado in ('saiu', 'ja_saiu') %}
+          <form action="{{ url_for('email_descadastro', token=token) }}" method="post" class="auth-form">
+            <input type="hidden" name="acao" value="voltar">
+            <button type="submit" class="btn btn-pricing-ghost w-100">Foi engano, quero continuar recebendo</button>
+          </form>
+          {% endif %}
+
+          <div class="text-center mt-3">
+            <a href="{{ url_for('index') }}" class="auth-switch-link">Ir para o Recibo Táxi</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

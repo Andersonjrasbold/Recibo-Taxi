@@ -24,7 +24,7 @@
 {# ── 2. Receita ────────────────────────────────────────────────────── #}
 <section class="adm-painel">
   <h2 class="adm-h2"><i class="bi bi-cash-stack me-2"></i>Receita</h2>
-  <p class="adm-suave">MRR é uma faixa: o banco não diz quem é mensal ou anual na Stripe (piso = todos anuais a R$ 9,95/mês; teto = todos mensais a R$ 19,90) e a Apple fica com 15% do que vem da loja. Business legado não tem preço registrado{% if d.mrr.business_sem_preco %} ({{ d.mrr.business_sem_preco }} conta(s)){% endif %}.</p>
+  <p class="adm-suave">MRR é uma faixa: o banco não diz quem é mensal ou anual na Stripe (piso = todos anuais a R$ 9,99/mês; teto = todos mensais a R$ 19,90) e a Apple fica com 15% do que vem da loja. Business legado não tem preço registrado{% if d.mrr.business_sem_preco %} ({{ d.mrr.business_sem_preco }} conta(s)){% endif %}.</p>
   <div class="row g-4">
     <div class="col-lg-8">
       <h3 class="adm-h3">Assinantes ativos ({{ (d.pagantes or []) | length }}, alterados por último primeiro)</h3>

@@ -60,7 +60,7 @@
             <span class="pricing-cents">,90</span>
             <span class="pricing-period">/mês</span>
           </div>
-          <p class="pricing-anual">ou <strong>R$ 119,40/ano</strong> em pagamento único — <span class="pricing-anual-badge">50% de desconto</span></p>
+          <p class="pricing-anual">ou <strong>R$ 119,90/ano</strong> em pagamento único — <span class="pricing-anual-badge">economize R$ 118,90</span></p>
           <p class="pricing-tagline">Para taxistas que trabalham todo dia</p>
           <ul class="pricing-features">
             <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
@@ -83,7 +83,7 @@
             </form>
             {% if stripe_configured %}
             <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post" class="mt-2">
-              <button type="submit" class="btn btn-pricing-ghost w-100">Mudar para o anual — R$ 119,40/ano</button>
+              <button type="submit" class="btn btn-pricing-ghost w-100">Mudar para o anual — R$ 119,90/ano</button>
             </form>
             {% endif %}
             {% elif plano == 'business' %}{# assinante antigo do Business: só o portal #}
@@ -102,7 +102,7 @@
             </form>
             {% if stripe_configured %}
             <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post" class="mt-2">
-              <button type="submit" class="btn btn-pricing-ghost w-100">Assinar anual — R$ 119,40 (economize 50%)</button>
+              <button type="submit" class="btn btn-pricing-ghost w-100">Assinar anual — R$ 119,90 (economize R$ 118,90)</button>
             </form>
             {% endif %}
             {% endif %}
@@ -146,7 +146,7 @@
               </h3>
               <div id="faq-anual" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
                 <div class="accordion-body faq-body">
-                  É o mesmo Pro, com tudo ilimitado, pago uma única vez por ano: R$ 119,40, metade do que custam 12 meses no plano mensal. Quem já é Pro mensal pode mudar para o anual a qualquer momento — os dias que sobraram do mês são descontados. A renovação acontece só a cada 12 meses e pode ser cancelada pelo portal do cliente.
+                  É o mesmo Pro, com tudo ilimitado, pago uma única vez por ano: R$ 119,90, quase metade dos R$ 238,80 que custam 12 meses no plano mensal. Quem já é Pro mensal pode mudar para o anual a qualquer momento — os dias que sobraram do mês são descontados. A renovação acontece só a cada 12 meses e pode ser cancelada pelo portal do cliente.
                 </div>
               </div>
             </div>

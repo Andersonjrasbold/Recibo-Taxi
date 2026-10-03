@@ -158,7 +158,7 @@
 
     <div class="row g-4 justify-content-center mt-2">
       <!-- Free -->
-      <div class="col-sm-10 col-md-5">
+      <div class="col-sm-10 col-md-6 col-lg-4">
         <div class="pricing-card">
           <div class="pricing-plan-name">Grátis</div>
           <div class="pricing-price-wrap">
@@ -179,18 +179,53 @@
         </div>
       </div>
 
-      <!-- Pro -->
-      <div class="col-sm-10 col-md-5">
-        <div class="pricing-card pricing-featured">
-          <div class="pricing-popular-badge">Mais popular</div>
-          <div class="pricing-plan-name">Pro</div>
+      <!-- Pro anual. O valor por mes e o destaque; o total cobrado vem logo
+           abaixo, legivel, para ninguem confundir R$ 9,99 com a cobranca. -->
+      <div class="col-sm-10 col-md-6 col-lg-4">
+        <div class="pricing-card pricing-featured" data-plano="anual">
+          <div class="pricing-popular-badge">Melhor custo-benefício</div>
+          <div class="pricing-plan-name">Pro anual</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">9</span>
+            <span class="pricing-cents">,99</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-cobranca"><strong>R$ 119,90/ano</strong>, pagos de uma vez</p>
+          <p class="pricing-anual"><span class="pricing-anual-badge">economize R$ 118,90</span> em relação ao mensal</p>
+          <p class="pricing-tagline">Para quem trabalha o ano todo</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Tudo do Pro mensal</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Histórico completo e permanente</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Uma cobrança por ano, sem mensalidade</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Renova sozinho, cancele quando quiser</li>
+          </ul>
+          {% if anual_no_site %}
+            {% if current_user %}
+            <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post">
+              <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 119,90/ano</button>
+            </form>
+            {% else %}
+            <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
+            {% endif %}
+          {% else %}
+          <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
+          {% endif %}
+          {% if not anual_no_site %}<p class="pricing-cta-nota">Assinatura feita no app para iPhone e Android.</p>{% endif %}
+        </div>
+      </div>
+
+      <!-- Pro mensal -->
+      <div class="col-sm-10 col-md-6 col-lg-4">
+        <div class="pricing-card" data-plano="mensal">
+          <div class="pricing-plan-name">Pro mensal</div>
           <div class="pricing-price-wrap">
             <span class="pricing-currency">R$</span>
             <span class="pricing-amount">19</span>
             <span class="pricing-cents">,90</span>
             <span class="pricing-period">/mês</span>
           </div>
-          <p class="pricing-anual">ou <strong>R$ 119,90/ano</strong> — <span class="pricing-anual-badge">economize R$ 118,90</span></p>
           <p class="pricing-tagline">Para quem trabalha todo dia</p>
           <ul class="pricing-features">
             <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
@@ -202,10 +237,10 @@
           </ul>
           {% if current_user %}
           <form action="{{ url_for('assinar', plan='pro') }}" method="post">
-            <button type="submit" class="btn btn-pricing-primary w-100">Assinar Pro</button>
+            <button type="submit" class="btn btn-pricing-ghost w-100">Assinar Pro</button>
           </form>
           {% else %}
-          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com Pro</a>
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar com Pro</a>
           {% endif %}
         </div>
       </div>

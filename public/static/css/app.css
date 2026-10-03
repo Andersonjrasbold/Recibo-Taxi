@@ -503,6 +503,9 @@ a { color: inherit; text-decoration: none; }
 .pricing-anual   { font-size: .82rem; color: rgba(255,244,236,.7); margin: -.35rem 0 .9rem; }
 .pricing-anual strong { color: var(--paper); font-weight: 800; }
 .pricing-anual-badge { display: inline-block; padding: .1rem .45rem; border-radius: 999px; font-size: .72rem; font-weight: 800; color: #1a1210; background: var(--apricot); }
+.pricing-cobranca { font-size: .92rem; color: rgba(255,244,236,.82); margin: -.2rem 0 .55rem; }
+.pricing-cobranca strong { color: var(--paper); font-weight: 800; }
+.pricing-cta-nota { font-size: .76rem; color: rgba(255,244,236,.5); text-align: center; margin: .6rem 0 0; }
 
 .pricing-features { list-style: none; padding: 0; margin: 0 0 1.5rem; display: grid; gap: .5rem; flex: 1; }
 .pricing-features li { display: flex; align-items: flex-start; gap: .55rem; font-size: .87rem; }

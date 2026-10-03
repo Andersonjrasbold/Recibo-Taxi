@@ -1376,6 +1376,11 @@ def inject_globals() -> dict:
         "current_year": datetime.now(BR_TZ).year,
         "csp_nonce": g.get("csp_nonce", ""),
         "stripe_configured": bool(os.environ.get("STRIPE_SECRET_KEY")),
+        # O site so vende o anual com o Price dele configurado. Sem isso, o card do
+        # anual leva ao app, onde a loja vende — e nao a um checkout que responde
+        # "plano indisponivel".
+        "anual_no_site": bool(os.environ.get("STRIPE_SECRET_KEY", "").strip()
+                              and os.environ.get(STRIPE_PRICE_IDS["pro_anual"], "").strip()),
         "stripe_pub_key": os.environ.get("STRIPE_PUBLISHABLE_KEY", ""),
         "free_monthly_limit": FREE_MONTHLY_LIMIT,
         "app_store_url": APP_STORE_URL,

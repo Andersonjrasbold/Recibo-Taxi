@@ -16,7 +16,7 @@
     <!-- Cards -->
     <div class="row g-4 justify-content-center">
       <!-- Free -->
-      <div class="col-sm-10 col-md-6 col-lg-5">
+      <div class="col-sm-10 col-md-6 col-lg-4">
         <div class="pricing-card">
           <div class="pricing-plan-name">Grátis</div>
           <div class="pricing-price-wrap">
@@ -49,18 +49,68 @@
         </div>
       </div>
 
-      <!-- Pro (featured) -->
-      <div class="col-sm-10 col-md-6 col-lg-5">
-        <div class="pricing-card pricing-featured">
-          <div class="pricing-popular-badge">Mais popular</div>
-          <div class="pricing-plan-name">Pro</div>
+      <!-- Pro anual. O valor por mes e o destaque; o total cobrado vem logo
+           abaixo, legivel, para ninguem confundir R$ 9,99 com a cobranca. -->
+      <div class="col-sm-10 col-md-6 col-lg-4">
+        <div class="pricing-card pricing-featured" data-plano="anual">
+          <div class="pricing-popular-badge">Melhor custo-benefício</div>
+          <div class="pricing-plan-name">Pro anual</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">9</span>
+            <span class="pricing-cents">,99</span>
+            <span class="pricing-period">/mês</span>
+          </div>
+          <p class="pricing-cobranca"><strong>R$ 119,90/ano</strong>, pagos de uma vez</p>
+          <p class="pricing-anual"><span class="pricing-anual-badge">economize R$ 118,90</span> em relação ao mensal</p>
+          <p class="pricing-tagline">Para quem trabalha o ano todo</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Tudo do Pro mensal</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Histórico completo e permanente</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Uma cobrança por ano, sem mensalidade</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Renova sozinho, cancele quando quiser</li>
+          </ul>
+          {% if current_user %}
+            {% set plano = current_user.get('plan', 'free') %}
+            {% if plano == 'pro' %}
+              {% if anual_no_site %}
+              <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post">
+                <button type="submit" class="btn btn-pricing-primary w-100">Mudar para o anual — R$ 119,90/ano</button>
+              </form>
+              {% else %}
+              <p class="pricing-cta-nota mb-0">Seu Pro já está ativo.</p>
+              {% endif %}
+            {% elif plano == 'business' %}{# assinante antigo do Business: so o portal #}
+            <form action="{{ url_for('portal_cliente') }}" method="post">
+              <button type="submit" class="btn btn-pricing-ghost w-100">Gerenciar assinatura</button>
+            </form>
+            {% elif anual_no_site %}
+            <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post">
+              <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 119,90/ano</button>
+            </form>
+            {% else %}
+            <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
+            {% endif %}
+          {% elif anual_no_site %}
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
+          {% else %}
+          <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
+          {% endif %}
+          {% if not anual_no_site and not (current_user and current_user.get('plan', 'free') == 'pro') %}<p class="pricing-cta-nota">Assinatura feita no app para iPhone e Android.</p>{% endif %}
+        </div>
+      </div>
+
+      <!-- Pro mensal -->
+      <div class="col-sm-10 col-md-6 col-lg-4">
+        <div class="pricing-card" data-plano="mensal">
+          <div class="pricing-plan-name">Pro mensal</div>
           <div class="pricing-price-wrap">
             <span class="pricing-currency">R$</span>
             <span class="pricing-amount">19</span>
             <span class="pricing-cents">,90</span>
             <span class="pricing-period">/mês</span>
           </div>
-          <p class="pricing-anual">ou <strong>R$ 119,90/ano</strong> em pagamento único — <span class="pricing-anual-badge">economize R$ 118,90</span></p>
           <p class="pricing-tagline">Para taxistas que trabalham todo dia</p>
           <ul class="pricing-features">
             <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados</li>
@@ -81,18 +131,13 @@
             <form action="{{ url_for('portal_cliente') }}" method="post" class="mt-2">
               <button type="submit" class="btn btn-pricing-ghost w-100">Gerenciar assinatura</button>
             </form>
-            {% if stripe_configured %}
-            <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post" class="mt-2">
-              <button type="submit" class="btn btn-pricing-ghost w-100">Mudar para o anual — R$ 119,90/ano</button>
-            </form>
-            {% endif %}
-            {% elif plano == 'business' %}{# assinante antigo do Business: só o portal #}
+            {% elif plano == 'business' %}{# assinante antigo do Business: so o portal #}
             <form action="{{ url_for('portal_cliente') }}" method="post">
               <button type="submit" class="btn btn-pricing-ghost w-100">Mudar para Pro no portal</button>
             </form>
             {% else %}
             <form action="{{ url_for('assinar', plan='pro') }}" method="post">
-              <button type="submit" class="btn btn-pricing-primary w-100">
+              <button type="submit" class="btn btn-pricing-ghost w-100">
                 {% if not stripe_configured %}
                 Assinar Pro (em breve)
                 {% else %}
@@ -100,14 +145,9 @@
                 {% endif %}
               </button>
             </form>
-            {% if stripe_configured %}
-            <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post" class="mt-2">
-              <button type="submit" class="btn btn-pricing-ghost w-100">Assinar anual — R$ 119,90 (economize R$ 118,90)</button>
-            </form>
-            {% endif %}
             {% endif %}
           {% else %}
-          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com Pro</a>
+          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar com Pro</a>
           {% endif %}
         </div>
       </div>

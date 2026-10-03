@@ -1524,6 +1524,137 @@ with _st_em.pool.connection() as _conn:
     _conn.execute("delete from public.email_sends where template_id = any(%s::uuid[])", (list(_m_em.values()),))
     _conn.execute("delete from public.email_templates where id = any(%s::uuid[])", (list(_m_em.values()),))
 
+# -- Avisos para a equipe: cadastro novo e assinatura nova -------------------
+# Nada sai de verdade: send_email vira um gravador. Os contadores vao para
+# chaves 'teste:', que a limpeza da suite apaga.
+print("\n-- Avisos para a equipe --")
+_avisos = []
+_send_av, _chave_cad, _chave_ass = A.send_email, A.AVISO_CADASTRO_CHAVE, A.AVISO_ASSINATURA_CHAVE
+_suf_av = os.urandom(3).hex()
+A.AVISO_CADASTRO_CHAVE = f"teste:aviso_cadastro:{_suf_av}"
+A.AVISO_ASSINATURA_CHAVE = f"teste:aviso_assinatura:{_suf_av}"
+
+
+def _gravar_aviso(para, assunto, corpo, timeout=15):
+    _avisos.append((para, assunto, corpo))
+    return True
+
+
+A.send_email = _gravar_aviso
+_m_av = {"_id": "00000000-0000-0000-0000-0000000000a1", "email": "Rita.Lima@Gmail.com", "full_name": "Rita Lima",
+         "whatsapp": "(45) 98888-7777", "city": "Cascavel", "plate": "ABC1D23", "vehicle_model": "Spin",
+         "cpf": "123.456.789-00"}
+try:
+    with A.app.test_request_context("/"):
+        _ok = A.avisar_novo_cadastro(_m_av["_id"], _m_av, "app")
+    _para, _assunto, _corpo = _avisos[-1] if _avisos else ("", "", "")
+    check("cadastro novo avisa o suporte", _ok and _para == "suporte@recibotaxi.com.br", _para)
+    check("aviso de cadastro traz nome e cidade no assunto", _assunto == "Novo cadastro: Rita Lima (Cascavel)", _assunto)
+    check("aviso de cadastro traz contato, origem e ficha",
+          "rita.lima@gmail.com" in _corpo and "(45) 98888-7777" in _corpo and "pelo app" in _corpo
+          and f"/admin/motoristas/{_m_av['_id']}" in _corpo, _corpo[:200])
+    check("aviso de cadastro nao leva o CPF", "123.456.789-00" not in _corpo and "12345678900" not in _corpo)
+    _n = len(_avisos)
+    with A.app.test_request_context("/"):
+        A.avisar_novo_cadastro("x", dict(_m_av, email="z@teste.invalid"), "site")
+    check("conta de teste nao gera aviso", len(_avisos) == _n)
+    _teto_av, A.EMAIL_AVISO_CADASTRO_DIA = A.EMAIL_AVISO_CADASTRO_DIA, 1
+    with A.app.test_request_context("/"):
+        _ok = A.avisar_novo_cadastro(_m_av["_id"], _m_av, "site")
+    A.EMAIL_AVISO_CADASTRO_DIA = _teto_av
+    check("passou do teto diario, cadastro nao avisa", _ok is False and len(_avisos) == _n)
+    _env_av = os.environ.get("EMAIL_AVISOS")
+    os.environ["EMAIL_AVISOS"] = ""
+    with A.app.test_request_context("/"):
+        check("EMAIL_AVISOS vazio desliga os dois avisos",
+              A.avisar_novo_cadastro(_m_av["_id"], _m_av, "site") is False
+              and A.avisar_nova_assinatura(_m_av, "anual", "site (Stripe)") is False)
+    if _env_av is None:
+        os.environ.pop("EMAIL_AVISOS", None)
+    else:
+        os.environ["EMAIL_AVISOS"] = _env_av
+
+    with A.app.test_request_context("/"):
+        _ok = A.avisar_nova_assinatura(_m_av, "anual", "Google Play (Android)", "R$ 119,90", teste=True,
+                                       evento_id=f"evt-{_suf_av}")
+    _para, _assunto, _corpo = _avisos[-1]
+    check("assinatura nova avisa o suporte", _ok and _para == "suporte@recibotaxi.com.br", _para)
+    check("assunto diz o plano e marca teste", _assunto == "[TESTE] Nova assinatura: Pro anual — Rita Lima", _assunto)
+    check("aviso de assinatura traz plano, loja e valor",
+          "Plano: Pro anual" in _corpo and "Onde: Google Play (Android)" in _corpo and "Valor: R$ 119,90" in _corpo
+          and "ninguém foi cobrado" in _corpo, _corpo[:200])
+    _n = len(_avisos)
+    with A.app.test_request_context("/"):
+        A.avisar_nova_assinatura(_m_av, "anual", "Google Play (Android)", "R$ 119,90", teste=True,
+                                 evento_id=f"evt-{_suf_av}")
+    check("webhook reenviado nao repete o aviso", len(_avisos) == _n)
+    check("anual do Google (plano base) e da Apple viram 'anual'",
+          A.ciclo_do_produto("br.com.recibotaxi.app.pro.mensal:anual") == "anual"
+          and A.ciclo_do_produto("br.com.recibotaxi.app.pro.anual") == "anual"
+          and A.ciclo_do_produto("br.com.recibotaxi.app.pro.mensal:mensal") == "mensal"
+          and A.ciclo_do_produto("br.com.recibotaxi.app.pro.mensal") == "mensal")
+    check("valor em real formatado", A.valor_da_compra(119.9, "BRL") == "R$ 119,90" and A.valor_da_compra(None, "BRL") == "")
+    A.send_email = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("provedor caiu"))
+    with A.app.test_request_context("/"):
+        check("falha no envio nao derruba cadastro nem webhook",
+              A.avisar_novo_cadastro(_m_av["_id"], _m_av, "site") is False
+              and A.avisar_nova_assinatura(_m_av, "mensal", "site (Stripe)", evento_id=f"evt2-{_suf_av}") is False)
+    A.send_email = _gravar_aviso
+
+    # Os pontos de chamada: cadastro pelo site e pelo app, e os dois webhooks.
+    _chamadas = []
+    _cad_orig, _ass_orig = A.avisar_novo_cadastro, A.avisar_nova_assinatura
+    A.avisar_novo_cadastro = lambda uid, dados, origem: _chamadas.append(("cadastro", dados.get("email"), origem)) or True
+    A.avisar_nova_assinatura = (lambda m, ciclo, onde, valor="", teste=False, evento_id="":
+                                _chamadas.append(("assinatura", m.get("email"), ciclo, onde, valor, teste)) or True)
+    try:
+        _email_site = f"aviso-site-{_suf_av}@teste.invalid"
+        novo_cliente(_email_site)
+        _email_app = f"aviso-app-{_suf_av}@teste.invalid"
+        A.app.test_client().post("/api/cadastro", json={
+            "nome_completo": "Aviso App", "email": _email_app, "senha": "senha12345",
+            "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel", "placa": "AVS1234"})
+        check("cadastro pelo site chama o aviso", ("cadastro", _email_site, "site") in _chamadas, str(_chamadas))
+        check("cadastro pelo app chama o aviso", ("cadastro", _email_app, "app") in _chamadas, str(_chamadas))
+        _id_site = A.get_store().get_user_by_email(_email_site)["_id"]
+        _id_app = A.get_store().get_user_by_email(_email_app)["_id"]
+        webhook_stripe(A.app.test_client(), "checkout.session.completed", {
+            "metadata": {"user_id": _id_site, "plan": "pro", "ciclo": "anual"},
+            "customer": f"cus_aviso_{_suf_av}", "subscription": f"sub_aviso_{_suf_av}",
+            "amount_total": 11990, "currency": "brl"})
+        check("checkout da Stripe avisa a assinatura com plano e valor",
+              ("assinatura", _email_site, "anual", "site (Stripe)", "R$ 119,90", True) in _chamadas, str(_chamadas[-1:]))
+        _seg_rc = os.environ.get("REVENUECAT_WEBHOOK_SECRET")
+        os.environ["REVENUECAT_WEBHOOK_SECRET"] = "segredo-de-teste-123"
+        try:
+            _crc = A.app.test_client()
+
+            def _evento_rc(tipo):
+                return _crc.post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                                 json={"event": {"type": tipo, "id": f"rc-{tipo}-{_suf_av}", "app_user_id": _id_app,
+                                                 "product_id": "br.com.recibotaxi.app.pro.mensal:anual",
+                                                 "store": "PLAY_STORE", "environment": "SANDBOX",
+                                                 "price_in_purchased_currency": 119.9, "currency": "BRL"}}).status_code
+
+            _antes_rc = len(_chamadas)
+            check("primeira compra no app responde 200", _evento_rc("INITIAL_PURCHASE") == 200)
+            check("primeira compra no app avisa o plano e a loja",
+                  ("assinatura", _email_app, "anual", "Google Play (Android)", "R$ 119,90", True) in _chamadas[_antes_rc:],
+                  str(_chamadas[_antes_rc:]))
+            _antes_rc = len(_chamadas)
+            _evento_rc("RENEWAL")
+            check("renovacao no app nao avisa", len(_chamadas) == _antes_rc, str(_chamadas[_antes_rc:]))
+        finally:
+            if _seg_rc is None:
+                os.environ.pop("REVENUECAT_WEBHOOK_SECRET", None)
+            else:
+                os.environ["REVENUECAT_WEBHOOK_SECRET"] = _seg_rc
+    finally:
+        A.avisar_novo_cadastro, A.avisar_nova_assinatura = _cad_orig, _ass_orig
+finally:
+    A.send_email = _send_av
+    A.AVISO_CADASTRO_CHAVE, A.AVISO_ASSINATURA_CHAVE = _chave_cad, _chave_ass
+
 # -- Data API do Supabase fechada (migracao 0006) ---------------------------
 # O app nao usa o PostgREST, mas o Supabase expoe o schema public por ele.
 # Tabela sem RLS ali e tabela legivel por quem tiver a chave publicavel.

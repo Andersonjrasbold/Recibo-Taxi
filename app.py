@@ -219,9 +219,11 @@ SECURITY_HEADERS = {
 
 STRIPE_PRICE_IDS = {
     "pro": "STRIPE_PRO_PRICE_ID",
-    # Anual = o MESMO Pro, cobrado uma vez por ano com 50% de desconto
-    # (R$ 119,40 = 19,90 × 12 × 0,5; decisão do Anderson em 2026-09-16, mesmo
-    # preço no site e nas lojas). É um Price a mais no mesmo produto do Stripe:
+    # Anual = o MESMO Pro, cobrado uma vez por ano: R$ 119,90, o mesmo valor no
+    # site, na App Store e no Google Play (decisão do Anderson em 2026-10-03).
+    # Antes era R$ 119,40, metade exata de 12 mensalidades, mas a Apple não tem
+    # esse ponto de preço; 119,90 é o mais próximo. É um Price a mais no mesmo
+    # produto do Stripe:
     # o metadata.plan do checkout continua "pro", então webhook, gates e a
     # tela de planos não distinguem ciclo — só o Stripe sabe.
     "pro_anual": "STRIPE_PRO_ANUAL_PRICE_ID",
@@ -1942,7 +1944,7 @@ def _migrar_para_anual(stripe, price_id: str):
         )
         return redirect(url_for("planos"))
     flash(
-        "Pronto! Sua assinatura passou para o plano anual: R$ 119,40 por ano, "
+        "Pronto! Sua assinatura passou para o plano anual: R$ 119,90 por ano, "
         "com o que sobrou do mês já descontado.",
         "success",
     )
@@ -2975,7 +2977,7 @@ def privacidade():
 
 @app.get("/termos")
 def termos():
-    return render_template("termos.html", updated_at="12 de setembro de 2026")
+    return render_template("termos.html", updated_at="3 de outubro de 2026")
 
 
 @app.get("/excluir-conta")
@@ -3593,13 +3595,13 @@ def montar_dashboard_admin() -> dict:
         d[nome] = _com_maximo(d.get(nome) or [], "n")
 
     # MRR como faixa: o banco nao diz quem e mensal e quem e anual, nem o preco
-    # do Business legado. Piso = todo Pro da Stripe anual (119,40/12);
+    # do Business legado. Piso = todo Pro da Stripe anual (119,90/12);
     # teto = todo Pro mensal. Loja: bruto; a Apple fica com 15%.
     g = d.get("geral") or {}
     pro_stripe = int(g.get("pro_stripe") or 0)
     pro_loja = int(g.get("pro_loja") or 0)
     d["mrr"] = {
-        "piso": round(pro_stripe * 119.40 / 12 + pro_loja * 19.90 * 0.85, 2),
+        "piso": round(pro_stripe * 119.90 / 12 + pro_loja * 19.90 * 0.85, 2),
         "teto": round((pro_stripe + pro_loja) * 19.90, 2),
         "business_sem_preco": int(g.get("business") or 0),
     }

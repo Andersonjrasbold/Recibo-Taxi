@@ -399,7 +399,12 @@ def planos_html(plano):
 h = planos_html("free")
 check("free ve o botao de assinar Pro", "Assinar Pro" in h)
 check("Business nao aparece mais na pagina", "Business" not in h)
-check("free ve o plano anual com 50% de desconto", "R$ 119,40/ano" in h and "50% de desconto" in h)
+check("free ve o plano anual a R$ 119,90, o mesmo preco das lojas", "R$ 119,90/ano" in h and "economize R$ 118,90" in h)
+# O anual era R$ 119,40 ate 2026-10-03. Preco velho esquecido numa pagina e
+# promessa que o checkout nao cumpre.
+for _pag in ("/", "/planos", "/termos"):
+    check(f"{_pag} nao cita o preco antigo do anual",
+          "119,40" not in A.app.test_client().get(_pag).get_data(as_text=True))
 h = planos_html("pro")
 check("pro nao ve botao de assinar", "Assinar Pro" not in h)
 check("pro ve 'Seu plano atual' uma unica vez", h.count("Seu plano atual") == 1, h.count("Seu plano atual"))

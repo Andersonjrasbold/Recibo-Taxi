@@ -405,6 +405,35 @@ check("free ve o plano anual a R$ 119,90, o mesmo preco das lojas", "R$ 119,90/a
 for _pag in ("/", "/planos", "/termos"):
     check(f"{_pag} nao cita o preco antigo do anual",
           "119,40" not in A.app.test_client().get(_pag).get_data(as_text=True))
+# -- Card proprio do anual ------------------------------------------------
+# O valor por mes e o destaque, mas o total cobrado tem de estar no mesmo
+# card: R$ 9,99 sozinho faria o motorista achar que paga isso todo mes. E o
+# botao so vende pelo site quando o Price anual existe; sem ele, leva ao app.
+def _card(html, plano):
+    partes = html.split(f'data-plano="{plano}"', 1)
+    return partes[1].split("data-plano=", 1)[0].split("Perguntas frequentes", 1)[0] if len(partes) == 2 else ""
+
+_anual = _card(h, "anual")
+check("o anual tem card proprio, com o valor por mes em destaque",
+      'pricing-amount">9<' in _anual and ",99<" in _anual)
+check("o card do anual mostra o total cobrado no ano",
+      "R$ 119,90/ano" in _anual and "pagos de uma vez" in _anual)
+check("o card do mensal nao repete o anual", "119,90" not in _card(h, "mensal"))
+_home = A.app.test_client().get("/").get_data(as_text=True)
+check("a home tambem tem o card do anual", 'pricing-amount">9<' in _card(_home, "anual"))
+_c_anual = novo_cliente("cardanual@teste.invalid")
+_preco_anual = os.environ.pop("STRIPE_PRO_ANUAL_PRICE_ID", None)
+try:
+    check("sem o preco anual no site, o card da home leva ao app",
+          'href="/baixar"' in _card(A.app.test_client().get("/").get_data(as_text=True), "anual"))
+    check("sem o preco anual no site, o card de /planos leva ao app",
+          'href="/baixar"' in _card(_c_anual.get("/planos").get_data(as_text=True), "anual"))
+finally:
+    if _preco_anual is not None:
+        os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = _preco_anual
+if _preco_anual and os.environ.get("STRIPE_SECRET_KEY"):
+    check("com o preco anual no site, o card vende pelo site",
+          "/assinar/pro_anual" in _card(_c_anual.get("/planos").get_data(as_text=True), "anual"))
 h = planos_html("pro")
 check("pro nao ve botao de assinar", "Assinar Pro" not in h)
 check("pro ve 'Seu plano atual' uma unica vez", h.count("Seu plano atual") == 1, h.count("Seu plano atual"))

@@ -92,6 +92,7 @@ reservadas para documentação.
 | `CRON_SECRET` | para os crons | Vazio: `/tarefas/limpeza` e `/tarefas/emails` respondem 503 |
 | `EMAIL_REPLY_TO` | para a automação | Caixa que recebe as respostas dos e-mails automáticos. Sem ela, as respostas se perdem |
 | `EMAIL_FROM_AUTOMACAO` | não | Remetente dos e-mails automáticos. Padrão: o `EMAIL_FROM` |
+| `EMAIL_AVISOS` | não | Quem recebe os avisos de cadastro novo e de assinatura nova. Padrão: `suporte@recibotaxi.com.br`; vazio desliga |
 
 ## Banco
 
@@ -304,6 +305,22 @@ DATA); pela API é um POST só. O caminho SMTP continua no código como alternat
 O remetente precisa de domínio verificado no Resend. Sem isso, só
 `onboarding@resend.dev` funciona — e ele entrega apenas para o e-mail dono
 da conta.
+
+### Avisos para a equipe
+
+Dois e-mails internos vão para `EMAIL_AVISOS` (padrão `suporte@recibotaxi.com.br`):
+
+- **Cadastro novo**, no site e no app: nome, e-mail, WhatsApp, cidade, placa,
+  origem, a contagem do dia e o link da ficha no painel. Sem CPF, como no painel.
+  Teto de 50 por dia, para um robô cadastrando em massa não gastar a cota do Resend.
+- **Assinatura nova do Pro**: plano (mensal ou anual), onde assinou (site, App
+  Store ou Google Play), valor e link da ficha. Sai no `checkout.session.completed`
+  da Stripe e no `INITIAL_PURCHASE` do RevenueCat — renovação não avisa. Compra
+  de sandbox ou da Stripe em modo teste chega marcada **[TESTE]**. O id do evento
+  vira um contador, então webhook reenviado não repete o aviso.
+
+Os dois rodam dentro do cadastro ou do webhook e nunca os derrubam: falha vira
+log. Contas `.invalid` (suíte) e `@recibotaxi.com.br` não geram aviso.
 - Teto de tamanho por campo em todo formulário que escreve no banco, mais
   `MAX_CONTENT_LENGTH` de 1 MB no corpo da requisição
 - Alterar dados da conta em `/perfil` exige a senha atual

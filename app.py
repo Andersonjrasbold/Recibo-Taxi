@@ -188,6 +188,14 @@ EMAIL_AUTO_TESTES_DIA = 30  # e-mails de teste por administrador por dia
 # devolução pesa na reputação de quem manda.
 EMAIL_AUTO_SUFIXOS_EXCLUIDOS = (".invalid", "@recibotaxi.com.br")
 DESCADASTRO_SALT = "recibo-taxi-descadastro-email"
+# Avisos internos para a equipe: cadastro novo e assinatura nova do Pro.
+# EMAIL_AVISOS muda o destino; com valor vazio, desliga os dois. O teto diário
+# do cadastro existe para um robô cadastrando em massa não gastar a cota do
+# Resend que o e-mail de senha e o de recibo também usam.
+EMAIL_AVISOS_PADRAO = "suporte@recibotaxi.com.br"
+EMAIL_AVISO_CADASTRO_DIA = 50
+AVISO_CADASTRO_CHAVE = "aviso_cadastro"      # contador diário (a suíte troca)
+AVISO_ASSINATURA_CHAVE = "aviso_assinatura"  # um aviso por evento de webhook (a suíte troca)
 PRECO_PRO_MENSAL = "R$ 19,90"
 # Vai depois do botão, em todo e-mail automático: no texto ela ficaria antes dele.
 EMAIL_ASSINATURA = "Equipe Recibo Táxi"
@@ -503,6 +511,119 @@ def enviar_link_de_redefinicao(user: dict) -> bool:
             "Se não foi você quem pediu, ignore este e-mail — sua senha continua a mesma."
         ),
     )
+
+
+def destino_dos_avisos(email_do_motorista: str) -> str:
+    """Para onde vai um aviso interno, ou "" quando ele não deve sair.
+
+    Contas da suíte e contas nossas não avisam: cada execução da suíte cria
+    dezenas de cadastros e simula compras.
+    """
+    destino = os.environ.get("EMAIL_AVISOS", EMAIL_AVISOS_PADRAO).strip()
+    email = normalize_email(email_do_motorista)
+    if not destino or any(email.endswith(sufixo) for sufixo in EMAIL_AUTO_SUFIXOS_EXCLUIDOS):
+        return ""
+    return destino
+
+
+def avisar_novo_cadastro(user_id: str, dados: dict, origem: str) -> bool:
+    """Avisa a equipe, por e-mail, de cada motorista que acabou de se cadastrar.
+
+    Roda dentro do cadastro, mas nunca o derruba: qualquer falha vira log. O CPF
+    fica de fora de propósito — o painel também não mostra o número inteiro.
+    """
+    destino = destino_dos_avisos(dados.get("email", ""))
+    if not destino:
+        return False
+    email = normalize_email(dados.get("email", ""))
+    try:
+        n_hoje = get_store().bump_counter(f"{AVISO_CADASTRO_CHAVE}:{today_br()}")
+        if n_hoje > EMAIL_AVISO_CADASTRO_DIA:
+            app.logger.warning("Aviso de cadastro novo: teto de %s por dia atingido; %s não avisado.",
+                               EMAIL_AVISO_CADASTRO_DIA, user_id)
+            return False
+        nome = (dados.get("full_name") or "").strip() or "(sem nome)"
+        cidade = (dados.get("city") or "").strip()
+        veiculo = " · ".join(v for v in ((dados.get("plate") or "").strip(),
+                                          (dados.get("vehicle_model") or "").strip()) if v)
+        corpo = "\n".join([
+            f"Novo motorista no {APP_NAME}, cadastrado pelo {origem}.",
+            "",
+            f"Nome: {nome}",
+            f"E-mail: {email}",
+            f"WhatsApp: {(dados.get('whatsapp') or '').strip() or '-'}",
+            f"Cidade: {cidade or '-'}",
+            f"Placa · veículo: {veiculo or '-'}",
+            f"Quando: {datetime.now(BR_TZ).strftime('%d/%m/%Y %H:%M')} (horário de Brasília)",
+            f"É o cadastro nº {n_hoje} de hoje.",
+            "",
+            f"Ficha no painel: {absolute_url('admin_motorista', driver_id=user_id)}",
+        ])
+        assunto = f"Novo cadastro: {nome}" + (f" ({cidade})" if cidade else "")
+        # Tempo curto: o motorista está esperando a resposta do cadastro.
+        return send_email(destino, assunto, corpo, timeout=4)
+    except Exception as exc:
+        app.logger.error("Aviso de cadastro novo falhou para %s: %s", user_id, exc)
+        return False
+
+
+def ciclo_do_produto(product_id: str) -> str:
+    """Mensal ou anual pelo id do produto na loja.
+
+    No Google Play o anual é um plano base dentro da mesma assinatura: o id
+    chega como "br.com.recibotaxi.app.pro.mensal:anual". Por isso vale o que
+    vem depois dos dois-pontos.
+    """
+    parte = (product_id or "").lower().rsplit(":", 1)[-1]
+    return "anual" if any(p in parte for p in ("anual", "annual", "year")) else "mensal"
+
+
+def valor_da_compra(preco, moeda) -> str:
+    try:
+        n = float(preco)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    return filtro_brl(n) if (moeda or "").upper() == "BRL" else f"{n:.2f} {(moeda or '').upper()}".strip()
+
+
+def avisar_nova_assinatura(motorista: dict, ciclo: str, onde: str, valor: str = "",
+                           teste: bool = False, evento_id: str = "") -> bool:
+    """Avisa a equipe, por e-mail, de cada assinatura nova do Pro: plano e loja.
+
+    Roda dentro do webhook e nunca o derruba. Webhook reenviado pela loja não
+    repete o aviso: o id do evento vira um contador. Compra de sandbox ou da
+    Stripe em modo teste sai marcada [TESTE] — ninguém foi cobrado.
+    """
+    destino = destino_dos_avisos(motorista.get("email", ""))
+    if not destino:
+        return False
+    try:
+        if evento_id and get_store().bump_counter(f"{AVISO_ASSINATURA_CHAVE}:{evento_id}") > 1:
+            return False
+        plano = "Pro anual" if ciclo == "anual" else "Pro mensal"
+        nome = (motorista.get("full_name") or "").strip() or "(sem nome)"
+        corpo = "\n".join([
+            f"{nome} assinou o {plano}, pelo {onde}."
+            + (" Compra de TESTE (sandbox ou modo teste): ninguém foi cobrado." if teste else ""),
+            "",
+            f"Plano: {plano}",
+            f"Onde: {onde}",
+            f"Valor: {valor or '-'}",
+            f"Nome: {nome}",
+            f"E-mail: {normalize_email(motorista.get('email', ''))}",
+            f"WhatsApp: {(motorista.get('whatsapp') or '').strip() or '-'}",
+            f"Cidade: {(motorista.get('city') or '').strip() or '-'}",
+            f"Quando: {datetime.now(BR_TZ).strftime('%d/%m/%Y %H:%M')} (horário de Brasília)",
+            "",
+            f"Ficha no painel: {absolute_url('admin_motorista', driver_id=motorista['_id'])}",
+        ])
+        assunto = ("[TESTE] " if teste else "") + f"Nova assinatura: {plano} — {nome}"
+        return send_email(destino, assunto, corpo, timeout=4)
+    except Exception as exc:
+        app.logger.error("Aviso de assinatura nova falhou para %s: %s", motorista.get("_id"), exc)
+        return False
 
 
 def absolute_url(endpoint: str, **values) -> str:
@@ -1519,6 +1640,10 @@ def cadastro():
             flash(str(exc), "danger")
             return render_template("register.html", form=request.form), 503
 
+        avisar_novo_cadastro(user_id, {
+            "email": email, "full_name": full_name, "whatsapp": whatsapp, "city": city,
+            "plate": plate, "vehicle_model": vehicle_model,
+        }, "site")
         session["user_id"] = user_id
         session["pw_stamp"] = ""
         flash("Conta criada! Já pode emitir e salvar seus recibos.", "success")
@@ -2021,6 +2146,14 @@ def stripe_webhook():
                 "stripe_subscription_id": obj.get("subscription"),
                 "subscription_status": "active",
             })
+            motorista = store.get_user_by_id(user_id)
+            if motorista:
+                meta = obj.get("metadata", {})
+                avisar_nova_assinatura(
+                    motorista, "anual" if meta.get("ciclo") == "anual" else "mensal", "site (Stripe)",
+                    valor_da_compra((obj.get("amount_total") or 0) / 100, obj.get("currency")),
+                    # Sem livemode = evento de teste (inclusive o da suíte).
+                    teste=not evento.get("livemode", False), evento_id=str(evento.get("id") or ""))
         # "Pagamento único" literal: o anual não renova. O Stripe encerra no
         # fim dos 12 meses e o subscription.deleted abaixo derruba pra free.
         if (not ANUAL_RENOVA_AUTOMATICAMENTE
@@ -2219,7 +2352,7 @@ def api_cadastro():
         return jsonify({"erro": "senha_curta", "minimo": 8}), 400
 
     try:
-        auth_criar_usuario(
+        user_id = auth_criar_usuario(
             campos["email"],
             campos["senha"],
             {k: campos[k] for k in (
@@ -2235,6 +2368,10 @@ def api_cadastro():
     except RuntimeError:
         return jsonify({"erro": "indisponivel"}), 503
 
+    avisar_novo_cadastro(user_id, {
+        "email": campos["email"], "full_name": campos["nome_completo"], "whatsapp": campos["whatsapp"],
+        "city": campos["cidade"], "plate": campos["placa"], "vehicle_model": campos["modelo_veiculo"],
+    }, "app")
     tokens = auth_entrar_com_token(campos["email"], campos["senha"])
     if not tokens:
         return jsonify({"erro": "criado_sem_login"}), 500
@@ -2435,6 +2572,14 @@ def webhook_revenuecat():
             "subscription_status": "active",
             "stripe_subscription_id": None,
         })
+        if tipo == "INITIAL_PURCHASE":
+            loja = str(evento.get("store") or "")
+            avisar_nova_assinatura(
+                usuario, ciclo_do_produto(str(evento.get("product_id") or "")),
+                {"APP_STORE": "App Store (iPhone)", "PLAY_STORE": "Google Play (Android)"}.get(loja, loja or "app"),
+                valor_da_compra(evento.get("price_in_purchased_currency"), evento.get("currency")),
+                teste=str(evento.get("environment") or "").upper() == "SANDBOX",
+                evento_id=str(evento.get("id") or ""))
 
     elif tipo in RC_EVENTOS_ENCERRA:
         # Só rebaixa se o Pro veio do app. Quem assinou pela Stripe no site
@@ -3532,6 +3677,8 @@ def _saude_do_sistema() -> dict:
             ("Cron da automação de e-mails", tem("CRON_SECRET"), "de hora em hora"),
             ("Resposta dos e-mails automáticos (EMAIL_REPLY_TO)", tem("EMAIL_REPLY_TO"),
              os.environ.get("EMAIL_REPLY_TO", "").strip()),
+            ("Avisos para a equipe (cadastro e assinatura)", bool(os.environ.get("EMAIL_AVISOS", EMAIL_AVISOS_PADRAO).strip()),
+             os.environ.get("EMAIL_AVISOS", EMAIL_AVISOS_PADRAO).strip()),
             ("APP_BASE_URL", tem("APP_BASE_URL"), os.environ.get("APP_BASE_URL", "").strip()),
             ("Supabase (URL)", tem("SUPABASE_URL"), ""),
             ("Supabase (chave de serviço)", tem("SUPABASE_SECRET_KEY") or tem("SUPABASE_SERVICE_ROLE_KEY"), ""),

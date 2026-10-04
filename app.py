@@ -21,6 +21,7 @@ from flask import (
     abort,
     flash,
     g,
+    has_request_context,
     jsonify,
     redirect,
     render_template,
@@ -197,6 +198,13 @@ EMAIL_AVISO_CADASTRO_DIA = 50
 AVISO_CADASTRO_CHAVE = "aviso_cadastro"      # contador diário (a suíte troca)
 AVISO_ASSINATURA_CHAVE = "aviso_assinatura"  # um aviso por evento de webhook (a suíte troca)
 PRECO_PRO_MENSAL = "R$ 19,90"
+PRECO_PRO_ANUAL = "R$ 119,90"
+# Plano escolhido por quem clicou em "Assinar" antes de ter conta: aparece no
+# cadastro e no login, e depois deles a pessoa vai direto para o pagamento.
+PLANOS_ROTULO = {
+    "pro": f"Pro mensal ({PRECO_PRO_MENSAL} por mês)",
+    "pro_anual": f"Pro anual ({PRECO_PRO_ANUAL} por ano)",
+}
 # Vai depois do botão, em todo e-mail automático: no texto ela ficaria antes dele.
 EMAIL_ASSINATURA = "Equipe Recibo Táxi"
 
@@ -1486,6 +1494,18 @@ def load_current_user() -> None:
     g.user = user
 
 
+def plano_pedido(valor: str) -> str:
+    """O plano pedido na URL ou no formulário, ou "" se não for um plano à venda."""
+    valor = (valor or "").strip()
+    return valor if valor in STRIPE_PRICE_IDS else ""
+
+
+@app.context_processor
+def inject_plano_pedido() -> dict:
+    plano = plano_pedido(request.values.get("plano", "")) if has_request_context() else ""
+    return {"plano_pedido": plano, "plano_pedido_rotulo": PLANOS_ROTULO.get(plano, "")}
+
+
 @app.context_processor
 def inject_globals() -> dict:
     store = get_store()
@@ -1568,7 +1588,7 @@ def baixar_app():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if g.user:
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("planos") if plano_pedido(request.values.get("plano", "")) else url_for("dashboard"))
 
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
@@ -1580,6 +1600,10 @@ def login():
             return render_template("login.html", form=request.form), 401
         session["user_id"] = user["_id"]
         session["pw_stamp"] = user.get("password_changed_at") or ""
+        plano = plano_pedido(request.form.get("plano", ""))
+        if plano:
+            # Clicou em "Assinar" antes de entrar: segue direto para o pagamento.
+            return iniciar_checkout(user, plano)
         flash("Bem-vindo de volta!", "success")
         return redirect(url_for("dashboard"))
 
@@ -1589,7 +1613,7 @@ def login():
 @app.route("/cadastro", methods=["GET", "POST"])
 def cadastro():
     if g.user:
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("planos") if plano_pedido(request.values.get("plano", "")) else url_for("dashboard"))
 
     if request.method == "POST":
         erro_tamanho = field_limit_error(SIGNUP_FIELD_LIMITS)
@@ -1646,6 +1670,13 @@ def cadastro():
         }, "site")
         session["user_id"] = user_id
         session["pw_stamp"] = ""
+        plano = plano_pedido(request.form.get("plano", ""))
+        novo = get_store().get_user_by_id(user_id) if plano else None
+        if novo:
+            # Clicou em "Assinar" antes de ter conta: segue direto para o
+            # pagamento, sem precisar achar o botão de novo.
+            flash("Conta criada!", "success")
+            return iniciar_checkout(novo, plano)
         flash("Conta criada! Já pode emitir e salvar seus recibos.", "success")
         return redirect(url_for("dashboard"))
 
@@ -1969,6 +2000,15 @@ def planos():
 @app.post("/assinar/<plan>")
 @login_required
 def assinar(plan: str):
+    return iniciar_checkout(g.user, plan)
+
+
+def iniciar_checkout(usuario: dict, plan: str):
+    """Abre o checkout da Stripe para `usuario` e devolve o redirect.
+
+    Chamado pelo botão "Assinar" de quem está logado e logo depois do cadastro
+    ou do login de quem clicou em assinar antes de ter conta.
+    """
     stripe = get_stripe()
     if not stripe:
         flash("Pagamentos ainda não configurados. Entre em contato conosco.", "warning")
@@ -1983,46 +2023,49 @@ def assinar(plan: str):
         flash("Este plano não está disponível no momento.", "warning")
         return redirect(url_for("planos"))
 
-    # Quem já assina troca de plano pelo portal. Abrir um segundo checkout
-    # criaria uma assinatura paralela, cobrando os dois planos ao mesmo tempo.
-    if g.user.get("plan") in PAID_PLANS and g.user.get("stripe_customer_id"):
-        # Exceção: mensal → anual é troca de Price na assinatura que já existe.
-        # O Stripe zera o ciclo, credita os dias não usados do mês e cobra o
-        # ano na hora (always_invoice) — sem segunda assinatura.
-        if plan == "pro_anual" and g.user.get("stripe_subscription_id"):
-            return _migrar_para_anual(stripe, price_id)
-        flash(
-            "Você já tem uma assinatura ativa. Use 'Gerenciar plano' para "
-            "trocar de plano ou cancelar.",
-            "info",
-        )
+    # Quem já é Pro não abre um segundo checkout: seria uma assinatura
+    # paralela, cobrando duas vezes. Vale também para quem assinou pela loja —
+    # antes só a Stripe era checada, e um Pro do app conseguia pagar de novo
+    # aqui.
+    if usuario.get("plan") in PAID_PLANS:
+        # Exceção: mensal → anual na Stripe é troca de Price na assinatura que
+        # já existe. O Stripe zera o ciclo, credita os dias não usados do mês e
+        # cobra o ano na hora (always_invoice) — sem segunda assinatura.
+        if plan == "pro_anual" and usuario.get("stripe_subscription_id"):
+            return _migrar_para_anual(stripe, price_id, usuario)
+        if usuario.get("stripe_customer_id"):
+            flash(
+                "Você já tem uma assinatura ativa. Use 'Gerenciar plano' para "
+                "trocar de plano ou cancelar.",
+                "info",
+            )
+        else:
+            flash(
+                "Você já é Pro pelo app (App Store ou Google Play). Para trocar "
+                "de plano ou cancelar, use a loja do seu celular.",
+                "info",
+            )
         return redirect(url_for("dashboard"))
 
-    base = os.environ.get("APP_BASE_URL", "").strip().rstrip("/")
-    success_url = (
-        f"{base}{url_for('dashboard')}?subscribed=1"
-        if base
-        else url_for("dashboard", subscribed=1, _external=True)
-    )
-    cancel_url = (
-        f"{base}{url_for('planos')}"
-        if base
-        else url_for("planos", _external=True)
-    )
+    # Volta para o mesmo domínio em que a pessoa está (www.recibotaxi.com.br
+    # ou recibo-taxi.vercel.app): o cookie da sessão é de um domínio só, e
+    # voltar para o outro deixava quem acabou de pagar deslogado.
+    success_url = url_for("dashboard", subscribed=1, _external=True)
+    cancel_url = url_for("planos", _external=True)
 
     try:
         # Sem o parâmetro `customer`, o Checkout cria um Customer NOVO a cada
         # sessão — customer_email só preenche o campo. Dois checkouts virariam
         # dois clientes, com duas assinaturas cobrando em paralelo.
-        customer_id = g.user.get("stripe_customer_id")
+        customer_id = usuario.get("stripe_customer_id")
         if not customer_id:
             customer = stripe.Customer.create(
-                email=g.user["email"],
-                name=g.user.get("full_name") or None,
-                metadata={"user_id": g.user["_id"]},
+                email=usuario["email"],
+                name=usuario.get("full_name") or None,
+                metadata={"user_id": usuario["_id"]},
             )
             customer_id = customer.id
-            get_store().update_user(g.user["_id"], {"stripe_customer_id": customer_id})
+            get_store().update_user(usuario["_id"], {"stripe_customer_id": customer_id})
 
         # Sem payment_method_types: as versões novas da API recusam o parâmetro.
         # As formas de pagamento vêm de Configurações → Formas de pagamento no
@@ -2033,14 +2076,16 @@ def assinar(plan: str):
             mode="subscription",
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={"user_id": g.user["_id"], "plan": plano_base(plan),
+            metadata={"user_id": usuario["_id"], "plan": plano_base(plan),
                       "ciclo": PLAN_CYCLES.get(plan, "mensal")},
             locale="pt-BR",
-            idempotency_key=f"assinar:{g.user['_id']}:{plan}",
+            # O domínio entra na chave: a mesma chave com outra success_url
+            # seria recusada pela Stripe por "parâmetros diferentes".
+            idempotency_key=f"assinar:{usuario['_id']}:{plan}:{request.host}",
         )
     except Exception as exc:
         # A mensagem crua da Stripe pode conter identificadores internos.
-        app.logger.error("Falha ao criar checkout para %s: %s", g.user["_id"], exc)
+        app.logger.error("Falha ao criar checkout para %s: %s", usuario["_id"], exc)
         flash(
             "Não conseguimos iniciar o pagamento agora. Tente de novo em "
             "alguns instantes ou fale com o suporte.",
@@ -2051,10 +2096,10 @@ def assinar(plan: str):
     return redirect(checkout.url, code=303)
 
 
-def _migrar_para_anual(stripe, price_id: str):
-    """Troca o Price da assinatura ativa pelo anual. Só é chamado pelo /assinar."""
+def _migrar_para_anual(stripe, price_id: str, usuario: dict):
+    """Troca o Price da assinatura ativa pelo anual. Só é chamado por iniciar_checkout."""
     try:
-        sub = stripe.Subscription.retrieve(g.user["stripe_subscription_id"])
+        sub = stripe.Subscription.retrieve(usuario["stripe_subscription_id"])
         item = sub["items"]["data"][0]
         if item["price"]["id"] == price_id:
             flash("Você já está no plano anual.", "info")
@@ -2065,10 +2110,10 @@ def _migrar_para_anual(stripe, price_id: str):
             proration_behavior="always_invoice",
             cancel_at_period_end=not ANUAL_RENOVA_AUTOMATICAMENTE,
             metadata={"plan": "pro", "ciclo": "anual"},
-            idempotency_key=f"anual:{g.user['_id']}:{sub['id']}",
+            idempotency_key=f"anual:{usuario['_id']}:{sub['id']}",
         )
     except Exception as exc:
-        app.logger.error("Falha ao migrar %s para o anual: %s", g.user["_id"], exc)
+        app.logger.error("Falha ao migrar %s para o anual: %s", usuario["_id"], exc)
         flash(
             "Não conseguimos trocar para o plano anual agora. Tente de novo "
             "em alguns instantes ou fale com o suporte.",
@@ -2095,7 +2140,8 @@ def portal_cliente():
         flash("Você não possui uma assinatura ativa para gerenciar.", "warning")
         return redirect(url_for("dashboard"))
 
-    return_url = absolute_url("dashboard")
+    # Mesmo domínio em que a pessoa está, pelo mesmo motivo do checkout.
+    return_url = url_for("dashboard", _external=True)
     try:
         portal = stripe.billing_portal.Session.create(
             customer=customer_id, return_url=return_url

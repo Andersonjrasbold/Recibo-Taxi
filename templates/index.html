@@ -207,7 +207,7 @@
               <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 119,90/ano</button>
             </form>
             {% else %}
-            <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
+            <a href="{{ url_for('cadastro', plano='pro_anual') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
             {% endif %}
           {% else %}
           <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
@@ -240,7 +240,7 @@
             <button type="submit" class="btn btn-pricing-ghost w-100">Assinar Pro</button>
           </form>
           {% else %}
-          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar com Pro</a>
+          <a href="{{ url_for('cadastro', plano='pro') }}" class="btn btn-pricing-ghost w-100">Começar com Pro</a>
           {% endif %}
         </div>
       </div>

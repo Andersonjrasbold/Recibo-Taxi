@@ -105,10 +105,16 @@ mas com atrito — não serve para entregar a taxista.
 As capturas do iOS cruas **não servem**: 1320×2868 é mais alto que 9:16. As de `assets/loja` já vêm
 recortadas (sem a barra de status do iPhone) e centralizadas num fundo 1080×1920.
 
-**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **17**, versão 1.1
-(02/10/2026: plano anual na tela de assinatura, preço lido da loja; quem já assina vê a assinatura
-ativa em vez de outra compra, porque no Play o mensal e o anual são assinaturas separadas).
-Antes, versionCode 16 (19/09/2026: recuperação de senha pelo app, links de Termos e Privacidade na tela de
+**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **18**, versão 1.2
+(03/10/2026: Fazer corrida, com localização só com o app aberto; cópia em
+`~/Downloads/recibo-taxi-1.2-versionCode18.aab`). O envio pela API foi recusado na validação com 403
+"The caller does not have permission", tanto no teste interno quanto no fechado, enquanto uma edição
+vazia valida normalmente. Causa provável, não confirmada: o pacote novo pede localização, e a conta de
+serviço não tem permissão para o que isso muda na ficha. Por isso esse pacote vai pela tela do Play
+Console, que mostra o que falta.
+Antes, versionCode 17, versão 1.1 (02/10/2026: plano anual na tela de assinatura, preço lido da loja;
+quem já assina vê a assinatura ativa em vez de outra compra, porque no Play o mensal e o anual são
+assinaturas separadas). Antes, versionCode 16 (19/09/2026: recuperação de senha pelo app, links de Termos e Privacidade na tela de
 assinatura, aviso de cancelamento "pelo Google Play" e a chave `goog_` do RevenueCat em
 `www/config.js`; o 14 foi publicado em teste fechado em 16/09 e o 15 subiu em 19/09 sem a
 chave). Gerar exige
@@ -163,8 +169,23 @@ nosso nome, o que o Google não classifica como compartilhamento.
 
 - Criptografia em trânsito: **sim** (HTTPS).
 - Usuário pode pedir exclusão dos dados: **sim**, com a URL acima.
-- Localização do aparelho: **não**. O app não pede permissão de GPS — o
-  manifesto só declara `INTERNET`.
+- Localização do aparelho: **sim, a partir da versão 1.2 (Fazer corrida)**.
+  Até a 1.1 era "não", porque o manifesto só declarava `INTERNET`. Na 1.2 o
+  app pede localização aproximada e precisa, só com o app aberto. Ela
+  preenche a origem da corrida e vai ao nosso servidor, e dali à Routes API
+  do Google, quando o motorista toca em "Estimar valor". Não fica guardada.
+
+  | Pergunta | Resposta |
+  |---|---|
+  | Tipos | Localização aproximada e Localização precisa |
+  | Coletada | Sim (sai do aparelho para estimar a rota) |
+  | Compartilhada | Não (o Google processa em nosso nome: operador) |
+  | Processada de forma temporária | Sim (não é armazenada) |
+  | Obrigatória ou opcional | Opcional (sem permissão, a origem é digitada) |
+  | Finalidade | Funcionalidade do app |
+
+  Sem `ACCESS_BACKGROUND_LOCATION`, não há declaração de localização em
+  segundo plano.
 
 ## Assinatura: a ordem importa
 

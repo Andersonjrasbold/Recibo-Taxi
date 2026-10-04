@@ -93,7 +93,7 @@
             <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
             {% endif %}
           {% elif anual_no_site %}
-          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
+          <a href="{{ url_for('cadastro', plano='pro_anual') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
           {% else %}
           <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
           {% endif %}
@@ -147,7 +147,7 @@
             </form>
             {% endif %}
           {% else %}
-          <a href="{{ url_for('cadastro') }}" class="btn btn-pricing-ghost w-100">Começar com Pro</a>
+          <a href="{{ url_for('cadastro', plano='pro') }}" class="btn btn-pricing-ghost w-100">Começar com Pro</a>
           {% endif %}
         </div>
       </div>

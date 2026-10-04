@@ -11,11 +11,18 @@
             <div class="auth-logo">
               <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
             </div>
-            <h1 class="auth-title">Criar conta grátis</h1>
-            <p class="auth-subtitle">Cadastre-se para salvar e gerenciar todos os seus recibos</p>
+            <h1 class="auth-title">{{ 'Criar sua conta' if plano_pedido else 'Criar conta grátis' }}</h1>
+            <p class="auth-subtitle">{{ 'Preencha seus dados para assinar o Pro' if plano_pedido else 'Cadastre-se para salvar e gerenciar todos os seus recibos' }}</p>
           </div>
 
+          {% if plano_pedido %}
+          <div class="alert alert-warning" role="status">
+            <i class="bi bi-star-fill me-2"></i>Você escolheu o <strong>{{ plano_pedido_rotulo }}</strong>. Depois do cadastro, você vai direto para o pagamento.
+          </div>
+          {% endif %}
+
           <form action="{{ url_for('cadastro') }}" method="post" class="auth-form" novalidate>
+            {% if plano_pedido %}<input type="hidden" name="plano" value="{{ plano_pedido }}">{% endif %}
             <!-- Seção: dados pessoais -->
             <div class="form-section">
               <div class="form-section-title">
@@ -103,7 +110,7 @@
           <div class="text-center">
             <p class="auth-switch-text">
               Já tem conta?
-              <a href="{{ url_for('login') }}" class="auth-switch-link">Entrar</a>
+              <a href="{{ url_for('login', plano=plano_pedido) if plano_pedido else url_for('login') }}" class="auth-switch-link">Entrar</a>
             </p>
           </div>
         </div>

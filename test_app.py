@@ -1655,6 +1655,98 @@ finally:
     A.send_email = _send_av
     A.AVISO_CADASTRO_CHAVE, A.AVISO_ASSINATURA_CHAVE = _chave_cad, _chave_ass
 
+# -- Assinar antes de ter conta: cadastro e login vao direto ao pagamento -----
+# Nada fala com a Stripe: get_stripe vira um falso que so anota os pedidos.
+print("\n-- Assinar antes de ter conta --")
+_suf_pg = os.urandom(3).hex()
+
+
+class _StripeFalso:
+    def __init__(self):
+        self.sessoes = []
+        falso = self
+
+        class _Customer:
+            @staticmethod
+            def create(**kw):
+                return type("C", (), {"id": f"cus_falso_{_suf_pg}_{len(falso.sessoes)}"})()
+
+        class _Session:
+            @staticmethod
+            def create(**kw):
+                falso.sessoes.append(kw)
+                return type("S", (), {"url": "https://checkout.stripe.com/c/pay/cs_falso"})()
+
+        self.Customer = _Customer
+        self.checkout = type("K", (), {"Session": _Session})
+
+
+_sf = _StripeFalso()
+_get_stripe_orig = A.get_stripe
+A.get_stripe = lambda: _sf
+_env_precos = {k: os.environ.get(k) for k in ("STRIPE_PRO_PRICE_ID", "STRIPE_PRO_ANUAL_PRICE_ID")}
+os.environ["STRIPE_PRO_PRICE_ID"] = "price_falso_mensal"
+os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = "price_falso_anual"
+_dados_pg = {"senha": "senha12345", "whatsapp": "11999998888", "cpf": "12345678900", "cidade": "SP", "placa": "abc1d23"}
+try:
+    _c = A.app.test_client()
+    h = _c.get("/cadastro?plano=pro_anual").get_data(as_text=True)
+    check("cadastro com plano avisa que vai direto ao pagamento", "Pro anual" in h and "direto para o pagamento" in h)
+    check("cadastro guarda o plano no formulario", 'name="plano" value="pro_anual"' in h)
+    check("link de login leva o plano junto", "/login?plano=pro_anual" in h)
+    h = _c.get("/cadastro?plano=business").get_data(as_text=True)
+    check("plano que nao esta a venda e ignorado", 'name="plano"' not in h and "direto para o pagamento" not in h)
+    check("botoes de venda da home levam o plano ao cadastro",
+          all(p in _c.get("/").get_data(as_text=True) for p in ("/cadastro?plano=pro_anual", "/cadastro?plano=pro\"")))
+
+    _email_pg = f"pagamento-{_suf_pg}@teste.invalid"
+    r = _c.post("/cadastro", base_url="https://www.recibotaxi.com.br",
+                data=dict(_dados_pg, nome_completo="Paga Direto", email=_email_pg, plano="pro_anual"))
+    check("cadastro com plano vai direto para a Stripe",
+          r.status_code == 303 and r.headers.get("Location", "").startswith("https://checkout.stripe.com/"),
+          f"{r.status_code} {r.headers.get('Location')}")
+    _s = _sf.sessoes[-1] if _sf.sessoes else {}
+    check("checkout do anual usa o preco anual", _s.get("line_items") == [{"price": "price_falso_anual", "quantity": 1}],
+          str(_s.get("line_items")))
+    check("volta para o mesmo dominio do cadastro",
+          str(_s.get("success_url", "")).startswith("https://www.recibotaxi.com.br/dashboard")
+          and str(_s.get("cancel_url", "")).startswith("https://www.recibotaxi.com.br/planos"), str(_s.get("success_url")))
+    check("checkout nao manda payment_method_types", _s and "payment_method_types" not in _s)
+    check("chave de idempotencia leva o dominio", str(_s.get("idempotency_key", "")).endswith(":www.recibotaxi.com.br"),
+          str(_s.get("idempotency_key")))
+
+    _n = len(_sf.sessoes)
+    _email_sp = f"semplano-{_suf_pg}@teste.invalid"
+    r = A.app.test_client().post("/cadastro", data=dict(_dados_pg, nome_completo="Sem Plano", email=_email_sp))
+    check("cadastro sem plano vai ao painel, sem checkout",
+          r.status_code == 302 and r.headers.get("Location", "").endswith("/dashboard") and len(_sf.sessoes) == _n,
+          f"{r.status_code} {r.headers.get('Location')}")
+
+    _c3 = A.app.test_client()
+    h = _c3.get("/login?plano=pro").get_data(as_text=True)
+    check("login com plano avisa e guarda o plano", "Pro mensal" in h and 'name="plano" value="pro"' in h)
+    r = _c3.post("/login", data={"email": _email_sp, "senha": "senha12345", "plano": "pro"})
+    check("login com plano vai direto para a Stripe",
+          r.status_code == 303 and len(_sf.sessoes) == _n + 1
+          and _sf.sessoes[-1]["line_items"][0]["price"] == "price_falso_mensal", f"{r.status_code}")
+
+    # Pro pela loja (sem nada na Stripe) nao abre um segundo checkout no site.
+    _id_loja = A.get_store().get_user_by_email(_email_sp)["_id"]
+    A.get_store().update_user(_id_loja, {"plan": "pro", "subscription_status": "active",
+                                         "stripe_customer_id": None, "stripe_subscription_id": None})
+    _n = len(_sf.sessoes)
+    r = _c3.post("/assinar/pro")
+    check("Pro pela loja nao consegue pagar de novo no site",
+          r.status_code == 302 and r.headers.get("Location", "").endswith("/dashboard") and len(_sf.sessoes) == _n,
+          f"{r.status_code} {r.headers.get('Location')}")
+finally:
+    A.get_stripe = _get_stripe_orig
+    for _k, _v in _env_precos.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+
 # -- Data API do Supabase fechada (migracao 0006) ---------------------------
 # O app nao usa o PostgREST, mas o Supabase expoe o schema public por ele.
 # Tabela sem RLS ali e tabela legivel por quem tiver a chave publicavel.

@@ -2024,9 +2024,11 @@ def assinar(plan: str):
             customer_id = customer.id
             get_store().update_user(g.user["_id"], {"stripe_customer_id": customer_id})
 
+        # Sem payment_method_types: as versões novas da API recusam o parâmetro.
+        # As formas de pagamento vêm de Configurações → Formas de pagamento no
+        # painel da Stripe; no modo assinatura ele só oferece as compatíveis.
         checkout = stripe.checkout.Session.create(
             customer=customer_id,
-            payment_method_types=["card"],
             line_items=[{"price": price_id, "quantity": 1}],
             mode="subscription",
             success_url=success_url,

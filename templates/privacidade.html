@@ -61,7 +61,19 @@
             passageiro e ter base legal para registrar esses dados no recibo.
           </p>
 
-          <h3 class="legal-h3">2.3 Recibos emitidos sem conta (gerador desativado)</h3>
+          <h3 class="legal-h3">2.3 Localização, só no app e só ao usar "Fazer corrida"</h3>
+          <ul class="legal-list">
+            <li>Quando você abre uma corrida, o app usa a localização do aparelho, <strong>só com
+              o app aberto</strong>, para preencher a origem. Quem converte a posição em endereço
+              é o próprio sistema do aparelho (Apple ou Google).</li>
+            <li>Quando você toca em "Estimar valor", a posição de partida (ou a origem digitada) e
+              o destino vão para o nosso servidor, que consulta o Google para calcular a rota. Eles
+              servem só para essa conta: não ficam guardados no nosso banco nem nos nossos registros.</li>
+            <li>A origem e o destino só ficam guardados se você emitir um recibo com eles, como em
+              qualquer recibo (seção 2.2).</li>
+          </ul>
+
+          <h3 class="legal-h3">2.4 Recibos emitidos sem conta (gerador desativado)</h3>
           <p>
             Até setembro de 2026 o site permitia gerar recibos sem cadastro. Esse gerador foi
             desativado: hoje emitir recibo exige conta. Os recibos já criados por ele continuam
@@ -69,9 +81,10 @@
             automaticamente no prazo da seção 6.
           </p>
 
-          <h3 class="legal-h3">2.4 Dados que <em>não</em> coletamos</h3>
+          <h3 class="legal-h3">2.5 Dados que <em>não</em> coletamos</h3>
           <ul class="legal-list">
-            <li>Não coletamos sua localização em tempo real nem rastreamos seus trajetos.</li>
+            <li>Não acompanhamos seus trajetos: o app não usa a localização em segundo plano nem
+              registra o caminho da corrida.</li>
             <li>Não recebemos nem armazenamos dados de cartão de crédito — eles vão direto para a Stripe.</li>
             <li>Não usamos seus dados para treinar modelos de inteligência artificial.</li>
             <li>Não vendemos seus dados a terceiros, em nenhuma hipótese.</li>
@@ -92,6 +105,11 @@
                 <tr>
                   <td>Emitir, salvar e compartilhar recibos</td>
                   <td>Dados da corrida, do motorista e do passageiro</td>
+                  <td>Execução de contrato (art. 7º, V)</td>
+                </tr>
+                <tr>
+                  <td>Preencher a origem da corrida e estimar o valor</td>
+                  <td>Localização do aparelho no momento do uso e destino digitado</td>
                   <td>Execução de contrato (art. 7º, V)</td>
                 </tr>
                 <tr>
@@ -130,6 +148,8 @@
             <li><strong>Supabase</strong> — banco de dados e autenticação, onde contas e recibos ficam armazenados.</li>
             <li><strong>Resend</strong> — envio dos nossos e-mails: nova senha, recibo para o passageiro e dicas e ofertas.</li>
             <li><strong>Vercel</strong> — hospedagem e entrega da aplicação.</li>
+            <li><strong>Google (Routes API)</strong> — calcula a rota da estimativa de valor. Recebe
+              a posição de partida e o destino, sem seu nome nem nenhum dado da sua conta.</li>
             <li><strong>Google Fonts e jsDelivr</strong> — entregam as fontes e as bibliotecas de
               interface. Ao carregar uma página, seu navegador se conecta a esses serviços, que
               recebem seu endereço IP e o tipo de navegador. Não enviamos a eles nenhum dado da
@@ -162,7 +182,8 @@
             <li><strong>Recibos emitidos sem conta (gerador desativado):</strong> mantidos por até
               12 meses a partir da emissão e depois removidos automaticamente por rotina diária.</li>
             <li><strong>Contadores antiabuso:</strong> guardamos por 7 dias um contador por
-              endereço IP (cadastro e recuperação de senha), só para limitar abuso, e depois ele é apagado.</li>
+              endereço IP (cadastro e recuperação de senha) e um contador diário de estimativas por
+              motorista, só para limitar abuso, e depois eles são apagados.</li>
             <li><strong>Registros de conexão:</strong> não mantemos registros de acesso próprios.
               A infraestrutura de hospedagem (Vercel) mantém logs operacionais por período curto,
               sob a política dela.</li>

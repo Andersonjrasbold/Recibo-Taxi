@@ -1747,6 +1747,195 @@ finally:
         else:
             os.environ[_k] = _v
 
+# -- Estimativa de corrida ----------------------------------------------------
+# O servidor so devolve a rota (km e minutos); a faixa de preco e calculada no
+# aparelho, com a tarifa que o motorista digitou. O Google nunca e chamado de
+# verdade aqui: consultar_rota e trocada por uma falsa, e o pedido montado para
+# a Routes API e conferido com um urlopen falso.
+print("\n-- Estimativa de corrida --")
+_cest = A.app.test_client()
+_r = _cest.post("/api/cadastro", json={
+    "nome_completo": "Rota Teste", "email": "rota@teste.invalid", "senha": "senha12345",
+    "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel", "placa": "ROT1234"})
+_tke = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+_cabe = {"Authorization": f"Bearer {_tke}"}
+_rota_falsa = {"km": 12.4, "minutos": 31, "minutos_sem_transito": 22}
+_pedidos_rota = []
+_consulta_real = A.consultar_rota
+_chave_google = os.environ.get("GOOGLE_MAPS_API_KEY")
+
+
+def _estimar(**corpo):
+    return _cest.post("/api/estimativa", headers=_cabe, json=corpo)
+
+
+try:
+    _r = _cest.post("/api/estimativa", json={"lat": -24.95, "lng": -53.45, "destino": "Rodoviária"})
+    check("estimativa sem sessao devolve 401", _r.status_code == 401, str(_r.status_code))
+
+    # Rota com POST ganha o OPTIONS automatico do Flask (200), que vence o
+    # api_preflight (204). Para o navegador tanto faz: o que libera e o cabecalho.
+    _r = _cest.options("/api/estimativa", headers={
+        "Origin": "capacitor://localhost", "Access-Control-Request-Method": "POST"})
+    check("o app passa pelo preflight da estimativa",
+          _r.status_code in (200, 204)
+          and _r.headers.get("Access-Control-Allow-Origin") == "capacitor://localhost",
+          f"{_r.status_code} {_r.headers.get('Access-Control-Allow-Origin')}")
+
+    # Sem a chave do Google o app precisa de uma resposta que ele entenda, e
+    # nao de um 500: a corrida e o recibo seguem funcionando sem estimativa.
+    os.environ["GOOGLE_MAPS_API_KEY"] = ""
+    A.consultar_rota = lambda origem, destino, timeout=8: _pedidos_rota.append((origem, destino)) or _rota_falsa
+    _r = _estimar(lat=-24.95, lng=-53.45, destino="Rodoviária")
+    check("sem chave do Google, responde 503 indisponivel",
+          _r.status_code == 503 and (_r.get_json() or {}).get("erro") == "indisponivel",
+          f"{_r.status_code} {_r.get_json()}")
+    check("sem chave, o Google nem e chamado", not _pedidos_rota)
+
+    os.environ["GOOGLE_MAPS_API_KEY"] = "chave-de-teste"
+    _r = _estimar(lat=-24.95, lng=-53.45, destino="Rodoviária")
+    check("devolve km e minutos da rota",
+          _r.status_code == 200 and _r.get_json() == _rota_falsa, f"{_r.status_code} {_r.get_json()}")
+    check("a origem vai como coordenada",
+          _pedidos_rota and _pedidos_rota[-1][0] == {"lat": -24.95, "lng": -53.45}, str(_pedidos_rota[-1:]))
+    check("a cidade do cadastro completa o destino",
+          _pedidos_rota and _pedidos_rota[-1][1] == "Rodoviária, Cascavel", str(_pedidos_rota[-1:]))
+
+    _estimar(lat=-24.95, lng=-53.45, destino="Rodoviária de Cascavel")
+    check("cidade que ja esta no destino nao se repete",
+          _pedidos_rota[-1][1] == "Rodoviária de Cascavel", _pedidos_rota[-1][1])
+
+    _estimar(lat=-24.72, lng=-53.74, destino="Rodoviária", cidade="Toledo")
+    check("a cidade de onde o aparelho esta vence a do cadastro",
+          _pedidos_rota[-1][1] == "Rodoviária, Toledo", _pedidos_rota[-1][1])
+
+    _estimar(origem="Av.  Brasil,   100", destino="Rodoviária")
+    check("sem GPS, a origem digitada vai como texto",
+          _pedidos_rota[-1][0] == {"endereco": "Av. Brasil, 100"}, str(_pedidos_rota[-1][0]))
+
+    _r = _estimar(lat=200, lng=0, destino="Rodoviária")
+    check("coordenada fora do mapa e sem origem digitada devolve 400",
+          _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "origem_invalida",
+          f"{_r.status_code} {_r.get_json()}")
+    _r = _estimar(lat="abc", lng=None, destino="Rodoviária")
+    check("coordenada que nao e numero devolve 400", _r.status_code == 400, str(_r.status_code))
+    _r = _estimar(lat=-24.95, lng=-53.45, destino=" ")
+    check("destino vazio devolve 400",
+          _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "destino_invalido",
+          f"{_r.status_code} {_r.get_json()}")
+    _r = _estimar(lat=-24.95, lng=-53.45, destino="x" * 201)
+    check("destino maior que o do recibo devolve 400", _r.status_code == 400, str(_r.status_code))
+
+    A.consultar_rota = lambda *a, **k: None
+    _r = _estimar(lat=-24.95, lng=-53.45, destino="Lugar que nao existe")
+    check("destino que o Google nao acha devolve 404",
+          _r.status_code == 404 and (_r.get_json() or {}).get("erro") == "destino_nao_encontrado",
+          f"{_r.status_code} {_r.get_json()}")
+
+    def _google_caiu(*a, **k):
+        raise A.RotaIndisponivel("HTTP 503")
+    A.consultar_rota = _google_caiu
+    _r = _estimar(lat=-24.95, lng=-53.45, destino="Rodoviária")
+    check("Google fora do ar devolve 502, sem estourar",
+          _r.status_code == 502 and (_r.get_json() or {}).get("erro") == "falha_na_consulta",
+          f"{_r.status_code} {_r.get_json()}")
+
+    # Teto diario: um aparelho em laco nao pode gastar a cota de todos.
+    A.consultar_rota = lambda *a, **k: _rota_falsa
+    _teto_est = A.ESTIMATIVA_DIARIA_LIMITE
+    A.ESTIMATIVA_DIARIA_LIMITE = 1
+    try:
+        _uid_est = A.get_store().get_user_by_email("rota@teste.invalid")["_id"]
+        A.get_store().bump_counter(f"estimativa:{_uid_est}:{A.today_br()}")   # ja no teto
+        _r = _estimar(lat=-24.95, lng=-53.45, destino="Rodoviária")
+        check("no teto diario, a estimativa devolve 429",
+              _r.status_code == 429 and (_r.get_json() or {}).get("limite") == 1,
+              f"{_r.status_code} {_r.get_json()}")
+    finally:
+        A.ESTIMATIVA_DIARIA_LIMITE = _teto_est
+
+    # A leitura da resposta do Google.
+    check("ler_rota converte metros e segundos",
+          A.ler_rota({"routes": [{"distanceMeters": 12400, "duration": "1860s",
+                                  "staticDuration": "1320s"}]}) == _rota_falsa)
+    check("ler_rota sem rota devolve None",
+          A.ler_rota({}) is None and A.ler_rota({"routes": []}) is None
+          and A.ler_rota({"routes": [{}]}) is None)
+    check("ler_rota sem a duracao sem transito nao inventa hora parada",
+          A.ler_rota({"routes": [{"distanceMeters": 1000, "duration": "120s"}]})
+          == {"km": 1.0, "minutos": 2, "minutos_sem_transito": 2})
+
+    # O pedido montado para a Routes API, sem sair para a rede.
+    A.consultar_rota = _consulta_real
+    import urllib.error as _uerr
+    _urlopen_real = A.urllib.request.urlopen
+    _enviado = {}
+
+    class _RespostaFalsa:
+        status = 200
+
+        def __init__(self, corpo):
+            self._corpo = corpo
+
+        def read(self):
+            return self._corpo
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen_falso(req, timeout=None):
+        _enviado["url"], _enviado["corpo"] = req.full_url, json.loads(req.data)
+        _enviado["cab"] = {k.lower(): v for k, v in req.header_items()}
+        return _RespostaFalsa(json.dumps({"routes": [{"distanceMeters": 5000, "duration": "600s",
+                                                      "staticDuration": "480s"}]}).encode())
+
+    A.urllib.request.urlopen = _urlopen_falso
+    try:
+        _rota = A.consultar_rota({"lat": -24.95, "lng": -53.45}, "Rodoviária, Cascavel")
+        check("consultar_rota le a resposta", _rota == {"km": 5.0, "minutos": 10, "minutos_sem_transito": 8},
+              str(_rota))
+        check("o pedido vai para a Routes API", _enviado.get("url") == A.ROUTES_API_URL)
+        check("a chave vai no cabecalho, nunca na URL",
+              _enviado["cab"].get("x-goog-api-key") == "chave-de-teste" and "key=" not in _enviado["url"])
+        check("a mascara pede so distancia e duracao",
+              _enviado["cab"].get("x-goog-fieldmask")
+              == "routes.distanceMeters,routes.duration,routes.staticDuration")
+        check("a origem vai como coordenada e o destino como texto",
+              _enviado["corpo"]["origin"] == {"location": {"latLng": {"latitude": -24.95, "longitude": -53.45}}}
+              and _enviado["corpo"]["destination"] == {"address": "Rodoviária, Cascavel"},
+              str(_enviado["corpo"])[:160])
+        check("rota de carro, com transito, em portugues",
+              _enviado["corpo"]["travelMode"] == "DRIVE"
+              and _enviado["corpo"]["routingPreference"] == "TRAFFIC_AWARE"
+              and _enviado["corpo"]["languageCode"] == "pt-BR")
+
+        def _urlopen_com_erro(codigo):
+            def _abre(req, timeout=None):
+                raise _uerr.HTTPError(req.full_url, codigo, "erro", {},
+                                      io.BytesIO(b'{"error": {"status": "INVALID_ARGUMENT"}}'))
+            return _abre
+
+        A.urllib.request.urlopen = _urlopen_com_erro(400)
+        check("endereco que o Google recusa vira 'sem rota'",
+              A.consultar_rota({"endereco": "Av. Brasil, 100"}, "???") is None)
+        A.urllib.request.urlopen = _urlopen_com_erro(403)
+        try:
+            A.consultar_rota({"endereco": "Av. Brasil, 100"}, "Rodoviária")
+            check("chave recusada vira RotaIndisponivel", False, "nao levantou")
+        except A.RotaIndisponivel:
+            check("chave recusada vira RotaIndisponivel", True)
+    finally:
+        A.urllib.request.urlopen = _urlopen_real
+finally:
+    A.consultar_rota = _consulta_real
+    if _chave_google is None:
+        os.environ.pop("GOOGLE_MAPS_API_KEY", None)
+    else:
+        os.environ["GOOGLE_MAPS_API_KEY"] = _chave_google
+
 # -- Data API do Supabase fechada (migracao 0006) ---------------------------
 # O app nao usa o PostgREST, mas o Supabase expoe o schema public por ele.
 # Tabela sem RLS ali e tabela legivel por quem tiver a chave publicavel.

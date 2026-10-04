@@ -144,6 +144,24 @@ status 1 e o resto da linha não roda. Já aconteceu de a sonda nunca ser
 instalada e eu passar vinte minutos investigando o app limpo.
 
 
+## Testar o fluxo da corrida sem simulador
+
+```bash
+node mobile/testes/rodar.mjs                     # confere o fluxo; sai com 1 se falhar
+node mobile/testes/rodar.mjs fotos <pasta>       # uma foto de cada tela, em 390 px
+```
+
+Copia o `www/` para uma pasta temporária, injeta `testes/sonda-corrida.html`
+antes do `config.js`, serve em localhost e controla o Chrome sem janela pelo
+protocolo de depuração. A sonda simula o GPS, o geocodificador e a resposta da
+estimativa; nada sai para a produção. O `www/` de verdade não é tocado.
+
+Por que não o simulador: em 2026-10-03 ele caiu duas vezes no meio da rodada
+("server died", "Data Migration Failed") com a memória da máquina no limite.
+Por que não `--virtual-time-budget`: com IndexedDB o tempo virtual não anda e o
+Chrome nunca termina. O que este teste não cobre são os plugins nativos de
+verdade — permissão, GPS, endereço, abrir o Waze —, que se testam no aparelho.
+
 ## Campo de data e hora do iOS
 
 `input[type="date"]` e `input[type="time"]` não encolhem abaixo da largura do

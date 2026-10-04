@@ -9,8 +9,8 @@
 <body>
 
 <header class="barra">
-  <!-- A marca e um botao: tocar nela volta para o formulario, venha de onde vier. -->
-  <button id="btn-inicio" class="marca-botao" aria-label="Ir para novo recibo">
+  <!-- A marca e um botao: tocar nela volta para o inicio, venha de onde vier. -->
+  <button id="btn-inicio" class="marca-botao" aria-label="Ir para o início">
     <img class="marca" src="img/marca.jpg" alt="Recibo Táxi">
   </button>
 
@@ -34,6 +34,7 @@
         </div>
         <button id="btn-pro" class="menu-item">Recibo Táxi Pro</button>
         <button id="btn-historico" class="menu-item">Ver histórico</button>
+        <button id="btn-tarifa" class="menu-item">Tarifa da cidade</button>
         <a href="https://recibo-taxi.vercel.app/privacidade" class="menu-item">Política de Privacidade</a>
         <a href="https://recibo-taxi.vercel.app/termos" class="menu-item">Termos de Uso</a>
         <button id="btn-sair" class="menu-item menu-item-saida">Sair</button>
@@ -138,9 +139,160 @@
   </form>
 </section>
 
+<!-- ── Início ──────────────────────────────────────────────────────────── -->
+<!-- Os dois caminhos do app. Emitir recibo continua a um toque; a corrida
+     abre o Waze e, no fim, leva ao mesmo formulario ja preenchido. -->
+<section id="tela-inicio" class="tela" hidden>
+  <h1 id="titulo-inicio">Olá</h1>
+
+  <!-- Enquanto houver corrida aberta: o sistema pode ter fechado o app no meio
+       do caminho, e a corrida nao pode sumir junto. -->
+  <button id="btn-continuar-corrida" class="corrida-aberta" hidden>
+    <span id="corrida-aberta-rotulo" class="corrida-aberta-rotulo"></span>
+    <strong id="corrida-aberta-destino"></strong>
+    <small id="corrida-aberta-desde"></small>
+  </button>
+
+  <div class="caminhos">
+    <button id="btn-ir-emitir" class="caminho">
+      <span class="caminho-icone" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/>
+        </svg>
+      </span>
+      <span class="caminho-texto">
+        <strong>Emitir recibo</strong>
+        <small>Preencha e envie na hora, mesmo sem sinal</small>
+      </span>
+    </button>
+    <button id="btn-ir-corrida" class="caminho">
+      <span class="caminho-icone" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>
+        </svg>
+      </span>
+      <span class="caminho-texto">
+        <strong>Fazer corrida</strong>
+        <small>Abra o destino no Waze e termine com o recibo preenchido</small>
+      </span>
+    </button>
+  </div>
+</section>
+
+<!-- ── Corrida ─────────────────────────────────────────────────────────── -->
+<!-- O app nao mede a corrida: quem mede e cobra e o taximetro. Aqui ficam a
+     origem, o destino, a hora de saida e uma estimativa para conferir. -->
+<section id="tela-corrida" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1 id="titulo-corrida">Nova corrida</h1>
+    <button id="btn-corrida-voltar" class="texto">Voltar</button>
+  </div>
+
+  <div id="corrida-dados">
+    <div id="corrida-andamento" class="aviso" hidden></div>
+    <!-- No alto: o motorista volta do Waze no fim da corrida, e e isto que
+         ele procura. Embaixo, num celular pequeno, ficaria fora da tela. -->
+    <button type="button" id="btn-encerrar" class="primario botao-encerrar" hidden>Encerrar corrida</button>
+
+    <label for="corrida-origem">Origem</label>
+    <div class="campo-com-botao">
+      <input type="text" id="corrida-origem" maxlength="200" list="locais"
+             autocomplete="off" autocorrect="off" placeholder="Onde o passageiro embarcou">
+      <button type="button" id="btn-localizar" class="botao-icone"
+              aria-label="Preencher com a minha localização">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7"/>
+        </svg>
+      </button>
+    </div>
+    <p id="dica-origem" class="dica" hidden></p>
+
+    <label for="corrida-destino">Destino *</label>
+    <input type="text" id="corrida-destino" maxlength="200" list="locais"
+           autocomplete="off" autocorrect="off" placeholder="Endereço ou nome do lugar">
+    <p id="erro-corrida" class="erro" hidden></p>
+
+    <!-- A faixa sai da rota que o Google calcula e da tarifa que o motorista
+         digitou. E referencia: o valor do recibo e sempre o que ele digita. -->
+    <div class="estimativa">
+      <div class="bandeiras" role="radiogroup" aria-label="Bandeira">
+        <button type="button" id="bandeira-1" class="bandeira" role="radio" aria-checked="true">Bandeira 1</button>
+        <button type="button" id="bandeira-2" class="bandeira" role="radio" aria-checked="false">Bandeira 2</button>
+      </div>
+      <button type="button" id="btn-estimar" class="secundario">Estimar valor</button>
+      <div id="resultado-estimativa" class="resultado-estimativa" hidden>
+        <span class="resultado-rotulo">Estimativa</span>
+        <strong id="estimativa-faixa"></strong>
+        <small id="estimativa-rota"></small>
+      </div>
+      <p id="aviso-estimativa" class="dica" hidden></p>
+      <p class="ajuda estimativa-nota">
+        É só uma referência: quem define o valor é o taxímetro.
+        <button type="button" id="btn-editar-tarifa" class="texto">Editar tarifa</button>
+      </p>
+    </div>
+
+    <!-- Links de verdade, e nao window.open: pelo mesmo motivo do botao do
+         WhatsApp (veja app.js). O Waze e o Maps abrem por cima do app. -->
+    <a id="btn-waze" class="primario como-botao">Abrir no Waze</a>
+    <a id="btn-maps" class="secundario como-botao">Abrir no Google Maps</a>
+    <button type="button" id="btn-comecar" class="texto texto-centro">Começar sem abrir o mapa</button>
+  </div>
+
+  <!-- Depois de encerrar: recibo, ou nada. Nem toda corrida precisa de recibo,
+       e cada recibo conta no limite do plano Gratis. -->
+  <div id="corrida-fim" hidden>
+    <div id="fim-resumo" class="aviso"></div>
+    <button type="button" id="btn-gerar-recibo" class="primario">Gerar recibo</button>
+    <button type="button" id="btn-sem-recibo" class="secundario">Sem recibo</button>
+    <button type="button" id="btn-retomar" class="texto texto-centro">Voltar para a corrida</button>
+  </div>
+</section>
+
+<!-- ── Tarifa da cidade ────────────────────────────────────────────────── -->
+<!-- Cada cidade tem a sua tabela, e a regra da bandeira 2 muda de uma para
+     outra. O motorista digita a dele uma vez; fica so neste aparelho. -->
+<section id="tela-tarifa" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Tarifa da cidade</h1>
+    <button id="btn-fechar-tarifa" class="texto">Voltar</button>
+  </div>
+  <p class="ajuda">
+    Use os valores da tabela oficial da sua cidade. Eles servem só para a
+    estimativa e ficam guardados neste aparelho.
+  </p>
+  <form id="form-tarifa" novalidate>
+    <div class="linha">
+      <div>
+        <label for="t-bandeirada">Bandeirada (R$)</label>
+        <input type="text" id="t-bandeirada" inputmode="decimal" placeholder="0,00">
+      </div>
+      <div>
+        <label for="t-hora">Hora parada (R$)</label>
+        <input type="text" id="t-hora" inputmode="decimal" placeholder="0,00">
+      </div>
+    </div>
+    <div class="linha">
+      <div>
+        <label for="t-km1">Km bandeira 1 (R$)</label>
+        <input type="text" id="t-km1" inputmode="decimal" placeholder="0,00">
+      </div>
+      <div>
+        <label for="t-km2">Km bandeira 2 (R$)</label>
+        <input type="text" id="t-km2" inputmode="decimal" placeholder="0,00">
+      </div>
+    </div>
+    <button type="submit" class="primario">Salvar tarifa</button>
+    <p id="erro-tarifa" class="erro" hidden></p>
+  </form>
+</section>
+
 <!-- ── Emitir ──────────────────────────────────────────────────────────── -->
 <section id="tela-emitir" class="tela" hidden>
-  <h1>Novo recibo</h1>
+  <h1 id="titulo-emitir">Novo recibo</h1>
 
   <div id="aviso-fila" class="aviso" hidden></div>
 
@@ -208,6 +360,9 @@
         </select>
       </div>
     </div>
+    <!-- Só no recibo que veio de uma corrida estimada. A estimativa nunca
+         preenche o valor: o recibo tem de dizer o que o passageiro pagou. -->
+    <p id="dica-estimativa" class="dica dica-neutra" hidden></p>
 
     <button type="submit" class="primario">Gerar recibo</button>
   </form>

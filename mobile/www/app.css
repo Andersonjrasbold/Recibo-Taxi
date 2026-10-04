@@ -110,6 +110,7 @@ button { font:inherit; border:0; border-radius:14px; cursor:pointer; }
 .como-botao {
   display:flex; align-items:center; justify-content:center;
   text-decoration:none; box-sizing:border-box;
+  border-radius:14px;   /* o canto do <button> vem da regra dele; o <a> nao herda */
 }
 .primario {
   width:100%; min-height:56px; margin-top:1.4rem; font-weight:800; font-size:1.02rem;
@@ -197,3 +198,72 @@ button:disabled { opacity:.5; }
 .lista-pro li::before {
   content:"✓"; position:absolute; left:0; color:var(--ambar); font-weight:800;
 }
+
+/* ── Início ────────────────────────────────────────────────────────────── */
+/* Dois caminhos, do tamanho de um polegar com o carro parado no sinal. */
+.caminhos { display:grid; gap:.8rem; margin-top:.4rem; }
+.caminho {
+  display:flex; align-items:center; gap:1rem; width:100%; text-align:left;
+  padding:1.25rem 1.1rem; border-radius:20px;
+  color:var(--paper); background:var(--coal-soft); border:1px solid var(--linha);
+}
+.caminho:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
+.caminho-icone {
+  display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  width:52px; height:52px; border-radius:16px;
+  color:var(--ambar); background:rgba(255,197,49,.14);
+}
+.caminho-texto { display:grid; gap:.2rem; min-width:0; }
+.caminho-texto strong { font-size:1.12rem; }
+.caminho-texto small { color:var(--muted); font-size:.86rem; line-height:1.35; }
+
+/* A corrida aberta vem antes dos dois caminhos: é a coisa por terminar. */
+.corrida-aberta {
+  display:grid; gap:.15rem; width:100%; text-align:left; margin-bottom:1rem;
+  padding:.95rem 1.1rem; border-radius:16px;
+  color:var(--paper); background:rgba(255,197,49,.13); border:1px solid rgba(255,197,49,.4);
+}
+.corrida-aberta-rotulo {
+  font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--ambar);
+}
+.corrida-aberta strong { font-size:1rem; overflow-wrap:anywhere; }
+.corrida-aberta small { color:var(--muted); font-size:.8rem; }
+
+/* ── Corrida ───────────────────────────────────────────────────────────── */
+.botao-encerrar { margin:0 0 .4rem; }
+.campo-com-botao { display:flex; gap:.5rem; }
+.campo-com-botao input { flex:1; }
+.botao-icone {
+  display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  width:52px; min-height:52px; border-radius:14px;
+  color:var(--ambar); background:var(--coal-soft); border:1px solid var(--linha);
+}
+.botao-icone:disabled { opacity:.45; }
+
+/* Sem destino o link nao tem para onde ir: parece desligado, e o toque
+   explica o que falta em vez de nao fazer nada. */
+.como-botao.desligado { opacity:.45; }
+.texto-centro { display:block; margin:.7rem auto 0; }
+
+.estimativa { margin-top:1.3rem; padding-top:1.1rem; border-top:1px solid var(--linha); }
+.bandeiras { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
+.bandeira {
+  min-height:46px; font-weight:800; font-size:.92rem;
+  color:var(--paper); background:var(--coal-soft); border:2px solid var(--linha);
+}
+.bandeira[aria-checked="true"] { color:var(--ambar); border-color:var(--ambar); background:rgba(255,197,49,.08); }
+.resultado-estimativa {
+  display:grid; gap:.15rem; margin-top:.8rem; padding:1rem 1.1rem; border-radius:16px;
+  background:rgba(255,197,49,.08); border:1px solid rgba(255,197,49,.3);
+}
+.resultado-rotulo {
+  font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+}
+.resultado-estimativa strong { font-size:1.7rem; line-height:1.2; color:var(--ambar); }
+.resultado-estimativa small { color:var(--muted); font-size:.84rem; }
+.estimativa-nota { margin:.7rem 0 0; }
+.estimativa-nota .texto { padding:.2rem .3rem; }
+
+/* A dica da estimativa no recibo informa, nao alerta: fica na cor da marca,
+   e nao no laranja dos avisos de campo. */
+.dica.dica-neutra { color:var(--ambar); font-weight:600; }

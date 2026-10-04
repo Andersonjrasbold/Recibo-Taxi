@@ -1,0 +1,211 @@
+<script>
+// SONDA DE TESTE (navegador). Quem injeta e o rodar.mjs, numa COPIA do www/
+// em pasta temporaria — nunca no www/ nem no public/ do iOS, que vao para as
+// lojas. Plugins nativos e rede simulados: nada sai para a producao.
+//   #c=asserts             fluxo inteiro conferido, resultado em #resultado-teste
+//   #passo=N               para no passo N (fotos)
+//   #c=negado&passo=1      localizacao negada
+localStorage.clear();
+localStorage.setItem('motorista', JSON.stringify({ full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' }));
+localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+const H = new URLSearchParams(location.hash.slice(1));
+const NEGADO = H.get('c') === 'negado';
+window.__pedidos = [];
+window.Capacitor = {
+  isNativePlatform: () => true,
+  getPlatform: () => 'ios',
+  Plugins: {
+    Geolocation: {
+      checkPermissions: async () => (NEGADO
+        ? { location: 'denied', coarseLocation: 'denied' }
+        : { location: 'prompt', coarseLocation: 'prompt' }),
+      requestPermissions: async () => ({ location: 'granted', coarseLocation: 'granted' }),
+      getCurrentPosition: async () => ({ coords: { latitude: -23.5617, longitude: -46.656 } }),
+    },
+    NativeGeocoder: {
+      reverseGeocode: async () => ({ addresses: [{
+        thoroughfare: 'Avenida Paulista', subThoroughfare: '1578',
+        subLocality: 'Bela Vista', locality: 'São Paulo' }] }),
+    },
+    Network: { getStatus: async () => ({ connected: true }), addListener: () => {} },
+    App: { addListener: () => {} },
+  },
+};
+window.fetch = async (url, op) => {
+  if (String(url).includes('/api/estimativa')) {
+    window.__pedidos.push(JSON.parse(op.body));
+    await new Promise((ok) => setTimeout(ok, 300));
+    return new Response(JSON.stringify({ km: 14.2, minutos: 31, minutos_sem_transito: 22 }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  throw new TypeError('sonda: sem rede');
+};
+// O <a> do Waze e do Maps navegaria a pagina para fora. O ouvinte do app roda
+// antes (no proprio elemento); este, no documento, so impede a saida.
+document.addEventListener('click', (e) => {
+  if (e.target.closest('a[href^="https://"]')) e.preventDefault();
+});
+
+window.addEventListener('load', async () => {
+  const q = (id) => document.getElementById(id);
+  const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
+  const digitar = (id, v) => { q(id).value = v; q(id).dispatchEvent(new Event('input')); };
+  const clicar = (id) => q(id).dispatchEvent(new MouseEvent('click', { cancelable: true, bubbles: true }));
+
+  if (H.get('c') !== 'asserts') {
+    // Fotos: roda os passos ate o pedido e para ali.
+    const passos = [
+      async () => irParaInicio(),
+      async () => { await abrirCorrida(); await espera(300); },
+      async () => { digitar('corrida-destino', 'Aeroporto de Congonhas'); clicar('btn-estimar'); await espera(300); },
+      async () => { digitar('t-bandeirada', '5,50'); digitar('t-hora', '42,00'); digitar('t-km1', '3,50');
+                    digitar('t-km2', '4,55'); q('form-tarifa').requestSubmit(); await espera(900); },
+      async () => { clicar('btn-comecar'); await espera(100); },
+      async () => irParaInicio(),
+      async () => { await abrirCorrida(); clicar('btn-encerrar'); await espera(100); },
+      async () => { clicar('btn-gerar-recibo'); await espera(400); },
+    ];
+    const ate = Number(H.get('passo') ?? passos.length - 1);
+    for (let i = 0; i <= ate; i++) await passos[i]();
+    if (NEGADO) { clicar('btn-localizar'); await espera(300); }
+    return;
+  }
+
+  // Assercoes: o fluxo inteiro, conferido passo a passo.
+  const r = [];
+  const ok = (nome, cond, extra = '') => r.push(`${cond ? 'OK   ' : 'FALHA'} ${nome}${cond ? '' : ' :: ' + extra}`);
+  const corrida = () => JSON.parse(localStorage.getItem('corrida') || 'null');
+  try {
+    irParaInicio();
+    ok('inicio visivel', !q('tela-inicio').hidden);
+    ok('saudacao com o primeiro nome', q('titulo-inicio').textContent === 'Olá, Teste', q('titulo-inicio').textContent);
+    ok('sem corrida, sem aviso no inicio', q('btn-continuar-corrida').hidden);
+
+    await abrirCorrida(); await espera(200);
+    ok('origem preenchida pelo GPS', q('corrida-origem').value === 'Avenida Paulista, 1578 - Bela Vista', q('corrida-origem').value);
+    ok('sem destino, o Waze fica desligado', !q('btn-waze').getAttribute('href') && q('btn-waze').classList.contains('desligado'));
+    const ev = new MouseEvent('click', { cancelable: true, bubbles: true });
+    q('btn-waze').dispatchEvent(ev);
+    ok('Waze sem destino nao sai e explica', ev.defaultPrevented && !q('erro-corrida').hidden);
+    ok('sem destino, a corrida nao comeca', !corrida());
+
+    digitar('corrida-destino', 'Aeroporto de Congonhas');
+    ok('link do Waze', q('btn-waze').getAttribute('href') === 'https://waze.com/ul?q=Aeroporto%20de%20Congonhas&navigate=yes', q('btn-waze').getAttribute('href'));
+    ok('link do Google Maps', (q('btn-maps').getAttribute('href') || '').startsWith('https://www.google.com/maps/dir/?api=1&destination=Aeroporto%20de%20Congonhas'), q('btn-maps').getAttribute('href'));
+    ok('o erro some ao digitar', q('erro-corrida').hidden);
+
+    clicar('btn-estimar'); await espera(100);
+    ok('sem tarifa, estimar pede a tarifa', !q('tela-tarifa').hidden);
+    ok('sem tarifa, nenhuma consulta e gasta', __pedidos.length === 0);
+
+    digitar('t-bandeirada', '5,50'); digitar('t-hora', ''); digitar('t-km1', '3,50'); digitar('t-km2', '0');
+    q('form-tarifa').requestSubmit(); await espera(50);
+    ok('tarifa incompleta e recusada', !q('erro-tarifa').hidden && !localStorage.getItem('tarifa'));
+    digitar('t-hora', '42,00'); digitar('t-km2', 'R$ 4,55');
+    q('form-tarifa').requestSubmit(); await espera(800);
+    ok('tarifa salva em numero', localStorage.getItem('tarifa') === JSON.stringify({ bandeirada: 5.5, km1: 3.5, km2: 4.55, hora: 42 }), localStorage.getItem('tarifa'));
+    ok('salvar a tarifa volta para a corrida', !q('tela-corrida').hidden);
+    ok('e segue para a estimativa sozinho', __pedidos.length === 1, String(__pedidos.length));
+    ok('o pedido leva GPS, destino e cidade', JSON.stringify(__pedidos[0]) === JSON.stringify({ lat: -23.5617, lng: -46.656, destino: 'Aeroporto de Congonhas', cidade: 'São Paulo' }), JSON.stringify(__pedidos[0]));
+    ok('faixa na bandeira 1', q('estimativa-faixa').textContent === 'R$ 55 a R$ 68', q('estimativa-faixa').textContent);
+    ok('rota descrita em km', q('estimativa-rota').textContent.startsWith('14,2 km'), q('estimativa-rota').textContent);
+    clicar('bandeira-2');
+    ok('faixa na bandeira 2', q('estimativa-faixa').textContent === 'R$ 70 a R$ 85', q('estimativa-faixa').textContent);
+    ok('trocar a bandeira nao consulta de novo', __pedidos.length === 1);
+    clicar('bandeira-1');
+
+    digitar('corrida-destino', 'Aeroporto de Guarulhos');
+    ok('destino novo esconde a faixa antiga', q('resultado-estimativa').hidden);
+    digitar('corrida-destino', 'Aeroporto de Congonhas');
+    ok('voltar ao destino mostra a faixa de novo', !q('resultado-estimativa').hidden);
+    digitar('corrida-origem', 'Rua Augusta, 100');
+    ok('origem corrigida a mao invalida a faixa', q('resultado-estimativa').hidden);
+    clicar('btn-estimar'); await espera(500);
+    ok('origem digitada vai como texto', __pedidos[1] && __pedidos[1].origem === 'Rua Augusta, 100' && !('lat' in __pedidos[1]), JSON.stringify(__pedidos[1]));
+
+    clicar('btn-waze');
+    const c1 = corrida();
+    ok('tocar no Waze comeca a corrida', !!c1 && c1.destino === 'Aeroporto de Congonhas' && c1.origem === 'Rua Augusta, 100' && !c1.fim, JSON.stringify(c1));
+    ok('a corrida guarda o dono', c1 && c1.motorista === 'web-motorista');
+    ok('a corrida guarda a estimativa valida', c1 && c1.estimativa && c1.estimativa.km === 14.2);
+    ok('andando: Encerrar aparece, Comecar some', !q('btn-encerrar').hidden && q('btn-comecar').hidden);
+    ok('andando: o Waze vira secundario', q('btn-waze').classList.contains('secundario'));
+    clicar('btn-waze');
+    ok('reabrir o Waze nao reinicia a corrida', corrida().inicio === c1.inicio);
+
+    irParaInicio();
+    ok('o inicio mostra a corrida aberta', !q('btn-continuar-corrida').hidden && q('corrida-aberta-destino').textContent === 'Aeroporto de Congonhas');
+    // Como se o sistema tivesse fechado o app: a memoria some, o localStorage fica.
+    posicao = null; rotaEstimada = null; origemDoGps = false;
+    clicar('btn-continuar-corrida'); await espera(100);
+    ok('a corrida volta inteira', q('corrida-destino').value === 'Aeroporto de Congonhas' && q('corrida-origem').value === 'Rua Augusta, 100' && !q('resultado-estimativa').hidden);
+    ok('voltar do Android na corrida leva ao inicio', voltarUmNivel() === true && !q('tela-inicio').hidden);
+    await abrirCorrida();
+
+    clicar('btn-encerrar');
+    const c2 = corrida();
+    ok('encerrar grava o fim e troca a tela', !!c2.fim && !q('corrida-fim').hidden && q('corrida-dados').hidden);
+    clicar('btn-retomar'); await espera(50);
+    ok('voltar para a corrida apaga o fim', !corrida().fim && !q('corrida-dados').hidden);
+    clicar('btn-encerrar');
+
+    clicar('btn-gerar-recibo'); await espera(200);
+    ok('gerar recibo abre o formulario da corrida', !q('tela-emitir').hidden && q('titulo-emitir').textContent === 'Recibo da corrida');
+    ok('origem e destino preenchidos', q('origem').value === 'Rua Augusta, 100' && q('destino').value === 'Aeroporto de Congonhas');
+    ok('data e hora da saida', q('hora').value === horaDe(c1.inicio) && q('data').value === agoraLocal(new Date(c1.inicio)).data, `${q('data').value} ${q('hora').value}`);
+    ok('o valor fica vazio', q('valor').value === '');
+    ok('o exemplo do valor vira 0,00 no recibo da corrida', q('valor').placeholder === '0,00', q('valor').placeholder);
+    ok('a estimativa aparece embaixo', !q('dica-estimativa').hidden && q('dica-estimativa').textContent.includes('R$ 55 a R$ 68'), q('dica-estimativa').textContent);
+
+    irParaInicio();
+    ok('o inicio avisa a corrida encerrada', q('corrida-aberta-rotulo').textContent.startsWith('Corrida encerrada'), q('corrida-aberta-rotulo').textContent);
+    clicar('btn-ir-emitir'); await espera(200);
+    ok('o exemplo 45,00 volta no recibo avulso', q('valor').placeholder === '45,00', q('valor').placeholder);
+    ok('recibo avulso nao herda a corrida', q('origem').value === '' && q('destino').value === '' && q('dica-estimativa').hidden && q('titulo-emitir').textContent === 'Novo recibo');
+
+    irParaInicio(); clicar('btn-continuar-corrida'); await espera(100);
+    clicar('btn-gerar-recibo'); await espera(200);
+    q('passageiro').value = 'Passageira Teste'; q('valor').value = '61,40';
+    q('form-recibo').requestSubmit(); await espera(900);
+    let recibos = await listarRecibos();
+    ok('o recibo sai com a marca da corrida', recibos.length === 1 && recibos[0].dados.via_corrida === true && recibos[0].dados.origem === 'Rua Augusta, 100' && recibos[0].dados.valor === '61,40', JSON.stringify(recibos[0] && recibos[0].dados));
+    ok('a corrida some depois do recibo', !corrida());
+    ok('o formulario volta ao normal', q('titulo-emitir').textContent === 'Novo recibo' && q('dica-estimativa').hidden);
+    irParaInicio();
+    ok('o inicio fica sem aviso de corrida', q('btn-continuar-corrida').hidden);
+
+    await abrirCorrida(); await espera(100);
+    digitar('corrida-destino', 'Rodoviária Tietê'); clicar('btn-comecar'); clicar('btn-encerrar'); clicar('btn-sem-recibo'); await espera(50);
+    ok('sem recibo apaga a corrida e volta ao inicio', !corrida() && !q('tela-inicio').hidden);
+
+    clicar('btn-ir-emitir'); await espera(200);
+    q('passageiro').value = 'Avulso'; q('origem').value = 'A'; q('destino').value = 'B'; q('valor').value = '10';
+    q('form-recibo').requestSubmit(); await espera(900);
+    recibos = await listarRecibos();
+    const avulso = recibos.find((x) => x.dados.passageiro === 'Avulso');
+    ok('recibo avulso sai sem a marca', recibos.length === 2 && avulso && avulso.dados.via_corrida === undefined, JSON.stringify(avulso && avulso.dados));
+
+    irParaInicio(); clicar('btn-tarifa');
+    ok('a tarifa pelo menu abre preenchida', !q('tela-tarifa').hidden && q('t-km2').value === '4,55', q('t-km2').value);
+    clicar('btn-fechar-tarifa');
+    ok('fechar a tarifa volta ao inicio', !q('tela-inicio').hidden);
+    clicar('btn-historico'); await espera(200);
+    ok('o historico abre', !q('tela-historico').hidden);
+    clicar('btn-voltar');
+    ok('voltar do historico vai ao inicio', !q('tela-inicio').hidden);
+
+    await abrirCorrida(); digitar('corrida-destino', 'Centro'); clicar('btn-comecar');
+    encerrarSessao();
+    ok('sair apaga a corrida aberta, a tarifa fica', !corrida() && !!localStorage.getItem('tarifa'));
+    localStorage.setItem('motorista_id', JSON.stringify('outro'));
+    localStorage.setItem('corrida', JSON.stringify({ motorista: 'web-motorista', destino: 'X', inicio: new Date().toISOString(), fim: null }));
+    ok('corrida de outro motorista nao aparece', corridaAtual() === null && !localStorage.getItem('corrida'));
+  } catch (e) {
+    r.push(`FALHA excecao: ${e && e.stack || e}`);
+  }
+  const pre = document.createElement('pre');
+  pre.id = 'resultado-teste';
+  pre.textContent = r.join('\n');
+  document.body.appendChild(pre);
+});
+</script>

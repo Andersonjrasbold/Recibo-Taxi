@@ -201,11 +201,29 @@ async function sincronizar() {
 
 // ── Telas ──────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
-const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-emitir',
-               'tela-recibo', 'tela-assinatura', 'tela-historico', 'tela-excluir'];
+const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-inicio',
+               'tela-corrida', 'tela-tarifa', 'tela-emitir', 'tela-recibo',
+               'tela-assinatura', 'tela-historico', 'tela-excluir'];
+
+// Telas de onde o motorista sai para o menu. Fechar o historico, a assinatura,
+// a exclusao ou a tarifa volta para a ultima delas, e nao sempre para o
+// formulario: o formulario deixou de ser a unica tela de trabalho.
+const TELAS_BASE = ['tela-inicio', 'tela-corrida', 'tela-emitir'];
+let telaBase = 'tela-inicio';
+
 function mostrar(qual) {
   telas.forEach((t) => { $(t).hidden = t !== qual; });
+  if (TELAS_BASE.includes(qual)) telaBase = qual;
   window.scrollTo(0, 0);
+}
+
+// Sem refazer nada: o formulario e a corrida voltam como estavam, com o que
+// o motorista ja tinha digitado. So o inicio se redesenha, porque o aviso da
+// corrida aberta pode ter mudado.
+function voltarParaBase() {
+  if (telaBase === 'tela-inicio') { irParaInicio(); return; }
+  if (telaBase === 'tela-corrida') desenharCorrida();
+  mostrar(telaBase);
 }
 
 // O wa.me exige o numero com codigo do pais. Sem isso o WhatsApp abre sem
@@ -555,14 +573,13 @@ $('menu-perfil').addEventListener('click', (ev) => {
   if (ev.target.closest('button')) fecharMenu();
 });
 
-// Tocar na marca volta para o formulário — o caminho de volta que faltava
-// depois de olhar o histórico ou a tela de assinatura.
-$('btn-inicio').addEventListener('click', async () => {
+// Tocar na marca volta para o início, venha de onde vier. O formulário não é
+// apagado: quem tinha posto a data de ontem e foi olhar o histórico encontra o
+// recibo como deixou, voltando por "Emitir recibo".
+$('btn-inicio').addEventListener('click', () => {
   fecharMenu();
-  if (!token() || !$('tela-emitir').hidden) return;
-  // Sem renovar data e hora: o motorista pode ter posto a data de ontem e ido
-  // olhar o historico. Voltar pela marca nao e comecar um recibo novo.
-  await irParaEmitir({ comHoraDeAgora: false });
+  if (!token() || !$('tela-inicio').hidden) return;
+  irParaInicio();
 });
 
 // ── Ações ──────────────────────────────────────────────────────────────────
@@ -708,6 +725,9 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       documento_passageiro: documentoBR($('documento').value),
       razao_social: ehCNPJ($('documento').value)
         ? $('razao-social').value.trim().replace(/\s+/g, ' ') : '',
+      // Para medir quantos recibos saem do caminho da corrida. O servidor
+      // ainda ignora o campo; passa a guardar quando a coluna existir.
+      ...(reciboDaCorrida ? { via_corrida: true } : {}),
     },
   };
 
@@ -716,6 +736,8 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   $('form-recibo').reset();
   atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
   revisarWhats(); revisarEmail();
+  // A corrida acabou de virar recibo: some do início junto com a dica.
+  if (reciboDaCorrida) { apagarCorrida(); limparCorridaDoFormulario(); }
   preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
   abrirRecibo(recibo);
@@ -962,7 +984,7 @@ $('plano-mensal').addEventListener('click', () => { escolhidoNaTela = true; esco
 // tem como chegar na compra, e assinante nenhum tem como restaurar.
 $('btn-pro').addEventListener('click', () => abrirAssinatura(''));
 
-$('btn-fechar-pro').addEventListener('click', () => mostrar('tela-emitir'));
+$('btn-fechar-pro').addEventListener('click', voltarParaBase);
 
 // "Nao foi possivel concluir a compra" era tudo que aparecia, para qualquer
 // causa: produto que a loja nao devolveu, contrato pendente, aparelho sem conta
@@ -1036,7 +1058,7 @@ $('btn-assinar').addEventListener('click', async () => {
       vibrar('HEAVY');
       await atualizarSessao();
       sincronizar().then(atualizarAvisoFila);   // o que a cota segurava sobe agora
-      mostrar('tela-emitir');
+      voltarParaBase();
     }
   } catch (e) {
     // Cancelar não é erro: o motorista fechou a folha de pagamento.
@@ -1057,7 +1079,7 @@ $('btn-restaurar').addEventListener('click', async () => {
     if (r?.customerInfo?.entitlements?.active?.pro) {
       await atualizarSessao();
       sincronizar().then(atualizarAvisoFila);   // o que a cota segurava sobe agora
-      mostrar('tela-emitir');
+      voltarParaBase();
     } else {
       erro.textContent = 'Nenhuma assinatura ativa encontrada nesta conta.';
       erro.hidden = false;
@@ -1074,6 +1096,9 @@ function encerrarSessao() {
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
+  // A corrida aberta e de quem saiu. A tarifa e a bandeira ficam: sao da
+  // cidade, nao da pessoa.
+  Guardado.del('corrida');
   fecharMenu();
   atualizarCabecalho();
   mostrar('tela-login');
@@ -1112,15 +1137,54 @@ async function atualizarSessao() {
   } catch { return null; }
 }
 
-async function irParaEmitir({ comHoraDeAgora = true } = {}) {
-  if (comHoraDeAgora) preencherDataEHora();
+// `daCorrida` e a corrida encerrada que vira recibo: origem, destino, data e
+// hora de saida ja entram preenchidos.
+async function irParaEmitir({ comHoraDeAgora = true, daCorrida = null } = {}) {
+  if (daCorrida) {
+    preencherComCorrida(daCorrida);
+  } else {
+    // Recibo avulso depois de um da corrida que nao foi emitido: tira o que
+    // veio da corrida, senao o recibo novo sairia com a origem e o destino dela.
+    if (reciboDaCorrida) limparCorridaDoFormulario();
+    if (comHoraDeAgora) preencherDataEHora();
+  }
   await atualizarSugestoesDeLocal();   // aprende o local que acabou de ser usado
   await atualizarAvisoFila();
   mostrar('tela-emitir');
 }
+
+// O valor fica vazio de proposito: o recibo diz o que o passageiro pagou, e na
+// cidade grande quem diz isso e o taximetro. A estimativa aparece embaixo do
+// campo, para conferir — nunca dentro dele.
+let reciboDaCorrida = false;
+
+function preencherComCorrida(c) {
+  const saida = agoraLocal(new Date(c.inicio));
+  $('data').value = saida.data;
+  $('hora').value = saida.hora;
+  $('origem').value = c.origem || '';
+  $('destino').value = c.destino || '';
+  $('valor').value = '';
+  // O exemplo "45,00" do campo, logo acima da faixa, pareceria um valor sugerido.
+  $('valor').placeholder = '0,00';
+  const faixa = faixaDaCorrida(c);
+  $('dica-estimativa').textContent = faixa
+    ? `Estimativa desta corrida: ${textoDaFaixa(faixa)}. Digite o valor cobrado.` : '';
+  $('dica-estimativa').hidden = !faixa;
+  $('titulo-emitir').textContent = 'Recibo da corrida';
+  reciboDaCorrida = true;
+}
+
+function limparCorridaDoFormulario() {
+  ['origem', 'destino', 'valor'].forEach((id) => { $(id).value = ''; });
+  $('valor').placeholder = '45,00';
+  $('dica-estimativa').hidden = true;
+  $('titulo-emitir').textContent = 'Novo recibo';
+  reciboDaCorrida = false;
+}
 // Sem passar o ouvinte direto: ele receberia o evento do clique como opcoes.
 $('btn-novo').addEventListener('click', () => irParaEmitir());
-$('btn-voltar').addEventListener('click', () => mostrar('tela-emitir'));
+$('btn-voltar').addEventListener('click', voltarParaBase);
 
 // ── Botão voltar do Android ────────────────────────────────────────────────
 // No Android o voltar é do sistema, não da tela. Sem ninguém escutando, o
@@ -1143,8 +1207,15 @@ function voltarUmNivel() {
   }
 
   if (!$('tela-historico').hidden || !$('tela-assinatura').hidden
-      || !$('tela-excluir').hidden) {
-    irParaEmitir({ comHoraDeAgora: false });
+      || !$('tela-excluir').hidden || !$('tela-tarifa').hidden) {
+    voltarParaBase();
+    return true;
+  }
+
+  // O formulário e a corrida deixaram de ser a raiz: a raiz agora é o início.
+  // A corrida aberta não se perde — o início mostra o aviso para continuar.
+  if (!$('tela-emitir').hidden || !$('tela-corrida').hidden) {
+    irParaInicio();
     return true;
   }
 
@@ -1168,7 +1239,7 @@ $('btn-excluir-conta').addEventListener('click', () => {
   $('erro-excluir').hidden = true;
   mostrar('tela-excluir');
 });
-$('btn-fechar-excluir').addEventListener('click', () => mostrar('tela-emitir'));
+$('btn-fechar-excluir').addEventListener('click', voltarParaBase);
 
 $('form-excluir').addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -1270,10 +1341,479 @@ if (P().Network) {
   });
 }
 
+// ── Tela inicial ───────────────────────────────────────────────────────────
+function primeiroNome(nome) {
+  return String(nome || '').trim().split(/\s+/)[0] || '';
+}
+
+function atualizarSaudacao() {
+  const nome = primeiroNome((Guardado.get('motorista') || {}).full_name);
+  $('titulo-inicio').textContent = nome ? `Olá, ${nome}` : 'Olá';
+}
+
+const horaDe = (iso) => agoraLocal(new Date(iso)).hora;
+
+function mostrarCorridaAberta() {
+  const c = corridaAtual();
+  $('btn-continuar-corrida').hidden = !c;
+  if (!c) return;
+  $('corrida-aberta-rotulo').textContent = c.fim
+    ? 'Corrida encerrada · falta o recibo' : 'Corrida em andamento';
+  $('corrida-aberta-destino').textContent = c.destino;
+  $('corrida-aberta-desde').textContent = c.fim
+    ? `Das ${horaDe(c.inicio)} às ${horaDe(c.fim)} · toque para decidir`
+    : `Desde as ${horaDe(c.inicio)} · toque para continuar`;
+}
+
+function irParaInicio() {
+  atualizarSaudacao();
+  mostrarCorridaAberta();
+  mostrar('tela-inicio');
+}
+
+$('btn-ir-emitir').addEventListener('click', () => { vibrar('LIGHT'); irParaEmitir(); });
+// Uma corrida por vez: com uma aberta, "Fazer corrida" volta para ela.
+$('btn-ir-corrida').addEventListener('click', () => { vibrar('LIGHT'); abrirCorrida(); });
+$('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); abrirCorrida(); });
+
+// ── Corrida ────────────────────────────────────────────────────────────────
+//
+// O app nao mede a corrida pelo GPS no caminho: quem mede e cobra e o
+// taximetro. Ele guarda de onde e para onde, a hora de saida e, se o motorista
+// pediu, a rota que o Google estimou. No fim, leva tudo para o recibo.
+//
+// Fica no localStorage, e nao so na memoria: o motorista abre o Waze, o
+// sistema pode fechar o app no meio do caminho, e a corrida nao pode sumir.
+// Leva o id do motorista: em aparelho dividido, quem entra depois nao herda a
+// corrida de quem saiu.
+function corridaAtual() {
+  const c = Guardado.get('corrida');
+  const eu = Guardado.get('motorista_id');
+  if (c && c.motorista && eu && c.motorista !== eu) { Guardado.del('corrida'); return null; }
+  return c;
+}
+const guardarCorrida = (c) => Guardado.set('corrida', c);
+const apagarCorrida = () => Guardado.del('corrida');
+
+let posicao = null;        // {lat, lng} do GPS, para a estimativa
+let cidadeAtual = '';      // onde o aparelho esta: ajuda o Google a achar o destino certo
+let origemDoGps = false;   // a origem na tela veio do GPS e ninguem mexeu nela
+let rotaEstimada = null;   // {km, minutos, minutos_sem_transito, chave}
+let bandeira = Guardado.get('bandeira') === 2 ? 2 : 1;
+
+async function abrirCorrida() {
+  const c = corridaAtual();
+  $('corrida-origem').value = c ? c.origem || '' : '';
+  $('corrida-destino').value = c ? c.destino || '' : '';
+  posicao = c ? c.posicao || null : null;
+  cidadeAtual = c ? c.cidade || '' : '';
+  origemDoGps = c ? !!c.origemDoGps : false;
+  rotaEstimada = c ? c.estimativa || null : null;
+  if (c && c.bandeira) bandeira = c.bandeira;
+  ['erro-corrida', 'aviso-estimativa', 'dica-origem'].forEach((id) => { $(id).hidden = true; });
+  desenharCorrida();
+  mostrar('tela-corrida');
+  // Corrida nova: o passageiro costuma embarcar onde o motorista esta. Vem
+  // antes do historico, e sem depender dele: se o banco local falhar, a origem
+  // continua chegando pelo GPS.
+  if (!c) localizar();
+  await atualizarSugestoesDeLocal().catch(() => {});
+}
+
+function desenharCorrida() {
+  const c = corridaAtual();
+  const andando = !!c && !c.fim;
+  const encerrada = !!c && !!c.fim;
+  $('titulo-corrida').textContent = encerrada ? 'Corrida encerrada' : c ? 'Corrida' : 'Nova corrida';
+  $('corrida-dados').hidden = encerrada;
+  $('corrida-fim').hidden = !encerrada;
+  $('corrida-andamento').hidden = !andando;
+  if (andando) $('corrida-andamento').textContent = `Em andamento desde as ${horaDe(c.inicio)}.`;
+  $('btn-encerrar').hidden = !andando;
+  $('btn-comecar').hidden = !!c;
+  // Antes de sair, abrir o mapa e o passo principal; depois, e encerrar.
+  $('btn-waze').className = `${andando ? 'secundario' : 'primario'} como-botao`;
+  if (encerrada) $('fim-resumo').textContent = resumoDaCorrida(c);
+  atualizarLinksDoMapa();
+  desenharEstimativa();
+}
+
+function resumoDaCorrida(c) {
+  const minutos = Math.max(1, Math.round((new Date(c.fim) - new Date(c.inicio)) / 60000));
+  return `${c.destino} · das ${horaDe(c.inicio)} às ${horaDe(c.fim)} (${minutos} min)`;
+}
+
+// O proprio Waze procura o endereco perto de onde o motorista esta, entao vai
+// so o texto digitado. Sem destino o link nao tem href: o toque explica o que
+// falta, em vez de abrir o mapa vazio.
+function atualizarLinksDoMapa() {
+  const destino = $('corrida-destino').value.trim();
+  const q = encodeURIComponent(destino);
+  const links = {
+    'btn-waze': `https://waze.com/ul?q=${q}&navigate=yes`,
+    'btn-maps': `https://www.google.com/maps/dir/?api=1&destination=${q}&travelmode=driving&dir_action=navigate`,
+  };
+  for (const [id, url] of Object.entries(links)) {
+    if (destino) $(id).href = url; else $(id).removeAttribute('href');
+    $(id).classList.toggle('desligado', !destino);
+  }
+}
+
+function erroNaCorrida(texto) {
+  $('erro-corrida').textContent = texto;
+  $('erro-corrida').hidden = !texto;
+}
+
+// Sincrono de proposito: o toque no Waze tira o app da tela logo em seguida,
+// e a corrida tem de estar gravada antes disso.
+function comecarCorrida() {
+  guardarCorrida({
+    motorista: Guardado.get('motorista_id'),
+    destino: $('corrida-destino').value.trim(),
+    origem: $('corrida-origem').value.trim(),
+    origemDoGps,
+    posicao,
+    cidade: cidadeAtual,
+    inicio: new Date().toISOString(),
+    fim: null,
+    estimativa: estimativaValida() ? rotaEstimada : null,
+    bandeira,
+  });
+  vibrar('HEAVY');
+  desenharCorrida();
+}
+
+function destinoParaSair(acao) {
+  if ($('corrida-destino').value.trim()) { erroNaCorrida(''); return true; }
+  erroNaCorrida(`Digite o destino para ${acao}.`);
+  $('corrida-destino').focus();
+  return false;
+}
+
+// O <a> segue sozinho para o Waze ou o Maps depois deste ouvinte; o que ele
+// faz e so registrar a saida, na primeira vez.
+function aoAbrirMapa(ev) {
+  if (!destinoParaSair('abrir o mapa')) { ev.preventDefault(); return; }
+  if (!corridaAtual()) comecarCorrida();
+}
+$('btn-waze').addEventListener('click', aoAbrirMapa);
+$('btn-maps').addEventListener('click', aoAbrirMapa);
+$('btn-comecar').addEventListener('click', () => {
+  if (destinoParaSair('começar')) comecarCorrida();
+});
+
+// Com a corrida andando, o que muda na tela vai para a corrida guardada.
+function aoEditarCorrida() {
+  const c = corridaAtual();
+  if (c && !c.fim) {
+    Object.assign(c, {
+      destino: $('corrida-destino').value.trim(),
+      origem: $('corrida-origem').value.trim(),
+      origemDoGps, posicao, cidade: cidadeAtual,
+      estimativa: estimativaValida() ? rotaEstimada : null,
+    });
+    guardarCorrida(c);
+  }
+  atualizarLinksDoMapa();
+  desenharEstimativa();
+}
+$('corrida-destino').addEventListener('input', () => { erroNaCorrida(''); aoEditarCorrida(); });
+$('corrida-origem').addEventListener('input', () => {
+  origemDoGps = false;              // o motorista corrigiu: vale o que ele digitou
+  $('dica-origem').hidden = true;
+  aoEditarCorrida();
+});
+
+$('btn-encerrar').addEventListener('click', () => {
+  const c = corridaAtual();
+  if (!c) return;
+  if (!c.destino) { erroNaCorrida('Digite o destino antes de encerrar.'); return; }
+  c.fim = new Date().toISOString();
+  guardarCorrida(c);
+  vibrar('HEAVY');
+  desenharCorrida();
+  window.scrollTo(0, 0);
+});
+
+// Encerrou sem querer: a corrida volta a andar, com a mesma hora de saida.
+$('btn-retomar').addEventListener('click', () => {
+  const c = corridaAtual();
+  if (c) { c.fim = null; guardarCorrida(c); }
+  abrirCorrida();
+});
+
+$('btn-sem-recibo').addEventListener('click', () => {
+  apagarCorrida();
+  vibrar('LIGHT');
+  irParaInicio();
+});
+
+$('btn-gerar-recibo').addEventListener('click', () => {
+  const c = corridaAtual();
+  if (!c) { irParaInicio(); return; }
+  vibrar('LIGHT');
+  irParaEmitir({ daCorrida: c });
+});
+
+$('btn-corrida-voltar').addEventListener('click', irParaInicio);
+
+// ── Localização ────────────────────────────────────────────────────────────
+//
+// So com o app aberto, e so quando o motorista abre a corrida ou toca no alvo:
+// nada em segundo plano. A posicao serve para a origem do recibo e para a
+// estimativa, e nao e guardada em lugar nenhum fora do aparelho.
+
+// Rua e numero primeiro: e o que a empresa do passageiro espera ler no recibo.
+function enderecoLegivel(a) {
+  const rua = [a.thoroughfare, a.subThoroughfare].filter(Boolean).join(', ');
+  const bairro = a.subLocality || '';
+  const texto = rua
+    ? (bairro ? `${rua} - ${bairro}` : rua)
+    : ((a.areasOfInterest || [])[0] || bairro || a.locality || '');
+  return texto.slice(0, 200);
+}
+
+let localizando = null;
+
+// Nunca trava a tela: sem permissao, sem sinal de GPS ou no navegador, a
+// origem fica para digitar. `forcar` e o toque no alvo: troca ate o que o
+// motorista digitou, e explica quando nao deu.
+function localizar({ forcar = false } = {}) {
+  if (!localizando) {
+    localizando = buscarPosicao(forcar).finally(() => {
+      localizando = null;
+      $('btn-localizar').disabled = false;
+    });
+  }
+  return localizando;
+}
+
+async function buscarPosicao(forcar) {
+  const { Geolocation, NativeGeocoder } = P();
+  if (!Geolocation) return;
+  const avisar = (texto) => {
+    if (!forcar) return;
+    $('dica-origem').textContent = texto;
+    $('dica-origem').hidden = false;
+  };
+  $('btn-localizar').disabled = true;
+  try {
+    let perm = await Geolocation.checkPermissions();
+    if (['prompt', 'prompt-with-rationale'].includes(perm.location)) {
+      perm = await Geolocation.requestPermissions({ permissions: ['location'] });
+    }
+    // Aproximada tambem serve: a origem sai menos precisa, e ele confere.
+    if (perm.location !== 'granted' && perm.coarseLocation !== 'granted') {
+      avisar('Sem permissão de localização. Libere nos Ajustes do aparelho ou digite a origem.');
+      return;
+    }
+    const pos = await Geolocation.getCurrentPosition({
+      enableHighAccuracy: true, timeout: 10000, maximumAge: 30000,
+    });
+    posicao = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    $('dica-origem').hidden = true;
+    if (!NativeGeocoder) { aoEditarCorrida(); return; }
+
+    const { addresses } = await NativeGeocoder.reverseGeocode({
+      latitude: posicao.lat, longitude: posicao.lng, useLocale: true, maxResults: 1,
+    });
+    const a = (addresses || [])[0];
+    if (a) {
+      cidadeAtual = a.locality || a.subAdministrativeArea || '';
+      const texto = enderecoLegivel(a);
+      const campo = $('corrida-origem');
+      // Nao passa por cima do que o motorista digitou, a nao ser que ele peca.
+      if (texto && (forcar || !campo.value.trim() || origemDoGps)) {
+        campo.value = texto;
+        origemDoGps = true;
+      }
+    }
+    aoEditarCorrida();
+  } catch {
+    avisar('Não consegui sua localização agora. Digite a origem.');
+  }
+}
+
+$('btn-localizar').addEventListener('click', () => { vibrar('LIGHT'); localizar({ forcar: true }); });
+
+// ── Estimativa ─────────────────────────────────────────────────────────────
+//
+// O servidor devolve so a rota (km e minutos, com e sem transito). A faixa de
+// preco e calculada aqui, com a tarifa que o motorista digitou: cada cidade
+// tem a sua, e nenhuma tabela nossa ficaria em dia com todas.
+const tarifa = () => Guardado.get('tarifa');
+
+// A posicao do GPS enquanto a origem na tela for a que veio dele; senao, o
+// que o motorista digitou.
+function origemParaEstimar() {
+  const texto = $('corrida-origem').value.trim();
+  if (posicao && (origemDoGps || !texto)) return { lat: posicao.lat, lng: posicao.lng };
+  return texto.length >= 3 ? { origem: texto } : null;
+}
+
+// Trocar a origem ou o destino invalida a estimativa: ela era de outra rota.
+const chaveDaRota = () => JSON.stringify([origemParaEstimar(), $('corrida-destino').value.trim()]);
+const estimativaValida = () => !!rotaEstimada && rotaEstimada.chave === chaveDaRota();
+
+// Embaixo, a bandeirada e o km pela rota do Google. Em cima, o tempo que o
+// transito acrescenta, cobrado como hora parada — abaixo de certa velocidade
+// o taximetro cobra tempo em vez de km —, e 10% de folga, porque o caminho
+// feito raramente e o que o Google sugeriu.
+function faixaDoValor(rota, t, b) {
+  const porKm = b === 2 ? t.km2 : t.km1;
+  const base = t.bandeirada + rota.km * porKm;
+  const parado = (Math.max(0, rota.minutos - rota.minutos_sem_transito) / 60) * t.hora;
+  return { de: Math.floor(base), ate: Math.ceil((base + parado) * 1.1) };
+}
+
+const faixaDaCorrida = (c) => (c && c.estimativa && tarifa()
+  ? faixaDoValor(c.estimativa, tarifa(), c.bandeira || 1) : null);
+
+const emReaisInteiros = (n) => `R$ ${n.toLocaleString('pt-BR')}`;
+const textoDaFaixa = (f) => (f.de >= f.ate
+  ? emReaisInteiros(f.ate) : `${emReaisInteiros(f.de)} a ${emReaisInteiros(f.ate)}`);
+const kmBR = (km) => km.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+
+function desenharEstimativa() {
+  [1, 2].forEach((b) => $(`bandeira-${b}`).setAttribute('aria-checked', String(b === bandeira)));
+  const t = tarifa();
+  $('btn-editar-tarifa').hidden = !t;
+  const mostrarFaixa = !!t && estimativaValida();
+  $('resultado-estimativa').hidden = !mostrarFaixa;
+  if (!mostrarFaixa) return;
+  $('estimativa-faixa').textContent = textoDaFaixa(faixaDoValor(rotaEstimada, t, bandeira));
+  $('estimativa-rota').textContent =
+    `${kmBR(rotaEstimada.km)} km · cerca de ${rotaEstimada.minutos} min com trânsito · bandeira ${bandeira}`;
+}
+
+function escolherBandeira(b) {
+  bandeira = b;
+  Guardado.set('bandeira', b);
+  const c = corridaAtual();
+  if (c) { c.bandeira = b; guardarCorrida(c); }
+  vibrar('LIGHT');
+  desenharEstimativa();
+}
+$('bandeira-1').addEventListener('click', () => escolherBandeira(1));
+$('bandeira-2').addEventListener('click', () => escolherBandeira(2));
+
+const MOTIVOS_DA_ESTIMATIVA = {
+  destino_invalido: 'Digite o destino para estimar.',
+  origem_invalida: 'Digite a origem, ou toque no alvo ao lado dela para usar sua localização.',
+  destino_nao_encontrado:
+    'Não encontrei esse destino. Tente com rua e número, ou o nome de um lugar conhecido.',
+  limite_diario: 'Você chegou ao limite de estimativas de hoje.',
+  falha_na_consulta: 'O serviço de rotas não respondeu. Tente de novo em instantes.',
+  indisponivel: 'A estimativa ainda não está disponível.',
+  nao_autenticado: 'Sua sessão expirou. Entre de novo.',
+};
+
+function avisoDaEstimativa(texto) {
+  $('aviso-estimativa').textContent = texto;
+  $('aviso-estimativa').hidden = !texto;
+}
+
+async function estimar() {
+  avisoDaEstimativa('');
+  const destino = $('corrida-destino').value.trim();
+  if (destino.length < 3) {
+    avisoDaEstimativa(MOTIVOS_DA_ESTIMATIVA.destino_invalido);
+    $('corrida-destino').focus();
+    return;
+  }
+  // A tarifa vem antes de gastar uma consulta: sem ela nao ha faixa a mostrar.
+  if (!tarifa()) { abrirTarifa({ depoisEstimar: true }); return; }
+  if (!origemParaEstimar() && localizando) await localizando;   // GPS ainda chegando
+  const origem = origemParaEstimar();
+  if (!origem) { avisoDaEstimativa(MOTIVOS_DA_ESTIMATIVA.origem_invalida); return; }
+
+  const botao = $('btn-estimar');
+  botao.disabled = true;
+  botao.textContent = 'Estimando…';
+  try {
+    const resp = await api('/api/estimativa', {
+      method: 'POST',
+      body: JSON.stringify({ ...origem, destino, cidade: cidadeAtual }),
+    });
+    const corpo = await resp.json().catch(() => ({}));
+    if (!resp.ok || typeof corpo.km !== 'number') {
+      avisoDaEstimativa(MOTIVOS_DA_ESTIMATIVA[corpo.erro] || 'Não foi possível estimar agora.');
+      return;
+    }
+    rotaEstimada = {
+      km: corpo.km,
+      minutos: corpo.minutos,
+      minutos_sem_transito: corpo.minutos_sem_transito,
+      chave: JSON.stringify([origem, destino]),
+    };
+    aoEditarCorrida();      // guarda na corrida aberta e desenha a faixa
+    vibrar('LIGHT');
+  } catch {
+    avisoDaEstimativa('Sem conexão. A estimativa precisa de internet; a corrida e o recibo funcionam sem.');
+  } finally {
+    botao.disabled = false;
+    botao.textContent = 'Estimar valor';
+  }
+}
+$('btn-estimar').addEventListener('click', estimar);
+
+// ── Tarifa da cidade ───────────────────────────────────────────────────────
+let estimarDepoisDaTarifa = false;
+
+// Reais digitados do jeito brasileiro: "4,50", "R$ 4,50" ou "4.50".
+function numeroDe(texto) {
+  let s = String(texto || '').replace(/[R$\s]/g, '');
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n < 10000 ? n : null;
+}
+const numeroBR = (n) => (n == null ? '' : n.toFixed(2).replace('.', ','));
+
+function abrirTarifa({ depoisEstimar = false } = {}) {
+  estimarDepoisDaTarifa = depoisEstimar;
+  const t = tarifa() || {};
+  $('t-bandeirada').value = numeroBR(t.bandeirada);
+  $('t-hora').value = numeroBR(t.hora);
+  $('t-km1').value = numeroBR(t.km1);
+  $('t-km2').value = numeroBR(t.km2);
+  $('erro-tarifa').hidden = true;
+  mostrar('tela-tarifa');
+}
+
+$('btn-tarifa').addEventListener('click', () => abrirTarifa());
+$('btn-editar-tarifa').addEventListener('click', () => abrirTarifa());
+$('btn-fechar-tarifa').addEventListener('click', () => {
+  estimarDepoisDaTarifa = false;
+  voltarParaBase();
+});
+
+$('form-tarifa').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const t = {
+    bandeirada: numeroDe($('t-bandeirada').value),
+    km1: numeroDe($('t-km1').value),
+    km2: numeroDe($('t-km2').value),
+    hora: numeroDe($('t-hora').value),
+  };
+  if (Object.values(t).some((v) => v == null) || !t.km1 || !t.km2) {
+    $('erro-tarifa').textContent =
+      'Preencha os quatro valores em reais, com vírgula nos centavos. O km não pode ser zero.';
+    $('erro-tarifa').hidden = false;
+    return;
+  }
+  Guardado.set('tarifa', t);
+  vibrar('LIGHT');
+  const estimarAgora = estimarDepoisDaTarifa;
+  estimarDepoisDaTarifa = false;
+  voltarParaBase();
+  // Veio do botao de estimar: segue para a estimativa, sem pedir outro toque.
+  if (estimarAgora && !$('tela-corrida').hidden) estimar();
+});
+
 // ── Início ─────────────────────────────────────────────────────────────────
-function agoraLocal() {
-  // toISOString devolve UTC; para a hora do relógio do motorista, monta local.
-  const d = new Date();
+// toISOString devolve UTC; para a hora do relógio do motorista, monta local.
+function agoraLocal(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   return {
     data: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
@@ -1291,8 +1831,10 @@ async function iniciar() {
   preencherDataEHora();
   atualizarCabecalho();
   if (!token()) { mostrar('tela-login'); return; }
-  mostrar('tela-emitir');
+  irParaInicio();
   await atualizarSessao();
+  // O nome da saudacao e o dono da corrida aberta chegam com a sessao.
+  if (!$('tela-inicio').hidden) irParaInicio();
   await iniciarCompras();
   await atualizarSugestoesDeLocal();
   await atualizarAvisoFila();

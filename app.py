@@ -157,6 +157,13 @@ RESET_TOKEN_MAX_AGE = 3600  # 1 hora
 RESET_DAILY_LIMIT_EMAIL = 5
 RESET_DAILY_LIMIT_IP = 30
 
+# Estimativa de corrida (/api/estimativa). A rota vem da Routes API do Google,
+# que cobra cada consulta acima da cota gratis do mes. O teto diario por
+# motorista existe para um aparelho em laco, ou um token vazado, nao gastar a
+# cota de todos; 40 e mais do que um turno inteiro de corridas.
+ESTIMATIVA_DIARIA_LIMITE = 40
+ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+
 # Painel /admin. Tentativas de login por dia: o painel mostra CPF e telefone de
 # todos os motoristas, e a senha inicial e curta por decisao do dono — o teto
 # e o que impede um script de adivinhar. A sessao do admin morre sozinha em
@@ -2562,6 +2569,174 @@ def api_criar_recibo():
     )
 
 
+# ── Estimativa de corrida ─────────────────────────────────────────────────────
+#
+# O app mostra uma FAIXA de preco, nunca um valor a cobrar: na cidade grande
+# quem cobra e o taximetro aferido, e a Portaria Inmetro 124/2022 so admite
+# taximetro ligado ao sensor do carro. Por isso o servidor devolve so a rota —
+# km e minutos — e a conta com a tarifa acontece no aparelho, com a tabela que
+# o proprio motorista digitou.
+#
+# A consulta passa por aqui, e nao sai direto do app, por tres motivos: a chave
+# do Google nao pode morar dentro do app, o teto diario precisa de um lugar que
+# o aparelho nao controla, e trocar de fornecedor nao pode exigir versao nova
+# nas lojas.
+
+class RotaIndisponivel(Exception):
+    """O Google nao respondeu como devia: rede, cota, chave recusada."""
+
+
+def _segundos_da_rota(valor) -> int:
+    """A Routes API devolve duracao como texto: "1873s"."""
+    try:
+        return max(0, round(float(str(valor or "0").rstrip("s"))))
+    except ValueError:
+        return 0
+
+
+def ler_rota(corpo: dict) -> dict | None:
+    """Km e minutos da primeira rota da resposta. None quando nao ha rota."""
+    rotas = (corpo or {}).get("routes") or []
+    metros = rotas[0].get("distanceMeters") if rotas else None
+    if not metros:
+        return None
+    segundos = _segundos_da_rota(rotas[0].get("duration"))
+    # Sem a duracao sem transito, a diferenca vira zero: a faixa sai sem hora
+    # parada, em vez de inventar uma.
+    sem_transito = _segundos_da_rota(rotas[0].get("staticDuration")) or segundos
+    return {
+        "km": round(metros / 1000, 1),
+        "minutos": round(segundos / 60),
+        "minutos_sem_transito": round(sem_transito / 60),
+    }
+
+
+def endereco_do_destino(destino: str, cidade: str) -> str:
+    """Poe a cidade no fim do destino quando o motorista nao pos.
+
+    "Rua das Flores, 10" existe em centenas de cidades. Sem a cidade, o Google
+    pode escolher outra, e a estimativa sai com centenas de km.
+    """
+    cidade = (cidade or "").strip()
+    if not cidade or cidade.casefold() in destino.casefold():
+        return destino
+    return f"{destino}, {cidade}"
+
+
+def consultar_rota(origem: dict, destino: str, timeout: int = 8) -> dict | None:
+    """Rota de carro da origem ate o destino escrito, pela Routes API.
+
+    `origem` e {"lat", "lng"}, do GPS do aparelho, ou {"endereco"}, digitado.
+    Devolve o que `ler_rota` devolve, ou None quando o Google nao achou
+    caminho ate o destino. Levanta RotaIndisponivel quando a falha nao e do
+    destino.
+    """
+    if "lat" in origem:
+        ponto = {"location": {"latLng": {"latitude": origem["lat"], "longitude": origem["lng"]}}}
+    else:
+        ponto = {"address": origem["endereco"]}
+
+    corpo = {
+        "origin": ponto,
+        "destination": {"address": destino},
+        "travelMode": "DRIVE",
+        # Com transito: a diferenca para a duracao sem transito e o tempo que o
+        # taximetro cobraria como hora parada.
+        "routingPreference": "TRAFFIC_AWARE",
+        "languageCode": "pt-BR",
+        "regionCode": "BR",
+        "units": "METRIC",
+    }
+    requisicao = urllib.request.Request(
+        ROUTES_API_URL,
+        data=json.dumps(corpo).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": os.environ.get("GOOGLE_MAPS_API_KEY", "").strip(),
+            # Obrigatoria: sem a mascara a Routes API recusa o pedido.
+            "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.staticDuration",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(requisicao, timeout=timeout) as resposta:
+            return ler_rota(json.loads(resposta.read() or b"{}"))
+    except urllib.error.HTTPError as exc:
+        # So o codigo e o status do Google vao para o log. A mensagem pode
+        # repetir o endereco, e nem a posicao nem o destino ficam guardados.
+        try:
+            status = json.loads(exc.read() or b"{}").get("error", {}).get("status", "")
+        except (ValueError, AttributeError):
+            status = ""
+        # Endereco que o Google nao entende volta como 400 ou 404. Chave, cota e
+        # instabilidade (401, 403, 429, 5xx) nao sao culpa do destino.
+        if exc.code in (400, 404):
+            app.logger.warning("Routes API nao achou rota (HTTP %s %s)", exc.code, status)
+            return None
+        app.logger.error("Routes API falhou (HTTP %s %s)", exc.code, status)
+        raise RotaIndisponivel(f"HTTP {exc.code} {status}") from exc
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        app.logger.error("Routes API sem resposta: %s", exc)
+        raise RotaIndisponivel(str(exc)[:200]) from exc
+
+
+def _texto_curto(valor, maximo: int) -> str:
+    """Espacos repetidos viram um so; None vira vazio."""
+    texto = re.sub(r"\s+", " ", str(valor or "")).strip()
+    return texto if len(texto) <= maximo else ""
+
+
+@app.post("/api/estimativa")
+@api_login_required
+def api_estimativa():
+    """Distancia e tempo da corrida, para o app estimar o valor.
+
+    A origem vem como coordenada, do GPS do aparelho, ou como texto, quando o
+    motorista negou a localizacao. Nada disto e gravado: nem a posicao nem o
+    destino vao para o banco ou para o log. O unico rastro e o contador do
+    teto diario.
+    """
+    dados = request.get_json(silent=True) or {}
+
+    destino = _texto_curto(dados.get("destino"), RECEIPT_FIELD_LIMITS["destino"][1])
+    if len(destino) < 3:
+        return jsonify({"erro": "destino_invalido"}), 400
+
+    origem = None
+    try:
+        lat, lng = float(dados["lat"]), float(dados["lng"])
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            origem = {"lat": lat, "lng": lng}
+    except (KeyError, TypeError, ValueError):
+        pass
+    if origem is None:
+        texto = _texto_curto(dados.get("origem"), RECEIPT_FIELD_LIMITS["origem"][1])
+        if len(texto) >= 3:
+            origem = {"endereco": texto}
+    if origem is None:
+        return jsonify({"erro": "origem_invalida"}), 400
+
+    if not os.environ.get("GOOGLE_MAPS_API_KEY", "").strip():
+        return jsonify({"erro": "indisponivel"}), 503
+
+    usadas = get_store().bump_counter(f"estimativa:{g.user['_id']}:{today_br()}")
+    if usadas > ESTIMATIVA_DIARIA_LIMITE:
+        return jsonify({"erro": "limite_diario", "limite": ESTIMATIVA_DIARIA_LIMITE}), 429
+
+    # A cidade de onde o aparelho esta vence a do cadastro: o motorista pode
+    # estar rodando fora da cidade em que se cadastrou.
+    cidade = (_texto_curto(dados.get("cidade"), SIGNUP_FIELD_LIMITS["cidade"][1])
+              or g.user.get("city", ""))
+    try:
+        rota = consultar_rota(origem, endereco_do_destino(destino, cidade))
+    except RotaIndisponivel:
+        return jsonify({"erro": "falha_na_consulta"}), 502
+    if not rota:
+        return jsonify({"erro": "destino_nao_encontrado"}), 404
+    return jsonify(rota)
+
+
 # ── Webhook do RevenueCat (assinatura pelo app) ───────────────────────────────
 #
 # Três fontes podem conceder o Pro: Stripe (site), App Store e Google Play
@@ -3170,7 +3345,7 @@ def email_descadastro(token: str):
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="2 de outubro de 2026")
+    return render_template("privacidade.html", updated_at="3 de outubro de 2026")
 
 
 @app.get("/termos")

@@ -39,6 +39,10 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>O Recibo Táxi não acompanha sua localização em segundo plano. Ela só é usada com o app aberto, para preencher a origem da corrida e estimar o valor.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>O Recibo Táxi usa sua localização enquanto o app está aberto para preencher a origem da corrida e estimar o valor até o destino.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -847,13 +847,19 @@ class PostgresStore:
         dados["passenger_document"] = dados.get("passenger_document") or ""
         dados["passenger_company"] = dados.get("passenger_company") or ""
 
-        # created_at explícito é usado por testes e importação; sem ele, o
-        # default now() da coluna vale.
+        # Colunas que so entram no insert quando tem valor; sem elas, vale o
+        # default da coluna. created_at explícito é usado por testes e
+        # importação; via_corrida so vem do caminho da corrida do app
+        # (migração 0008), e o recibo de sempre segue pelo insert de antes.
+        col_extra = val_extra = ""
         created_at = dados.pop("created_at", None)
-        col_created = ", created_at" if created_at else ""
-        val_created = ", %(created_at)s" if created_at else ""
         if created_at:
             dados["created_at"] = created_at
+            col_extra += ", created_at"
+            val_extra += ", %(created_at)s"
+        if dados.pop("via_corrida", False):
+            col_extra += ", via_corrida"
+            val_extra += ", true"
 
         with self.pool.connection() as conn:
             if quota_limit is not None and dados["driver_id"]:
@@ -870,13 +876,13 @@ class PostgresStore:
                      passenger_whatsapp, passenger_document, passenger_company,
                      trip_date, trip_time,
                      origin, destination, amount, payment_method, notes,
-                     driver_snapshot{col_created})
+                     driver_snapshot{col_extra})
                     values (%(rid)s, %(driver_id)s, %(is_guest)s, %(passenger)s,
                             %(passenger_email)s, %(passenger_whatsapp)s,
                             %(passenger_document)s, %(passenger_company)s,
                             %(trip_date)s,
                             %(trip_time)s, %(origin)s, %(destination)s, %(amount)s,
-                            %(payment_method)s, %(notes)s, %(driver_snapshot)s{val_created})
+                            %(payment_method)s, %(notes)s, %(driver_snapshot)s{val_extra})
                     returning {self._RECEIPT_COLS}""",
                 dados,
             ).fetchone()
@@ -2529,6 +2535,8 @@ def api_criar_recibo():
         "amount_display": amount_display,
         "payment_method": str(campos["forma_pagamento"]).strip() or "Pix",
         "notes": str(campos["observacoes"]).strip(),
+        # So o booleano true conta: "sim", 1 ou qualquer outra coisa nao marca.
+        "via_corrida": dados.get("via_corrida") is True,
         "driver_snapshot": {
             "full_name": g.user["full_name"],
             "email": g.user["email"],
@@ -3816,6 +3824,20 @@ _SQL_ADMIN = {
            and coalesce(u.last_sign_in_at, 'epoch') < now() - interval '30 days'
            and not exists (select 1 from public.receipts r
                             where r.driver_id = d.id and r.created_at >= now() - interval '30 days')""",
+    # Uso do "Fazer corrida" (app 1.2). A estimativa so deixa rastro no contador
+    # antiabuso, que a limpeza apaga em COUNTER_RETENTION_DAYS: a janela e essa.
+    # O join com drivers tira os contadores das contas da suite, ja apagadas.
+    "corrida": """
+        select count(*) filter (where created_at >= now() - interval '30 days') as recibos_30d,
+               count(distinct driver_id) filter (where created_at >= now() - interval '30 days')
+                 as motoristas_30d,
+               count(*) as recibos_total
+          from public.receipts where via_corrida""",
+    "estimativas": """
+        select coalesce(sum(l.count), 0) as total_7d, count(distinct d.id) as motoristas_7d
+          from public.rate_limits l
+          join public.drivers d on d.id::text = split_part(l.key, ':', 2)
+         where l.key like 'estimativa:%%'""",
     "pagantes_parados": """
         select d.id, d.full_name, d.email, d.whatsapp, d.plan,
                (select max(created_at) from public.receipts r where r.driver_id = d.id) as ultimo_recibo
@@ -3861,7 +3883,7 @@ _SQL_ADMIN = {
 # Uma linha (fetchone) ou varias (fetchall)?
 _ADMIN_UMA_LINHA = {
     "geral", "recibos_mes", "recibos_estim", "ativacao", "funil", "ticket", "logins",
-    "sessoes", "inativos_30d", "retencao", "ultimo_webhook",
+    "sessoes", "inativos_30d", "retencao", "ultimo_webhook", "corrida", "estimativas",
 }
 
 

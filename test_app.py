@@ -1196,6 +1196,7 @@ check("painel nao e cacheado", r.headers.get("Cache-Control") == "no-store", r.h
 for _secao in ("Receita", "Crescimento", "Funil", "Uso", "Engajamento", "E-mail", "Abuso", "Saúde"):
     check(f"dashboard tem a seção {_secao}", _secao in _html_adm)
 check("nenhuma seção indisponível", "Seção indisponível" not in _html_adm)
+check("dashboard mostra o uso do Fazer corrida", "Fazer corrida (app 1.2)" in _html_adm)
 check("seção de e-mail anuncia a retenção dos contadores",
       f"E-mail (últimos {A.COUNTER_RETENTION_DAYS} dias" in _html_adm)
 _segredos = [k for k in ("STRIPE_SECRET_KEY", "RESEND_API_KEY", "STRIPE_WEBHOOK_SECRET", "SECRET_KEY", "SUPABASE_DB_URL")
@@ -1935,6 +1936,52 @@ finally:
         os.environ.pop("GOOGLE_MAPS_API_KEY", None)
     else:
         os.environ["GOOGLE_MAPS_API_KEY"] = _chave_google
+
+# -- Recibo que veio da corrida (migracao 0008) -----------------------------
+# A marca serve so para medir se o "Fazer corrida" e usado. Recibo avulso, do
+# site ou de versao antiga do app segue pelo insert de sempre, sem a coluna.
+print("\n-- Recibo da corrida --")
+_cvc = A.app.test_client()
+_r = _cvc.post("/api/cadastro", json={
+    "nome_completo": "Corrida Teste", "email": "viacorrida@teste.invalid", "senha": "senha12345",
+    "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel", "placa": "VIA1234"})
+_tkv = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+_cabv = {"Authorization": f"Bearer {_tkv}"}
+
+
+def _emitir_vc(rid, **extra):
+    return _cvc.post("/api/recibos", headers=_cabv, json={
+        "rid": rid, "passageiro": "Passageiro", "data": "2026-10-03",
+        "origem": "A", "destino": "B", "valor": "10", **extra})
+
+
+def _via_corrida(rid):
+    with A.get_store().pool.connection() as _conn:
+        _l = _conn.execute("select via_corrida from public.receipts where rid = %s", (rid,)).fetchone()
+    return _l["via_corrida"] if _l else None
+
+
+_r = _emitir_vc("CA" + "0" * 12, via_corrida=True)
+check("recibo da corrida sai com a marca",
+      _r.status_code == 201 and _via_corrida("CA" + "0" * 12) is True, f"{_r.status_code} {_r.get_json()}")
+_r = _emitir_vc("CB" + "0" * 12)
+check("recibo avulso sai sem a marca",
+      _r.status_code == 201 and _via_corrida("CB" + "0" * 12) is False, f"{_r.status_code} {_r.get_json()}")
+_r = _emitir_vc("CC" + "0" * 12, via_corrida="sim")
+check("so o booleano true marca a corrida",
+      _r.status_code == 201 and _via_corrida("CC" + "0" * 12) is False, f"{_r.status_code} {_r.get_json()}")
+_r = _emitir_vc("CA" + "0" * 12, via_corrida=True)
+check("reenvio da fila continua idempotente com a marca", _r.status_code == 200, str(_r.status_code))
+
+# As duas secoes novas do painel rodam de verdade contra o banco: erro de SQL
+# aqui so apareceria como bloco vazio na tela.
+_secoes = {"_tempos": {}}   # o painel anota quanto cada secao levou
+with A.get_store().pool.connection() as _conn:
+    A._executar_secoes(_conn, ["corrida", "estimativas"], {}, _secoes)
+check("o painel conta os recibos da corrida",
+      bool(_secoes.get("corrida")) and _secoes["corrida"]["recibos_total"] >= 1, str(_secoes.get("corrida")))
+check("o painel conta as estimativas",
+      _secoes.get("estimativas") is not None and "total_7d" in _secoes["estimativas"], str(_secoes.get("estimativas")))
 
 # -- Data API do Supabase fechada (migracao 0006) ---------------------------
 # O app nao usa o PostgREST, mas o Supabase expoe o schema public por ele.

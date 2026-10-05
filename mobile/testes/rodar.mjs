@@ -62,10 +62,14 @@ const chrome = spawn(CHROME, [
   `--user-data-dir=${perfil}`, '--remote-debugging-port=0', 'about:blank',
 ], { stdio: 'ignore' });
 
-function encerrar(codigo) {
+// Espera o Chrome sair de verdade antes de apagar o perfil: matar e apagar
+// na mesma hora dava ENOTEMPTY, com o Chrome ainda gravando na pasta.
+async function encerrar(codigo) {
+  const saiu = new Promise((ok) => { chrome.once('exit', ok); setTimeout(ok, 3000); });
   try { chrome.kill('SIGKILL'); } catch { /* ja saiu */ }
+  await saiu;
   servidor.close();
-  fs.rmSync(tmp, { recursive: true, force: true });
+  try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* temporario */ }
   process.exit(codigo);
 }
 setTimeout(() => { console.log('VIGIA: o teste passou de 4 minutos'); encerrar(2); }, 240000).unref();
@@ -79,7 +83,7 @@ for (let i = 0; i < 80 && !alvo; i++) {
     alvo = lista.find((t) => t.type === 'page');
   } catch { /* o Chrome ainda subindo */ }
 }
-if (!alvo) { console.log('O Chrome nao abriu a porta de depuracao.'); encerrar(2); }
+if (!alvo) { console.log('O Chrome nao abriu a porta de depuracao.'); await encerrar(2); }
 
 const ws = new WebSocket(alvo.webSocketDebuggerUrl);
 await new Promise((ok, falha) => { ws.onopen = ok; ws.onerror = falha; });
@@ -127,7 +131,7 @@ if (modo === 'fotos') {
     fs.writeFileSync(path.join(pastaFotos, `${nome}.png`), Buffer.from(foto.result.data, 'base64'));
     console.log('foto', nome);
   }
-  encerrar(0);
+  await encerrar(0);
 }
 
 await abrir('c=asserts');
@@ -136,8 +140,8 @@ for (let i = 0; i < 120 && !resultado; i++) {
   await espera(500);
   resultado = await avaliar("document.getElementById('resultado-teste')?.textContent");
 }
-if (!resultado) { console.log('A sonda nao terminou: sem resultado.'); encerrar(1); }
+if (!resultado) { console.log('A sonda nao terminou: sem resultado.'); await encerrar(1); }
 console.log(resultado);
 const falhas = resultado.split('\n').filter((l) => !l.startsWith('OK'));
 console.log(`\n${falhas.length ? `FALHAS: ${falhas.length}` : 'Tudo certo.'}`);
-encerrar(falhas.length ? 1 : 0);
+await encerrar(falhas.length ? 1 : 0);

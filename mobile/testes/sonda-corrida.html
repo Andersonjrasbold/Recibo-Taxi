@@ -35,6 +35,10 @@ window.fetch = async (url, op) => {
   if (String(url).includes('/api/estimativa')) {
     window.__pedidos.push(JSON.parse(op.body));
     await new Promise((ok) => setTimeout(ok, 300));
+    if (window.__status) {
+      return new Response(JSON.stringify({ erro: 'nao_autenticado' }),
+        { status: window.__status, headers: { 'Content-Type': 'application/json' } });
+    }
     return new Response(JSON.stringify({ km: 14.2, minutos: 31, minutos_sem_transito: 22 }),
       { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
@@ -113,15 +117,24 @@ window.addEventListener('load', async () => {
     ok('faixa na bandeira 2', q('estimativa-faixa').textContent === 'R$ 70 a R$ 85', q('estimativa-faixa').textContent);
     ok('trocar a bandeira nao consulta de novo', __pedidos.length === 1);
     clicar('bandeira-1');
+    estimar(); estimar(); await espera(700);
+    ok('toque repetido nao gera segunda consulta', __pedidos.length === 2, String(__pedidos.length));
 
     digitar('corrida-destino', 'Aeroporto de Guarulhos');
     ok('destino novo esconde a faixa antiga', q('resultado-estimativa').hidden);
     digitar('corrida-destino', 'Aeroporto de Congonhas');
     ok('voltar ao destino mostra a faixa de novo', !q('resultado-estimativa').hidden);
     digitar('corrida-origem', 'Rua Augusta, 100');
-    ok('origem corrigida a mao invalida a faixa', q('resultado-estimativa').hidden);
+    ok('origem digitada depois do GPS mantem a faixa (mesmo lugar)', !q('resultado-estimativa').hidden);
+    const salvaPos = posicao; posicao = { lat: -23.60, lng: -46.70 };
+    ok('GPS em outro lugar invalida a faixa', q('resultado-estimativa').hidden || !estimativaValida());
+    posicao = salvaPos; desenharEstimativa();
     clicar('btn-estimar'); await espera(500);
-    ok('origem digitada vai como texto', __pedidos[1] && __pedidos[1].origem === 'Rua Augusta, 100' && !('lat' in __pedidos[1]), JSON.stringify(__pedidos[1]));
+    ok('origem digitada vai como texto', __pedidos.at(-1).origem === 'Rua Augusta, 100' && !('lat' in __pedidos.at(-1)), JSON.stringify(__pedidos.at(-1)));
+    digitar('corrida-origem', 'Rua Augusta, 200');
+    ok('mudar a origem digitada invalida a faixa', q('resultado-estimativa').hidden);
+    digitar('corrida-origem', 'Rua Augusta, 100');
+    ok('voltar ao texto consultado mostra a faixa de novo', !q('resultado-estimativa').hidden);
 
     clicar('btn-waze');
     const c1 = corrida();
@@ -177,6 +190,12 @@ window.addEventListener('load', async () => {
     await abrirCorrida(); await espera(100);
     digitar('corrida-destino', 'Rodoviária Tietê'); clicar('btn-comecar'); clicar('btn-encerrar'); clicar('btn-sem-recibo'); await espera(50);
     ok('sem recibo apaga a corrida e volta ao inicio', !corrida() && !q('tela-inicio').hidden);
+    await abrirCorrida(); await espera(100);
+    ok('depois de Sem recibo, a corrida nova nasce vazia', q('corrida-destino').value === '' && !rotaEstimada);
+    digitar('corrida-destino', 'Shopping'); clicar('btn-corrida-voltar'); await abrirCorrida(); await espera(100);
+    ok('o rascunho sobrevive a sair e voltar', q('corrida-destino').value === 'Shopping', q('corrida-destino').value);
+    ok('numeroDe recusa espaco no meio e aceita R$ nas pontas',
+       numeroDe('4 50') === null && numeroDe(' R$ 4,50 ') === 4.5 && numeroDe('1.234,56') === 1234.56);
 
     clicar('btn-ir-emitir'); await espera(200);
     q('passageiro').value = 'Avulso'; q('origem').value = 'A'; q('destino').value = 'B'; q('valor').value = '10';
@@ -196,10 +215,24 @@ window.addEventListener('load', async () => {
 
     await abrirCorrida(); digitar('corrida-destino', 'Centro'); clicar('btn-comecar');
     encerrarSessao();
-    ok('sair apaga a corrida aberta, a tarifa fica', !corrida() && !!localStorage.getItem('tarifa'));
+    ok('sair nao apaga a corrida (o 401 tambem sai), e a tarifa fica',
+       !!localStorage.getItem('corrida') && !!localStorage.getItem('tarifa'));
+    // O mesmo motorista entra de novo: a corrida continua.
+    localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+    ok('o mesmo motorista encontra a corrida ao entrar de novo', corridaAtual() && corridaAtual().destino === 'Centro');
+    // Outro motorista entra no mesmo aparelho: a corrida some.
     localStorage.setItem('motorista_id', JSON.stringify('outro'));
-    localStorage.setItem('corrida', JSON.stringify({ motorista: 'web-motorista', destino: 'X', inicio: new Date().toISOString(), fim: null }));
     ok('corrida de outro motorista nao aparece', corridaAtual() === null && !localStorage.getItem('corrida'));
+    // Antes da primeira /api/sessao nao ha id: o e-mail identifica o dono.
+    localStorage.removeItem('motorista_id');
+    localStorage.setItem('motorista', JSON.stringify({ full_name: 'Sem Id', email: 'semid@teste.invalid' }));
+    await abrirCorrida(); digitar('corrida-destino', 'Praça'); clicar('btn-comecar');
+    ok('sem id, a corrida leva o e-mail como dono', corrida().motorista === 'semid@teste.invalid');
+    digitar('corrida-origem', 'Rua Y, 1');
+    window.__status = 401;
+    await estimar();
+    window.__status = null;
+    ok('401 na estimativa leva ao login e a corrida fica', !q('tela-login').hidden && !!localStorage.getItem('corrida'));
   } catch (e) {
     r.push(`FALHA excecao: ${e && e.stack || e}`);
   }

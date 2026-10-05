@@ -1818,6 +1818,27 @@ try:
     check("coordenada fora do mapa e sem origem digitada devolve 400",
           _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "origem_invalida",
           f"{_r.status_code} {_r.get_json()}")
+    _r = _estimar(lat=True, lng=0, destino="Rodoviária")
+    check("booleano nao passa por coordenada",
+          _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "origem_invalida",
+          f"{_r.status_code} {_r.get_json()}")
+    _r = _cest.post("/api/estimativa", headers=_cabe, json=[1, 2])
+    check("lista no corpo devolve 400, nao 500", _r.status_code == 400, str(_r.status_code))
+    # O mesmo buraco existia nas outras rotas da API.
+    for _rota, _esperado in (("/api/login", 401), ("/api/recuperar-senha", 400), ("/api/refresh", 401)):
+        _r = _cest.post(_rota, json=[1, 2])
+        check(f"lista no corpo de {_rota} nao da 500", _r.status_code == _esperado, str(_r.status_code))
+    _r = _cest.post("/api/recibos", headers=_cabe, json="texto")
+    check("texto no corpo de /api/recibos devolve 400", _r.status_code == 400, str(_r.status_code))
+    _r = _cest.get("/app/")
+    check("a versao web do app nao bloqueia a geolocalizacao",
+          "geolocation" not in _r.headers.get("Permissions-Policy", ""), _r.headers.get("Permissions-Policy"))
+    check("o site continua sem geolocalizacao",
+          "geolocation=()" in _cest.get("/").headers.get("Permissions-Policy", ""))
+    _r = _estimar(lat=-24.95, lng=-53.45, destino=["Rodoviária"])
+    check("destino que nao e texto devolve 400",
+          _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "destino_invalido",
+          f"{_r.status_code} {_r.get_json()}")
     _r = _estimar(lat="abc", lng=None, destino="Rodoviária")
     check("coordenada que nao e numero devolve 400", _r.status_code == 400, str(_r.status_code))
     _r = _estimar(lat=-24.95, lng=-53.45, destino=" ")
@@ -1855,13 +1876,32 @@ try:
     finally:
         A.ESTIMATIVA_DIARIA_LIMITE = _teto_est
 
+    # Teto global, de todos os motoristas juntos. A chave de hoje e real e fica
+    # no banco: a suite gasta algumas unidades do teto de producao por rodada.
+    _teto_global = A.ESTIMATIVA_DIARIA_GLOBAL
+    A.ESTIMATIVA_DIARIA_GLOBAL = 0
+    try:
+        _r = _estimar(lat=-24.95, lng=-53.45, destino="Rodoviária")
+        check("no teto global, a estimativa devolve 429 indisponivel_hoje",
+              _r.status_code == 429 and (_r.get_json() or {}).get("erro") == "indisponivel_hoje",
+              f"{_r.status_code} {_r.get_json()}")
+    finally:
+        A.ESTIMATIVA_DIARIA_GLOBAL = _teto_global
+
     # A leitura da resposta do Google.
     check("ler_rota converte metros e segundos",
           A.ler_rota({"routes": [{"distanceMeters": 12400, "duration": "1860s",
                                   "staticDuration": "1320s"}]}) == _rota_falsa)
     check("ler_rota sem rota devolve None",
           A.ler_rota({}) is None and A.ler_rota({"routes": []}) is None
-          and A.ler_rota({"routes": [{}]}) is None)
+          and A.ler_rota({"routes": ["x"]}) is None)
+    # Campo zerado vem omitido no JSON do Google: motorista ja no destino e
+    # rota de 0 km, nao destino inexistente.
+    check("ler_rota com rota de zero metros devolve 0 km",
+          A.ler_rota({"routes": [{}]}) == {"km": 0.0, "minutos": 0, "minutos_sem_transito": 0})
+    check("ler_rota recusa distancia que nao e numero",
+          A.ler_rota({"routes": [{"distanceMeters": "5000"}]}) is None
+          and A.ler_rota({"routes": [{"distanceMeters": True}]}) is None)
     check("ler_rota sem a duracao sem transito nao inventa hora parada",
           A.ler_rota({"routes": [{"distanceMeters": 1000, "duration": "120s"}]})
           == {"km": 1.0, "minutos": 2, "minutos_sem_transito": 2})
@@ -1919,9 +1959,38 @@ try:
                                       io.BytesIO(b'{"error": {"status": "INVALID_ARGUMENT"}}'))
             return _abre
 
-        A.urllib.request.urlopen = _urlopen_com_erro(400)
+        def _urlopen_com_corpo(codigo, corpo):
+            def _abre(req, timeout=None):
+                raise _uerr.HTTPError(req.full_url, codigo, "erro", {}, io.BytesIO(json.dumps(corpo).encode()))
+            return _abre
+
+        A.urllib.request.urlopen = _urlopen_com_corpo(400, {"error": {"status": "INVALID_ARGUMENT",
+            "message": "Invalid value at 'destination.address'"}})
         check("endereco que o Google recusa vira 'sem rota'",
               A.consultar_rota({"endereco": "Av. Brasil, 100"}, "???") is None)
+        # Chave invalida tambem e 400 no Google: nao pode virar "destino nao encontrado".
+        A.urllib.request.urlopen = _urlopen_com_corpo(400, {"error": {"status": "INVALID_ARGUMENT",
+            "message": "API key not valid. Please pass a valid API key.",
+            "details": [{"reason": "API_KEY_INVALID", "domain": "googleapis.com"}]}})
+        try:
+            A.consultar_rota({"endereco": "Av. Brasil, 100"}, "Rodoviária")
+            check("chave invalida (400 API_KEY_INVALID) vira RotaIndisponivel", False, "devolveu sem rota")
+        except A.RotaIndisponivel:
+            check("chave invalida (400 API_KEY_INVALID) vira RotaIndisponivel", True)
+        check("culpa_do_destino: 404 sim; 400 generico nao; 400 de endereco sim",
+              A.culpa_do_destino(404, "NOT_FOUND", [], "") is True
+              and A.culpa_do_destino(400, "INVALID_ARGUMENT", [], "request contains an invalid argument") is False
+              and A.culpa_do_destino(400, "INVALID_ARGUMENT", [], "invalid waypoint") is True
+              and A.culpa_do_destino(400, "PERMISSION_DENIED", [], "destination") is False)
+
+        def _urlopen_cortado(req, timeout=None):
+            raise A.http.client.IncompleteRead(b"")
+        A.urllib.request.urlopen = _urlopen_cortado
+        try:
+            A.consultar_rota({"endereco": "Av. Brasil, 100"}, "Rodoviária")
+            check("resposta cortada no meio vira RotaIndisponivel", False, "nao levantou")
+        except A.RotaIndisponivel:
+            check("resposta cortada no meio vira RotaIndisponivel", True)
         A.urllib.request.urlopen = _urlopen_com_erro(403)
         try:
             A.consultar_rota({"endereco": "Av. Brasil, 100"}, "Rodoviária")
@@ -1977,7 +2046,7 @@ check("reenvio da fila continua idempotente com a marca", _r.status_code == 200,
 # aqui so apareceria como bloco vazio na tela.
 _secoes = {"_tempos": {}}   # o painel anota quanto cada secao levou
 with A.get_store().pool.connection() as _conn:
-    A._executar_secoes(_conn, ["corrida", "estimativas"], {}, _secoes)
+    A._executar_secoes(_conn, ["corrida", "estimativas"], A._params_dashboard_admin(), _secoes)
 check("o painel conta os recibos da corrida",
       bool(_secoes.get("corrida")) and _secoes["corrida"]["recibos_total"] >= 1, str(_secoes.get("corrida")))
 check("o painel conta as estimativas",

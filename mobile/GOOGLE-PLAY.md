@@ -105,9 +105,10 @@ mas com atrito — não serve para entregar a taxista.
 As capturas do iOS cruas **não servem**: 1320×2868 é mais alto que 9:16. As de `assets/loja` já vêm
 recortadas (sem a barra de status do iPhone) e centralizadas num fundo 1080×1920.
 
-**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **18**, versão 1.2
-(03/10/2026: Fazer corrida, com localização só com o app aberto; cópia em
-`~/Downloads/recibo-taxi-1.2-versionCode18.aab`). O envio pela API foi recusado na validação com 403
+**Pacote atual:** `android/app/build/outputs/bundle/release/app-release.aab`, versionCode **19**, versão 1.2
+(05/10/2026: as 15 correções da auditoria do Fazer corrida, PR #27; cópia em
+`~/Downloads/recibo-taxi-1.2-versionCode19.aab`). O 18 (03/10, primeira 1.2) tem os bugs do app e não deve ir
+à produção. O envio pela API foi recusado na validação com 403
 "The caller does not have permission", tanto no teste interno quanto no fechado, enquanto uma edição
 vazia valida normalmente. Causa provável, não confirmada: o pacote novo pede localização, e a conta de
 serviço não tem permissão para o que isso muda na ficha. Por isso esse pacote vai pela tela do Play

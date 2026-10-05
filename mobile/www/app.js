@@ -598,6 +598,7 @@ $('form-login').addEventListener('submit', async (ev) => {
     Guardado.set('refresh_token', t.refresh_token);
     const sessao = await (await api('/api/sessao')).json();
     Guardado.set('motorista', sessao.motorista);
+    Guardado.set('motorista_id', sessao.id);   // dono da corrida, ja no login
     await iniciar();
   } catch {
     erro.textContent = 'Sem conexão. Tente de novo quando tiver sinal.';
@@ -690,6 +691,7 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
     Guardado.set('refresh_token', novo.refresh_token);
     const sessao = await (await api('/api/sessao')).json();
     Guardado.set('motorista', sessao.motorista);
+    Guardado.set('motorista_id', sessao.id);   // dono da corrida, ja no login
     vibrar('HEAVY');
     await iniciar();
   } catch {
@@ -1096,9 +1098,11 @@ function encerrarSessao() {
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
-  // A corrida aberta e de quem saiu. A tarifa e a bandeira ficam: sao da
-  // cidade, nao da pessoa.
-  Guardado.del('corrida');
+  // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
+  // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
+  // motorista que so precisava entrar de novo. Quem protege o aparelho
+  // dividido e corridaAtual(): corrida de outro motorista nao aparece.
+  limparRascunhoDaCorrida();
   fecharMenu();
   atualizarCabecalho();
   mostrar('tela-login');
@@ -1386,14 +1390,25 @@ $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); ab
 // sistema pode fechar o app no meio do caminho, e a corrida nao pode sumir.
 // Leva o id do motorista: em aparelho dividido, quem entra depois nao herda a
 // corrida de quem saiu.
+// O dono e o id do motorista; antes da primeira /api/sessao, o e-mail serve.
+const donoAtual = () => Guardado.get('motorista_id') || (Guardado.get('motorista') || {}).email || '';
+
 function corridaAtual() {
   const c = Guardado.get('corrida');
-  const eu = Guardado.get('motorista_id');
+  const eu = donoAtual();
   if (c && c.motorista && eu && c.motorista !== eu) { Guardado.del('corrida'); return null; }
   return c;
 }
 const guardarCorrida = (c) => Guardado.set('corrida', c);
-const apagarCorrida = () => Guardado.del('corrida');
+
+// O rascunho (campos, posicao, estimativa) vive na memoria enquanto a corrida
+// nao comecou. Apagar a corrida apaga o rascunho junto: a proxima nasce vazia.
+function limparRascunhoDaCorrida() {
+  $('corrida-origem').value = '';
+  $('corrida-destino').value = '';
+  posicao = null; cidadeAtual = ''; origemDoGps = false; rotaEstimada = null;
+}
+const apagarCorrida = () => { Guardado.del('corrida'); limparRascunhoDaCorrida(); };
 
 let posicao = null;        // {lat, lng} do GPS, para a estimativa
 let cidadeAtual = '';      // onde o aparelho esta: ajuda o Google a achar o destino certo
@@ -1403,20 +1418,25 @@ let bandeira = Guardado.get('bandeira') === 2 ? 2 : 1;
 
 async function abrirCorrida() {
   const c = corridaAtual();
-  $('corrida-origem').value = c ? c.origem || '' : '';
-  $('corrida-destino').value = c ? c.destino || '' : '';
-  posicao = c ? c.posicao || null : null;
-  cidadeAtual = c ? c.cidade || '' : '';
-  origemDoGps = c ? !!c.origemDoGps : false;
-  rotaEstimada = c ? c.estimativa || null : null;
-  if (c && c.bandeira) bandeira = c.bandeira;
+  // Com corrida guardada, a tela vem dela. Sem, o rascunho em memoria fica
+  // como estava: tocar em "Voltar" sem querer e entrar de novo zerava destino,
+  // origem e uma estimativa ja consultada (e contada no teto do dia).
+  if (c) {
+    $('corrida-origem').value = c.origem || '';
+    $('corrida-destino').value = c.destino || '';
+    posicao = c.posicao || null;
+    cidadeAtual = c.cidade || '';
+    origemDoGps = !!c.origemDoGps;
+    rotaEstimada = c.estimativa || null;
+    if (c.bandeira) bandeira = c.bandeira;
+  }
   ['erro-corrida', 'aviso-estimativa', 'dica-origem'].forEach((id) => { $(id).hidden = true; });
   desenharCorrida();
   mostrar('tela-corrida');
-  // Corrida nova: o passageiro costuma embarcar onde o motorista esta. Vem
-  // antes do historico, e sem depender dele: se o banco local falhar, a origem
-  // continua chegando pelo GPS.
-  if (!c) localizar();
+  // Corrida nova, sem rascunho: o passageiro costuma embarcar onde o motorista
+  // esta. Vem antes do historico, e sem depender dele: se o banco local
+  // falhar, a origem continua chegando pelo GPS.
+  if (!c && !posicao && !$('corrida-origem').value.trim()) localizar();
   await atualizarSugestoesDeLocal().catch(() => {});
 }
 
@@ -1468,7 +1488,7 @@ function erroNaCorrida(texto) {
 // e a corrida tem de estar gravada antes disso.
 function comecarCorrida() {
   guardarCorrida({
-    motorista: Guardado.get('motorista_id'),
+    motorista: donoAtual(),
     destino: $('corrida-destino').value.trim(),
     origem: $('corrida-origem').value.trim(),
     origemDoGps,
@@ -1612,26 +1632,37 @@ async function buscarPosicao(forcar) {
     });
     posicao = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     $('dica-origem').hidden = true;
-    if (!NativeGeocoder) { aoEditarCorrida(); return; }
-
-    const { addresses } = await NativeGeocoder.reverseGeocode({
-      latitude: posicao.lat, longitude: posicao.lng, useLocale: true, maxResults: 1,
-    });
-    const a = (addresses || [])[0];
-    if (a) {
-      cidadeAtual = a.locality || a.subAdministrativeArea || '';
-      const texto = enderecoLegivel(a);
-      const campo = $('corrida-origem');
-      // Nao passa por cima do que o motorista digitou, a nao ser que ele peca.
-      if (texto && (forcar || !campo.value.trim() || origemDoGps)) {
-        campo.value = texto;
-        origemDoGps = true;
-      }
-    }
-    aoEditarCorrida();
   } catch {
     avisar('Não consegui sua localização agora. Digite a origem.');
+    return;
   }
+
+  // Daqui em diante a posicao ja existe e serve para a estimativa mesmo que
+  // o nome da rua nao venha: no iPhone o geocodificador precisa de internet,
+  // e a falha dele era tratada como falha do GPS — a posicao ficava fora da
+  // corrida guardada e a mensagem dizia que nao havia localizacao.
+  let a = null;
+  if (NativeGeocoder) {
+    try {
+      const { addresses } = await NativeGeocoder.reverseGeocode({
+        latitude: posicao.lat, longitude: posicao.lng, useLocale: true, maxResults: 1,
+      });
+      a = (addresses || [])[0] || null;
+    } catch { /* sem nome de rua; a posicao basta */ }
+  }
+  if (a) {
+    cidadeAtual = a.locality || a.subAdministrativeArea || '';
+    const texto = enderecoLegivel(a);
+    const campo = $('corrida-origem');
+    // Nao passa por cima do que o motorista digitou, a nao ser que ele peca.
+    if (texto && (forcar || !campo.value.trim() || origemDoGps)) {
+      campo.value = texto;
+      origemDoGps = true;
+    }
+  } else {
+    avisar('Peguei sua posição, mas não o nome da rua. Digite a origem, se quiser que ela saia no recibo.');
+  }
+  aoEditarCorrida();
 }
 
 $('btn-localizar').addEventListener('click', () => { vibrar('LIGHT'); localizar({ forcar: true }); });
@@ -1651,9 +1682,27 @@ function origemParaEstimar() {
   return texto.length >= 3 ? { origem: texto } : null;
 }
 
-// Trocar a origem ou o destino invalida a estimativa: ela era de outra rota.
-const chaveDaRota = () => JSON.stringify([origemParaEstimar(), $('corrida-destino').value.trim()]);
-const estimativaValida = () => !!rotaEstimada && rotaEstimada.chave === chaveDaRota();
+// Distancia em linha reta, em km (haversine). Serve so para saber se o GPS
+// ainda aponta para o mesmo lugar.
+function distanciaKm(a, b) {
+  const rad = (g) => (g * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+// A estimativa vale enquanto for da mesma rota. Trocar o destino invalida
+// sempre. A origem depende de como foi consultada: pelo GPS, vale enquanto o
+// aparelho estiver no mesmo lugar (ate 150 m), mesmo que o motorista digite o
+// nome da rua depois — ele esta so nomeando onde esta, e o recibo precisa do
+// texto; por texto, vale enquanto o texto for o mesmo. Antes, qualquer mexida
+// na origem descartava uma consulta certa, e contada no teto do dia.
+function estimativaValida() {
+  if (!rotaEstimada || rotaEstimada.destino !== $('corrida-destino').value.trim()) return false;
+  if (rotaEstimada.posicao) return !!posicao && distanciaKm(posicao, rotaEstimada.posicao) < 0.15;
+  return !origemDoGps && rotaEstimada.origem === $('corrida-origem').value.trim();
+}
 
 // Embaixo, a bandeirada e o km pela rota do Google. Em cima, o tempo que o
 // transito acrescenta, cobrado como hora parada — abaixo de certa velocidade
@@ -1703,6 +1752,7 @@ const MOTIVOS_DA_ESTIMATIVA = {
   destino_nao_encontrado:
     'Não encontrei esse destino. Tente com rua e número, ou o nome de um lugar conhecido.',
   limite_diario: 'Você chegou ao limite de estimativas de hoje.',
+  indisponivel_hoje: 'A estimativa atingiu o limite de hoje para todos os motoristas. Volta amanhã.',
   falha_na_consulta: 'O serviço de rotas não respondeu. Tente de novo em instantes.',
   indisponivel: 'A estimativa ainda não está disponível.',
   nao_autenticado: 'Sua sessão expirou. Entre de novo.',
@@ -1713,7 +1763,10 @@ function avisoDaEstimativa(texto) {
   $('aviso-estimativa').hidden = !texto;
 }
 
+let estimando = false;   // um pedido por vez: toque repetido nao gera outra consulta
+
 async function estimar() {
+  if (estimando) return;
   avisoDaEstimativa('');
   const destino = $('corrida-destino').value.trim();
   if (destino.length < 3) {
@@ -1723,19 +1776,33 @@ async function estimar() {
   }
   // A tarifa vem antes de gastar uma consulta: sem ela nao ha faixa a mostrar.
   if (!tarifa()) { abrirTarifa({ depoisEstimar: true }); return; }
-  if (!origemParaEstimar() && localizando) await localizando;   // GPS ainda chegando
-  const origem = origemParaEstimar();
-  if (!origem) { avisoDaEstimativa(MOTIVOS_DA_ESTIMATIVA.origem_invalida); return; }
 
+  // O botao trava ANTES de esperar o GPS: a espera leva ate 10 s, e cada toque
+  // nela era mais um pedido ao Google, contado no teto e na conta.
   const botao = $('btn-estimar');
+  estimando = true;
   botao.disabled = true;
   botao.textContent = 'Estimando…';
   try {
+    if (!origemParaEstimar() && localizando) {
+      // Com teto: uma promessa de permissao que nunca resolve nao pode
+      // prender o botao para sempre.
+      await Promise.race([localizando, new Promise((ok) => setTimeout(ok, 12000))]);
+    }
+    const origem = origemParaEstimar();
+    if (!origem) { avisoDaEstimativa(MOTIVOS_DA_ESTIMATIVA.origem_invalida); return; }
+
     const resp = await api('/api/estimativa', {
       method: 'POST',
       body: JSON.stringify({ ...origem, destino, cidade: cidadeAtual }),
     });
     const corpo = await resp.json().catch(() => ({}));
+    if (resp.status === 401) {
+      // O api() ja tentou renovar: sessao morta de verdade. Sair aqui leva ao
+      // login; a corrida aberta sobrevive e volta quando ele entrar.
+      encerrarSessao();
+      return;
+    }
     if (!resp.ok || typeof corpo.km !== 'number') {
       avisoDaEstimativa(MOTIVOS_DA_ESTIMATIVA[corpo.erro] || 'Não foi possível estimar agora.');
       return;
@@ -1744,13 +1811,16 @@ async function estimar() {
       km: corpo.km,
       minutos: corpo.minutos,
       minutos_sem_transito: corpo.minutos_sem_transito,
-      chave: JSON.stringify([origem, destino]),
+      destino,
+      // Como a origem foi consultada: e isso que decide ate quando vale.
+      ...('lat' in origem ? { posicao: { lat: origem.lat, lng: origem.lng } } : { origem: origem.origem }),
     };
     aoEditarCorrida();      // guarda na corrida aberta e desenha a faixa
     vibrar('LIGHT');
   } catch {
     avisoDaEstimativa('Sem conexão. A estimativa precisa de internet; a corrida e o recibo funcionam sem.');
   } finally {
+    estimando = false;
     botao.disabled = false;
     botao.textContent = 'Estimar valor';
   }
@@ -1762,7 +1832,9 @@ let estimarDepoisDaTarifa = false;
 
 // Reais digitados do jeito brasileiro: "4,50", "R$ 4,50" ou "4.50".
 function numeroDe(texto) {
-  let s = String(texto || '').replace(/[R$\s]/g, '');
+  // Espaco so nas pontas e depois do "R$": "4 50" nao e 450, e recusado.
+  let s = String(texto || '').trim().replace(/^R\$\s*/i, '');
+  if (/\s/.test(s)) return null;
   if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
   if (!/^\d+(\.\d+)?$/.test(s)) return null;
   const n = Number(s);

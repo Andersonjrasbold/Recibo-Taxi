@@ -191,13 +191,17 @@
               botoes=[('Ver motoristas', url_for('admin_motoristas', filtro='nunca_logou'))]) }}
   </div>
   <h3 class="adm-h3 mt-3">Fazer corrida (app 1.2)</h3>
-  {% set cr = d.corrida or {} %}{% set es = d.estimativas or {} %}
+  {# Consulta que falhou (ex.: migração 0008 por aplicar) tem de aparecer como
+     indisponível, não como zero uso. #}
+  {% if d.corrida is none or d.estimativas is none %}{{ ui.indisponivel() }}{% else %}
+  {% set cr = d.corrida %}{% set es = d.estimativas %}
   <div class="db-stats adm-kpis">
     {{ ui.kpi(cr.recibos_30d, 'Recibos pela corrida em 30 d', 'geo-alt', 'blue',
               ' de ' ~ cr.motoristas_30d ~ ' motorista(s) · ' ~ cr.recibos_total ~ ' desde o início') }}
-    {{ ui.kpi(es.total_7d, 'Estimativas de valor em 7 d', 'calculator', 'green',
+    {{ ui.kpi(es.total_7d, 'Pedidos de estimativa em 7 d', 'calculator', 'green',
               ' de ' ~ es.motoristas_7d ~ ' motorista(s)') }}
   </div>
+  {% endif %}
   <p class="adm-suave mt-2">Ressalva: o último login só muda em login com senha. Quem fica logado no app renovando o token parece inativo. A melhor medida de atividade é recibo emitido.</p>
   <div class="row g-4">
     <div class="col-lg-6">

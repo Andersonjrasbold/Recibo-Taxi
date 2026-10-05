@@ -7,6 +7,7 @@ import re
 import secrets
 import smtplib
 import time
+import http.client
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -162,6 +163,10 @@ RESET_DAILY_LIMIT_IP = 30
 # motorista existe para um aparelho em laco, ou um token vazado, nao gastar a
 # cota de todos; 40 e mais do que um turno inteiro de corridas.
 ESTIMATIVA_DIARIA_LIMITE = 40
+# Teto de todos os motoristas juntos, por dia. Criar conta e gratis, entao o
+# teto por motorista sozinho nao fecha a conta do Google: 300/dia cabe na
+# cota gratis do SKU com transito (5.000/mes) e segura um abuso ate alguem olhar.
+ESTIMATIVA_DIARIA_GLOBAL = 300
 ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 
 # Painel /admin. Tentativas de login por dia: o painel mostra CPF e telefone de
@@ -239,6 +244,9 @@ SECURITY_HEADERS = {
     # declarada é menos coisa a justificar na revisão das lojas.
     "Permissions-Policy": "geolocation=(), camera=(), microphone=(), payment=()",
 }
+# A versao web do app (/app/, so para desenvolvimento) precisa da localizacao
+# para a tela da corrida; o site continua sem.
+PERMISSIONS_POLICY_APP = "camera=(), microphone=(), payment=()"
 
 STRIPE_PRICE_IDS = {
     "pro": "STRIPE_PRO_PRICE_ID",
@@ -857,7 +865,9 @@ class PostgresStore:
             dados["created_at"] = created_at
             col_extra += ", created_at"
             val_extra += ", %(created_at)s"
-        if dados.pop("via_corrida", False):
+        # So o booleano true marca, aqui e nao so na rota da API: quem chamar
+        # o store com o campo cru do JSON ("false", "0") nao pode marcar.
+        if dados.pop("via_corrida", None) is True:
             col_extra += ", via_corrida"
             val_extra += ", true"
 
@@ -1423,6 +1433,16 @@ def load_reset_token(token: str) -> dict | None:
     return user
 
 
+def corpo_json() -> dict:
+    """O JSON do pedido, ou {} quando nao ha um objeto la.
+
+    `get_json(silent=True) or {}` deixava passar lista, texto e numero, e o
+    `.get` seguinte derrubava a rota com 500.
+    """
+    dados = request.get_json(silent=True)
+    return dados if isinstance(dados, dict) else {}
+
+
 def api_login_required(view):
     """Aceita sessão de cookie (navegador) ou Bearer token (app nativo)."""
 
@@ -1478,6 +1498,8 @@ def apply_cors_do_app(response):
 
 @app.after_request
 def apply_security_headers(response):
+    if request.path.startswith("/app/"):
+        response.headers.setdefault("Permissions-Policy", PERMISSIONS_POLICY_APP)
     for header, value in SECURITY_HEADERS.items():
         response.headers.setdefault(header, value)
     response.headers.setdefault(
@@ -2260,7 +2282,7 @@ def api_preflight(_qualquer: str):
 @app.post("/api/login")
 def api_login():
     """Login do app nativo. Devolve tokens em vez de criar cookie."""
-    dados = request.get_json(silent=True) or {}
+    dados = corpo_json()
     tokens = auth_entrar_com_token(
         normalize_email(str(dados.get("email", ""))), str(dados.get("senha", ""))
     )
@@ -2283,7 +2305,7 @@ def api_recuperar_senha():
     ou nao a conta — dizer "nao encontrado" contaria a um estranho quem esta
     cadastrado.
     """
-    dados = request.get_json(silent=True) or {}
+    dados = corpo_json()
     email = normalize_email(str(dados.get("email", "")))
     if not email_valido(email):
         return jsonify({"erro": "email_invalido"}), 400
@@ -2312,7 +2334,7 @@ def api_excluir_conta():
     Pede a senha, e nao so o token: token vazado num aparelho emprestado nao
     pode apagar a conta e todos os recibos de alguem.
     """
-    dados = request.get_json(silent=True) or {}
+    dados = corpo_json()
     if not auth_conferir_senha(g.user["email"], str(dados.get("senha", ""))):
         return jsonify({"erro": "senha_incorreta"}), 403
 
@@ -2373,7 +2395,7 @@ def api_enviar_recibo_por_email(rid: str):
 @app.post("/api/refresh")
 def api_refresh():
     """Renova a sessao do app. Nao exige o access token — ele ja expirou."""
-    dados = request.get_json(silent=True) or {}
+    dados = corpo_json()
     tokens = auth_renovar_sessao(str(dados.get("refresh_token", "")).strip())
     if not tokens:
         return jsonify({"erro": "refresh_invalido"}), 401
@@ -2392,7 +2414,7 @@ def api_cadastro():
     Existe porque mandar o motorista para o site abriria o Safari — além da
     experiência ruim, é um dos padrões que a Apple rejeita (Guideline 4.2).
     """
-    dados = request.get_json(silent=True) or {}
+    dados = corpo_json()
 
     campos = {k: str(dados.get(k, "") or "").strip() for k in (
         "nome_completo", "email", "senha", "whatsapp", "cpf", "cidade",
@@ -2484,7 +2506,7 @@ def api_criar_recibo():
     É idempotente de propósito: a fila do app reenvia o que não teve resposta
     confirmada, e sem isso uma resposta perdida viraria recibo duplicado.
     """
-    dados = request.get_json(silent=True) or {}
+    dados = corpo_json()
 
     rid = str(dados.get("rid", "")).strip().upper()
     if not re.fullmatch(r"[0-9A-F]{%d}" % RID_LENGTH, rid):
@@ -2603,10 +2625,18 @@ def _segundos_da_rota(valor) -> int:
 
 
 def ler_rota(corpo: dict) -> dict | None:
-    """Km e minutos da primeira rota da resposta. None quando nao ha rota."""
+    """Km e minutos da primeira rota da resposta. None quando nao ha rota.
+
+    Sem rota, o Google responde sem a lista "routes". Com rota, a lista vem —
+    e um campo zerado vem OMITIDO (JSON do proto3): a corrida de zero metros,
+    com o motorista ja no destino, chega como {"routes": [{}]} e e uma rota
+    de 0 km, nao um destino que nao existe.
+    """
     rotas = (corpo or {}).get("routes") or []
-    metros = rotas[0].get("distanceMeters") if rotas else None
-    if not metros:
+    if not rotas or not isinstance(rotas[0], dict):
+        return None
+    metros = rotas[0].get("distanceMeters") or 0
+    if not isinstance(metros, (int, float)) or isinstance(metros, bool) or metros < 0:
         return None
     segundos = _segundos_da_rota(rotas[0].get("duration"))
     # Sem a duracao sem transito, a diferenca vira zero: a faixa sai sem hora
@@ -2671,28 +2701,73 @@ def consultar_rota(origem: dict, destino: str, timeout: int = 8) -> dict | None:
         with urllib.request.urlopen(requisicao, timeout=timeout) as resposta:
             return ler_rota(json.loads(resposta.read() or b"{}"))
     except urllib.error.HTTPError as exc:
-        # So o codigo e o status do Google vao para o log. A mensagem pode
-        # repetir o endereco, e nem a posicao nem o destino ficam guardados.
+        # So codigo, status e motivo vao para o log. A mensagem pode repetir o
+        # endereco, e nem a posicao nem o destino ficam guardados.
         try:
-            status = json.loads(exc.read() or b"{}").get("error", {}).get("status", "")
+            erro = json.loads(exc.read() or b"{}").get("error") or {}
         except (ValueError, AttributeError):
-            status = ""
-        # Endereco que o Google nao entende volta como 400 ou 404. Chave, cota e
-        # instabilidade (401, 403, 429, 5xx) nao sao culpa do destino.
-        if exc.code in (400, 404):
-            app.logger.warning("Routes API nao achou rota (HTTP %s %s)", exc.code, status)
-            return None
-        app.logger.error("Routes API falhou (HTTP %s %s)", exc.code, status)
-        raise RotaIndisponivel(f"HTTP {exc.code} {status}") from exc
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        app.logger.error("Routes API sem resposta: %s", exc)
-        raise RotaIndisponivel(str(exc)[:200]) from exc
+            erro = {}
+        status = str(erro.get("status") or "")
+        motivos = [str(d.get("reason") or "") for d in (erro.get("details") or []) if isinstance(d, dict)]
+        mensagem = str(erro.get("message") or "").lower()
+        if not culpa_do_destino(exc.code, status, motivos, mensagem):
+            app.logger.error("Routes API falhou (HTTP %s %s %s)", exc.code, status, ",".join(motivos))
+            raise RotaIndisponivel(f"HTTP {exc.code} {status}") from exc
+        app.logger.warning("Routes API nao achou rota (HTTP %s %s)", exc.code, status)
+        return None
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        # OSError cobre URLError, timeout e conexao derrubada; HTTPException, a
+        # resposta cortada no meio (IncompleteRead). Antes so os dois primeiros
+        # eram tratados e o resto virava 500.
+        app.logger.error("Routes API sem resposta: %s", type(exc).__name__)
+        raise RotaIndisponivel(type(exc).__name__) from exc
+
+
+def culpa_do_destino(codigo: int, status: str, motivos: list[str], mensagem: str) -> bool:
+    """O erro do Google e do endereco pedido, e nao da nossa configuracao?
+
+    O Google responde 400 tanto para endereco que nao entende quanto para
+    chave invalida ou restrita (INVALID_ARGUMENT com reason API_KEY_*). Tratar
+    todo 400 como "destino nao encontrado" escondia a chave errada: o
+    motorista via "nao encontrei esse destino", o log so tinha um aviso e o
+    teto diario era consumido.
+    """
+    if codigo == 404:
+        return True
+    if codigo != 400:
+        return False
+    if status in ("PERMISSION_DENIED", "UNAUTHENTICATED"):
+        return False
+    if any(m.startswith("API_KEY") or m.startswith("SERVICE_DISABLED") for m in motivos):
+        return False
+    return any(p in mensagem for p in ("address", "waypoint", "origin", "destination", "location"))
 
 
 def _texto_curto(valor, maximo: int) -> str:
-    """Espacos repetidos viram um so; None vira vazio."""
-    texto = re.sub(r"\s+", " ", str(valor or "")).strip()
+    """Espacos repetidos viram um so; o que nao for texto vira vazio.
+
+    Lista ou dicionario no lugar do texto viravam "['a', 'b']" e seguiam para
+    o Google como endereco.
+    """
+    if not isinstance(valor, str):
+        return ""
+    texto = re.sub(r"\s+", " ", valor).strip()
     return texto if len(texto) <= maximo else ""
+
+
+def _coordenada(valor, limite: float) -> float | None:
+    """Numero dentro de [-limite, limite], ou None.
+
+    Booleano fica de fora de proposito: float(True) e 1.0, e {"lat": true}
+    virava uma origem no golfo da Guine.
+    """
+    if isinstance(valor, bool):
+        return None
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return None
+    return numero if -limite <= numero <= limite else None
 
 
 @app.post("/api/estimativa")
@@ -2705,19 +2780,16 @@ def api_estimativa():
     destino vao para o banco ou para o log. O unico rastro e o contador do
     teto diario.
     """
-    dados = request.get_json(silent=True) or {}
+    dados = corpo_json()
 
     destino = _texto_curto(dados.get("destino"), RECEIPT_FIELD_LIMITS["destino"][1])
     if len(destino) < 3:
         return jsonify({"erro": "destino_invalido"}), 400
 
     origem = None
-    try:
-        lat, lng = float(dados["lat"]), float(dados["lng"])
-        if -90 <= lat <= 90 and -180 <= lng <= 180:
-            origem = {"lat": lat, "lng": lng}
-    except (KeyError, TypeError, ValueError):
-        pass
+    lat, lng = _coordenada(dados.get("lat"), 90), _coordenada(dados.get("lng"), 180)
+    if lat is not None and lng is not None:
+        origem = {"lat": lat, "lng": lng}
     if origem is None:
         texto = _texto_curto(dados.get("origem"), RECEIPT_FIELD_LIMITS["origem"][1])
         if len(texto) >= 3:
@@ -2731,6 +2803,11 @@ def api_estimativa():
     usadas = get_store().bump_counter(f"estimativa:{g.user['_id']}:{today_br()}")
     if usadas > ESTIMATIVA_DIARIA_LIMITE:
         return jsonify({"erro": "limite_diario", "limite": ESTIMATIVA_DIARIA_LIMITE}), 429
+    # "todos" nao e id de motorista: o painel, que junta a chave com drivers,
+    # ignora este contador sozinho.
+    if get_store().bump_counter(f"estimativa:todos:{today_br()}") > ESTIMATIVA_DIARIA_GLOBAL:
+        app.logger.error("Estimativa: teto global de %s por dia atingido", ESTIMATIVA_DIARIA_GLOBAL)
+        return jsonify({"erro": "indisponivel_hoje"}), 429
 
     # A cidade de onde o aparelho esta vence a do cadastro: o motorista pode
     # estar rodando fora da cidade em que se cadastrou.
@@ -2778,7 +2855,7 @@ def webhook_revenuecat():
     if not hmac.compare_digest(enviado.encode("utf-8", "replace"), segredo.encode("utf-8")):
         abort(401)
 
-    evento = (request.get_json(silent=True) or {}).get("event") or {}
+    evento = (corpo_json()).get("event") or {}
     tipo = str(evento.get("type", ""))
 
     # app_user_id é o id do motorista: o app faz logIn no RevenueCat com ele.
@@ -3824,20 +3901,24 @@ _SQL_ADMIN = {
            and coalesce(u.last_sign_in_at, 'epoch') < now() - interval '30 days'
            and not exists (select 1 from public.receipts r
                             where r.driver_id = d.id and r.created_at >= now() - interval '30 days')""",
-    # Uso do "Fazer corrida" (app 1.2). A estimativa so deixa rastro no contador
-    # antiabuso, que a limpeza apaga em COUNTER_RETENTION_DAYS: a janela e essa.
-    # O join com drivers tira os contadores das contas da suite, ja apagadas.
+    # Uso do "Fazer corrida" (app 1.2). Mesma janela de 30 dias (meia-noite de
+    # Brasilia) dos outros numeros de recibos do painel, para dar para comparar.
     "corrida": """
-        select count(*) filter (where created_at >= now() - interval '30 days') as recibos_30d,
-               count(distinct driver_id) filter (where created_at >= now() - interval '30 days')
-                 as motoristas_30d,
+        select count(*) filter (where created_at >= %(ini_30d)s) as recibos_30d,
+               count(distinct driver_id) filter (where created_at >= %(ini_30d)s) as motoristas_30d,
                count(*) as recibos_total
           from public.receipts where via_corrida""",
+    # O contador antiabuso conta PEDIDOS, nao estimativas que deram certo: ele
+    # sobe antes do teto e antes de o Google responder. Por isso o rotulo e
+    # "pedidos", e cada dia e cortado no teto — acima dele so houve recusa. A
+    # janela vai no SQL: a limpeza apaga os contadores velhos, mas so quando
+    # roda. O join com drivers tira os contadores das contas da suite.
     "estimativas": """
-        select coalesce(sum(l.count), 0) as total_7d, count(distinct d.id) as motoristas_7d
+        select coalesce(sum(least(l.count, %(teto_estimativa)s)), 0) as total_7d,
+               count(distinct d.id) as motoristas_7d
           from public.rate_limits l
           join public.drivers d on d.id::text = split_part(l.key, ':', 2)
-         where l.key like 'estimativa:%%'""",
+         where l.key like 'estimativa:%%' and l.created_at >= %(ini_7d)s""",
     "pagantes_parados": """
         select d.id, d.full_name, d.email, d.whatsapp, d.plan,
                (select max(created_at) from public.receipts r where r.driver_id = d.id) as ultimo_recibo
@@ -3949,13 +4030,10 @@ def _saude_do_sistema() -> dict:
     }
 
 
-def montar_dashboard_admin() -> dict:
-    """Numeros do painel, por secao. Ver templates/admin/dashboard.html."""
-    import time as _time
-
-    store = get_store()
+def _params_dashboard_admin() -> dict:
+    """Parametros das consultas de _SQL_ADMIN. A suite usa os mesmos."""
     agora = datetime.now(timezone.utc)
-    params = {
+    return {
         "ini_hoje": _inicio_dia_br(0),
         "ini_7d": _inicio_dia_br(6),
         "ini_30d": _inicio_dia_br(29),
@@ -3964,9 +4042,18 @@ def montar_dashboard_admin() -> dict:
         "limite": FREE_MONTHLY_LIMIT,
         "teto_email": EMAIL_DAILY_LIMIT,
         "teto_reset_ip": RESET_DAILY_LIMIT_IP,
+        "teto_estimativa": ESTIMATIVA_DIARIA_LIMITE,
         "corte_guest": to_utc_iso(agora - timedelta(days=GUEST_RETENTION_DAYS + 1)),
         "corte_contadores": to_utc_iso(agora - timedelta(days=COUNTER_RETENTION_DAYS + 1)),
     }
+
+
+def montar_dashboard_admin() -> dict:
+    """Numeros do painel, por secao. Ver templates/admin/dashboard.html."""
+    import time as _time
+
+    store = get_store()
+    params = _params_dashboard_admin()
     d: dict = {"_tempos": {}, "gerado_em": datetime.now(BR_TZ)}
 
     inicio = _time.perf_counter()

@@ -179,7 +179,12 @@ window.addEventListener('load', async () => {
     irParaInicio(); clicar('btn-continuar-corrida'); await espera(100);
     clicar('btn-gerar-recibo'); await espera(200);
     q('passageiro').value = 'Passageira Teste'; q('valor').value = '61,40';
+    digitar('whats', '45 99988-7766');
     q('form-recibo').requestSubmit(); await espera(900);
+    ok('o recibo da corrida mostra Enviar no WhatsApp com o numero do passageiro',
+       !q('btn-whats').hidden && (q('btn-whats').getAttribute('href') || '').startsWith('https://wa.me/5545999887766?text='),
+       `hidden=${q('btn-whats').hidden} href=${(q('btn-whats').getAttribute('href') || '').slice(0, 40)}`);
+    ok('o botao do WhatsApp e um link sem target', !q('btn-whats').hasAttribute('target') && q('btn-whats').tagName === 'A');
     let recibos = await listarRecibos();
     ok('o recibo sai com a marca da corrida', recibos.length === 1 && recibos[0].dados.via_corrida === true && recibos[0].dados.origem === 'Rua Augusta, 100' && recibos[0].dados.valor === '61,40', JSON.stringify(recibos[0] && recibos[0].dados));
     ok('a corrida some depois do recibo', !corrida());

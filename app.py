@@ -3530,10 +3530,14 @@ def rodar_automacao_email(agora: datetime | None = None, enviar=None, restringir
         if enviar is None and not os.environ.get("RESEND_API_KEY", "").strip():
             return dict(resultado, ok=False, motivo="sem_resend")
 
+        # O dia tem fim, e não só começo: a suíte roda com o relógio em 2020, e
+        # "desde 15/01/2020" contava todo envio real de produção — passados 80,
+        # o teto parecia batido e a suíte não mandava nada.
         inicio_dia = agora.astimezone(BR_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
         usados_hoje = conn.execute(
-            "select count(*) as n from public.email_sends where created_at >= %s and status <> 'failed'",
-            (inicio_dia,)).fetchone()["n"]
+            """select count(*) as n from public.email_sends
+                where created_at >= %s and created_at < %s and status <> 'failed'""",
+            (inicio_dia, inicio_dia + timedelta(days=1))).fetchone()["n"]
         lista = conn.execute(
             """select * from public.email_templates
                 where (%(todos)s and active) or id = any(%(ids)s::uuid[])

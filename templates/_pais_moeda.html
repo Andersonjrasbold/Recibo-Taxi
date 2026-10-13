@@ -1,0 +1,46 @@
+{# País e moeda do motorista, no cadastro e no perfil. Importar "with context":
+   as listas (paises, moedas) e o nonce do CSP vêm do inject_globals. #}
+
+{% macro campos(pais_atual, moeda_atual, label_cls, input_cls, col_cls) %}
+<div class="{{ col_cls }}">
+  <label for="pais" class="{{ label_cls }}">País <span class="required-star">*</span></label>
+  <select id="pais" name="pais" class="form-select {{ input_cls }}" required>
+    {% for codigo, p in paises.items() %}
+    <option value="{{ codigo }}" data-moeda="{{ p[1] }}" {% if codigo == (pais_atual or 'BR') %}selected{% endif %}>{{ p[0] }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="{{ col_cls }}">
+  <label for="moeda" class="{{ label_cls }}">Moeda dos recibos <span class="required-star">*</span></label>
+  <select id="moeda" name="moeda" class="form-select {{ input_cls }}" required>
+    {% for codigo, m in moedas.items() %}
+    <option value="{{ codigo }}" {% if codigo == (moeda_atual or 'BRL') %}selected{% endif %}>{{ m[0] }} ({{ m[1] }})</option>
+    {% endfor %}
+  </select>
+</div>
+{% endmacro %}
+
+{# Trocar o país sugere a moeda dele (o motorista ainda pode mudar) e troca
+   "CPF" por "Documento de identidade" fora do Brasil. #}
+{% macro script() %}
+<script nonce="{{ csp_nonce }}">
+  (function () {
+    var pais = document.getElementById('pais');
+    var moeda = document.getElementById('moeda');
+    var rotulo = document.querySelector('[data-rotulo-documento]');
+    var documento = document.getElementById('cpf');
+    if (!pais || !moeda) return;
+    function ajustarDocumento() {
+      var brasil = pais.value === 'BR';
+      if (rotulo) rotulo.firstChild.nodeValue = brasil ? 'CPF ' : 'Documento de identidade ';
+      if (documento) documento.placeholder = brasil ? '000.000.000-00' : 'Número do documento';
+    }
+    pais.addEventListener('change', function () {
+      var sugerida = pais.options[pais.selectedIndex].getAttribute('data-moeda');
+      if (sugerida) moeda.value = sugerida;
+      ajustarDocumento();
+    });
+    ajustarDocumento();
+  })();
+</script>
+{% endmacro %}

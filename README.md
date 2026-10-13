@@ -98,9 +98,12 @@ reservadas para documentação.
 
 Schema em `supabase/migrations/`. Tabelas principais:
 
-- `drivers` — contas dos motoristas
+- `drivers` — contas dos motoristas, com país e moeda (migração 0010)
 - `receipts` — recibos emitidos (`rid` de 14 hex; com 10 a chance de colisão
-  passava de 36% em 1 milhão de recibos)
+  passava de 36% em 1 milhão de recibos), cada um com a moeda em que saiu.
+  A lista de países e moedas é `PAISES`/`MOEDAS` em `app.py`; o texto do
+  recibo continua em português em qualquer país. As somas do painel contam
+  só os recibos em real
 - `rate_limits` — contadores antiabuso (cadastro, nova senha, login do painel)
 - `receipt_quotas` — cota mensal do plano Grátis
 - `email_templates`, `email_sends` e `email_settings` — automação de e-mails

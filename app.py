@@ -92,6 +92,65 @@ APP_STORE_URL = "https://apps.apple.com/br/app/id6811583712"
 PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=br.com.recibotaxi.app"
 
 MAX_RECEIPT_AMOUNT = Decimal("99999.99")
+# Moedas em que a corrida custa milhares de unidades: 150.000 guaranis é uma
+# corrida comum, e o teto do real recusaria.
+MAX_RECEIPT_AMOUNT_GRANDE = Decimal("99999999.99")
+
+# País e moeda do motorista (migração 0010). O app está à venda em 175 países,
+# e em 2026-10 um motorista da Costa Rica emitia recibo com "R$" na frente de
+# um valor em colones. O país dá a moeda sugerida e o código do WhatsApp; a
+# moeda é escolha do motorista. O texto do recibo continua em português.
+#
+# código ISO 4217 -> (nome, símbolo, casas decimais, teto por recibo)
+MOEDAS = {
+    "BRL": ("Real brasileiro", "R$", 2, MAX_RECEIPT_AMOUNT),
+    "USD": ("Dólar americano", "US$", 2, MAX_RECEIPT_AMOUNT),
+    "EUR": ("Euro", "€", 2, MAX_RECEIPT_AMOUNT),
+    "ARS": ("Peso argentino", "$", 2, MAX_RECEIPT_AMOUNT_GRANDE),
+    "BOB": ("Boliviano", "Bs", 2, MAX_RECEIPT_AMOUNT),
+    "CLP": ("Peso chileno", "$", 0, MAX_RECEIPT_AMOUNT_GRANDE),
+    "COP": ("Peso colombiano", "$", 2, MAX_RECEIPT_AMOUNT_GRANDE),
+    "CRC": ("Colón costarriquenho", "₡", 2, MAX_RECEIPT_AMOUNT_GRANDE),
+    "DOP": ("Peso dominicano", "RD$", 2, MAX_RECEIPT_AMOUNT),
+    "GTQ": ("Quetzal", "Q", 2, MAX_RECEIPT_AMOUNT),
+    "HNL": ("Lempira", "L", 2, MAX_RECEIPT_AMOUNT),
+    "MXN": ("Peso mexicano", "$", 2, MAX_RECEIPT_AMOUNT),
+    "NIO": ("Córdoba", "C$", 2, MAX_RECEIPT_AMOUNT),
+    "PEN": ("Sol peruano", "S/", 2, MAX_RECEIPT_AMOUNT),
+    "PYG": ("Guarani", "₲", 0, MAX_RECEIPT_AMOUNT_GRANDE),
+    "UYU": ("Peso uruguaio", "$", 2, MAX_RECEIPT_AMOUNT),
+    "VES": ("Bolívar", "Bs.", 2, MAX_RECEIPT_AMOUNT_GRANDE),
+}
+MOEDA_PADRAO = "BRL"
+
+# código ISO 3166-1 -> (nome, moeda sugerida, código de discagem). "ZZ" é o
+# código reservado da ISO para "desconhecido": quem não acha o país escolhe a
+# moeda à mão e digita o WhatsApp do passageiro com o + na frente.
+PAISES = {
+    "BR": ("Brasil", "BRL", "55"),
+    "AR": ("Argentina", "ARS", "54"),
+    "BO": ("Bolívia", "BOB", "591"),
+    "CL": ("Chile", "CLP", "56"),
+    "CO": ("Colômbia", "COP", "57"),
+    "CR": ("Costa Rica", "CRC", "506"),
+    "EC": ("Equador", "USD", "593"),
+    "SV": ("El Salvador", "USD", "503"),
+    "ES": ("Espanha", "EUR", "34"),
+    "US": ("Estados Unidos", "USD", "1"),
+    "GT": ("Guatemala", "GTQ", "502"),
+    "HN": ("Honduras", "HNL", "504"),
+    "MX": ("México", "MXN", "52"),
+    "NI": ("Nicarágua", "NIO", "505"),
+    "PA": ("Panamá", "USD", "507"),
+    "PY": ("Paraguai", "PYG", "595"),
+    "PE": ("Peru", "PEN", "51"),
+    "PT": ("Portugal", "EUR", "351"),
+    "DO": ("República Dominicana", "DOP", "1"),
+    "UY": ("Uruguai", "UYU", "598"),
+    "VE": ("Venezuela", "VES", "58"),
+    "ZZ": ("Outro país", "USD", ""),
+}
+PAIS_PADRAO = "BR"
 
 # 14 dígitos hex = 2^56. Com 10 (2^40) a chance de colisão passava de 36% em
 # 1 milhão de recibos, e uma colisão derruba a emissão com erro 500.
@@ -326,7 +385,7 @@ def sanitize_phone(value: str) -> str:
     return "".join(char for char in (value or "") if char.isdigit())
 
 
-def phone_e164(value: str, ddi: str = "55") -> str:
+def phone_e164(value: str, pais: str = PAIS_PADRAO) -> str:
     """Telefone no formato que o wa.me exige: so digitos, com codigo do pais.
 
     Sem o 55 na frente, o link abre o WhatsApp sem destinatario e o motorista
@@ -337,16 +396,41 @@ def phone_e164(value: str, ddi: str = "55") -> str:
     55 (Santa Maria/RS). "5598765432" tem 10 digitos, entao e DDD 55 + fixo, e
     vira "555598765432". Quem olhasse so o prefixo trataria como codigo de pais
     e mandaria a mensagem para um numero que nao existe.
+
+    `pais` e o do motorista: o passageiro de uma corrida na Costa Rica dita um
+    numero de la. Com o + na frente, o numero ja e internacional em qualquer pais.
     """
-    digitos = sanitize_phone(value)
+    bruto = (value or "").strip()
+    digitos = sanitize_phone(bruto)
+    if bruto.startswith("+"):
+        return digitos if 8 <= len(digitos) <= 15 else ""
+    if pais != "BR":
+        return _telefone_de_fora(digitos, pais)
     if digitos.startswith("00"):      # prefixo de discagem internacional
         digitos = digitos[2:]
     digitos = digitos.lstrip("0")     # zero de DDD interurbano
     if len(digitos) in (10, 11):      # DDD + numero, sem pais
-        return ddi + digitos
+        return "55" + digitos
     if len(digitos) in (12, 13):      # ja veio com o codigo do pais
         return digitos
     return ""                         # curto ou longo demais: nao da link
+
+
+def _telefone_de_fora(digitos: str, pais: str) -> str:
+    """phone_e164 fora do Brasil, onde nao ha a regra de tamanho do DDD.
+
+    Numero que ja comeca com o codigo do pais e tem tamanho de numero
+    internacional fica como esta; o resto ganha o codigo na frente. Sem pais
+    conhecido ("Outro pais"), so da link quem digitou com 00.
+    """
+    ddi = PAISES.get(pais, ("", "", ""))[2]
+    if digitos.startswith("00"):
+        digitos = digitos[2:]
+    elif ddi and not (digitos.startswith(ddi) and len(digitos) >= len(ddi) + 7):
+        digitos = ddi + digitos.lstrip("0")
+    elif not ddi:
+        return ""
+    return digitos if 8 <= len(digitos) <= 15 else ""
 
 
 def razao_social_de(documento: str, valor: str) -> str:
@@ -362,14 +446,18 @@ def razao_social_de(documento: str, valor: str) -> str:
     return " ".join((valor or "").split())
 
 
-def format_document_br(value: str) -> str:
+def format_document_br(value: str, pais: str = PAIS_PADRAO) -> str:
     """Pontua CPF e CNPJ; devolve como veio se nao reconhecer o tamanho.
 
     Nao valida digito verificador de proposito: o campo e opcional e serve para
     o passageiro prestar contas. Recusar um documento estrangeiro, ou um CPF
     que o passageiro ditou errado, so trocaria um recibo util por um erro na
     tela do taxista, com o passageiro esperando dentro do carro.
+
+    Fora do Brasil, 11 digitos nao sao CPF: o documento fica como veio.
     """
+    if pais != "BR":
+        return (value or "").strip()
     d = sanitize_phone(value)          # mesma limpeza: so digitos
     if len(d) == 11:
         return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:]}"
@@ -387,19 +475,78 @@ def format_date_br(date_value: str) -> str:
         return date_value
 
 
-def normalize_money(value: str) -> tuple[str, str]:
-    raw = (value or "").strip().replace("R$", "").replace("\xa0", "").replace(" ", "")
-    if not raw:
+def dados_da_moeda(moeda: str | None) -> tuple[str, str, int, Decimal]:
+    """(nome, símbolo, casas, teto) da moeda. Código fora da lista não quebra:
+    vira o próprio código como símbolo, com centavos e o teto do real."""
+    codigo = (moeda or MOEDA_PADRAO).upper()
+    return MOEDAS.get(codigo) or (codigo, codigo, 2, MAX_RECEIPT_AMOUNT)
+
+
+def formatar_numero(valor, casas: int = 2) -> str:
+    """1234.5 -> "1.234,50": ponto no milhar e vírgula nos centavos, como o
+    resto do app, que é em português. O símbolo muda; a pontuação não."""
+    n = Decimal(str(valor)).quantize(Decimal(1).scaleb(-casas))
+    return f"{n:,.{casas}f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def formatar_valor(valor, moeda: str | None = None) -> str:
+    """Valor com o símbolo da moeda: "R$ 1.234,50", "₡ 15.000,00"."""
+    if valor is None or valor == "":
+        return "-"
+    _, simbolo, casas, _ = dados_da_moeda(moeda)
+    try:
+        return f"{simbolo} {formatar_numero(valor, casas)}"
+    except (InvalidOperation, ValueError):
+        return "-"
+
+
+def _separadores_do_valor(bruto: str) -> str:
+    """Troca a pontuação digitada pela do Decimal ("1.500,50" -> "1500.50").
+
+    Não depende do país, porque cada um escreve de um jeito ("1.500,50" no
+    Brasil, "1,500.50" no México, "15 000" na Costa Rica):
+      - com ponto e vírgula, o que vem por último separa os centavos;
+      - um separador só, repetido ("1.500.000"), é de milhar;
+      - um separador só, uma vez, seguido de exatamente 3 dígitos ("1.500",
+        "15,000"), é de milhar — dinheiro não tem 3 casas, e era aqui que
+        "1.500" virava R$ 1,50 no banco enquanto o app mostrava 1.500;
+      - nos outros casos ("45.50", "45,5"), separa os centavos.
+    """
+    if "," in bruto and "." in bruto:
+        decimal_sep = "," if bruto.rfind(",") > bruto.rfind(".") else "."
+        milhar_sep = "." if decimal_sep == "," else ","
+        return bruto.replace(milhar_sep, "").replace(decimal_sep, ".")
+    for sep in (",", "."):
+        if sep not in bruto:
+            continue
+        partes = bruto.split(sep)
+        inteiro = partes[0].lstrip("-")
+        de_milhar = all(len(p) == 3 and p.isdigit() for p in partes[1:]) \
+            and 1 <= len(inteiro) <= 3 and inteiro.isdigit() and inteiro != "0"
+        if len(partes) > 2 or de_milhar:
+            return bruto.replace(sep, "") if de_milhar else bruto  # "1.2.3": inválido
+        return bruto.replace(sep, ".")
+    return bruto
+
+
+def normalize_money(value: str, moeda: str | None = None) -> tuple[str, str]:
+    """Valor digitado -> (valor para o banco, valor para exibir sem símbolo)."""
+    _, simbolo, casas, teto = dados_da_moeda(moeda)
+    # Espaço de qualquer tipo sai (a Costa Rica escreve "15 000"), e o símbolo
+    # da moeda só sai das pontas: "12abc34" continua inválido. O símbolo da
+    # moeda sai inteiro antes, porque "Bs." termina em ponto.
+    bruto = re.sub(r"\s", "", str(value or ""))
+    for marca in (simbolo, (moeda or MOEDA_PADRAO).upper()):
+        if bruto.upper().startswith(marca.upper()):
+            bruto = bruto[len(marca):]
+        if bruto.upper().endswith(marca.upper()):
+            bruto = bruto[:-len(marca)]
+    bruto = re.sub(r"[^\d,.-]+$", "", re.sub(r"^[^\d,.-]+", "", bruto))
+    if not bruto:
         raise ValueError("Informe o valor da corrida.")
 
-    normalized = raw
-    if "," in raw and "." in raw:
-        normalized = raw.replace(".", "").replace(",", ".")
-    elif "," in raw:
-        normalized = raw.replace(",", ".")
-
     try:
-        amount = Decimal(normalized)
+        amount = Decimal(_separadores_do_valor(bruto))
     except InvalidOperation as exc:
         raise ValueError("Informe um valor válido (ex: 45,00).") from exc
 
@@ -407,32 +554,71 @@ def normalize_money(value: str) -> tuple[str, str]:
     if not amount.is_finite():
         raise ValueError("Informe um valor válido (ex: 45,00).")
 
-    amount = amount.quantize(Decimal("0.01"))
+    amount = amount.quantize(Decimal(1).scaleb(-casas))
 
     if amount <= 0:
         raise ValueError("O valor da corrida precisa ser maior que zero.")
-    if amount > MAX_RECEIPT_AMOUNT:
+    if amount > teto:
         raise ValueError("Valor acima do limite para um recibo de corrida.")
 
-    display = f"{amount:.2f}".replace(".", ",")
-    return str(amount), display
+    return str(amount), formatar_numero(amount, casas)
+
+
+def pais_e_moeda(pais: str | None, moeda: str | None) -> tuple[str, str]:
+    """Confere o país e a moeda escolhidos. Vazio vira o padrão: Brasil e a
+    moeda do país. Fora da lista levanta ValueError com a frase para a tela."""
+    codigo_pais = (pais or "").strip().upper() or PAIS_PADRAO
+    if codigo_pais not in PAISES:
+        raise ValueError("Escolha o país na lista.")
+    codigo_moeda = (moeda or "").strip().upper() or PAISES[codigo_pais][1]
+    if codigo_moeda not in MOEDAS:
+        raise ValueError("Escolha a moeda na lista.")
+    return codigo_pais, codigo_moeda
+
+
+def snapshot_do_motorista(user: dict) -> dict:
+    """Cópia dos dados do motorista que vai dentro do recibo, para o recibo
+    entregue não mudar quando ele editar o cadastro depois."""
+    return {
+        "full_name": user["full_name"],
+        "email": user["email"],
+        "whatsapp": user.get("whatsapp", ""),
+        "city": user.get("city", ""),
+        "plate": user.get("plate", ""),
+        "vehicle_model": user.get("vehicle_model", ""),
+        "taxi_prefix": user.get("taxi_prefix", ""),
+        "license_number": user.get("license_number", ""),
+        "country": user.get("country") or PAIS_PADRAO,
+    }
+
+
+def pais_do_recibo(receipt: dict) -> str:
+    """País do motorista quando o recibo foi emitido. Recibo de antes da
+    migração 0010 não guardou o país, e todos eram do Brasil."""
+    return (receipt.get("driver_snapshot") or {}).get("country") or PAIS_PADRAO
+
+
+def rotulo_documento(pais: str) -> str:
+    return "CPF/CNPJ" if pais == "BR" else "Documento"
 
 
 def compose_receipt_message(receipt: dict, public_url: str) -> str:
+    valor = receipt.get("valor_formatado") or formatar_valor(
+        receipt.get("amount_value"), receipt.get("currency"))
     lines = [
         f"✅ Recibo #{receipt['rid']}",
         f"👤 Passageiro: {receipt.get('passenger') or '-'}",
         # Documento e razao social so entram quando existem: sao o que faz o
         # recibo valer para a empresa lancar a despesa. O app ja mandava no
         # WhatsApp; sem isto, o mesmo recibo por e-mail saia sem eles.
-        *([f"🧾 CPF/CNPJ: {receipt['passenger_document']}"]
+        *([f"🧾 {rotulo_documento(pais_do_recibo(receipt))}: {receipt['passenger_document']}"]
           if receipt.get("passenger_document") else []),
         *([f"🏢 Razão social: {receipt['passenger_company']}"]
           if receipt.get("passenger_company") else []),
         f"📅 Data: {receipt.get('trip_date_display') or '-'}",
         f"📍 Origem: {receipt.get('origin') or '-'}",
         f"🏁 Destino: {receipt.get('destination') or '-'}",
-        f"💰 Valor: R$ {receipt.get('amount_display') or '-'}",
+        f"💰 Valor: {valor}",
         f"💳 Pagamento: {receipt.get('payment_method') or '-'}",
         "",
         f"🔗 Acesse o recibo: {public_url}",
@@ -451,7 +637,8 @@ def build_whatsapp_link(receipt: dict, public_url: str, with_recipient: bool = T
     with_recipient=False omite o telefone do passageiro: a página do recibo é
     pública e qualquer visitante com o link leria o destinatário no href.
     """
-    phone = phone_e164(receipt.get("passenger_whatsapp", "")) if with_recipient else ""
+    phone = phone_e164(receipt.get("passenger_whatsapp", ""), pais_do_recibo(receipt)) \
+        if with_recipient else ""
     message = quote(compose_receipt_message(receipt, public_url))
     if phone:
         return f"https://wa.me/{phone}?text={message}"
@@ -576,6 +763,8 @@ def avisar_novo_cadastro(user_id: str, dados: dict, origem: str) -> bool:
             f"E-mail: {email}",
             f"WhatsApp: {(dados.get('whatsapp') or '').strip() or '-'}",
             f"Cidade: {cidade or '-'}",
+            f"País · moeda: {PAISES.get(dados.get('country') or PAIS_PADRAO, ('-',))[0]}"
+            f" · {dados.get('currency') or MOEDA_PADRAO}",
             f"Placa · veículo: {veiculo or '-'}",
             f"Quando: {datetime.now(BR_TZ).strftime('%d/%m/%Y %H:%M')} (horário de Brasília)",
             f"É o cadastro nº {n_hoje} de hoje.",
@@ -708,14 +897,14 @@ class PostgresStore:
         id as _id, email, password_changed_at, full_name, cpf,
         whatsapp, city, plate, vehicle_model, taxi_prefix, license_number,
         plan, stripe_customer_id, stripe_subscription_id, subscription_status,
-        created_at, updated_at
+        country, currency, created_at, updated_at
     """
 
     _RECEIPT_COLS = """
         rid, rid as _id, driver_id, is_guest, passenger, passenger_email,
         passenger_whatsapp, passenger_document, passenger_company,
         trip_date, trip_time,
-        origin, destination, amount, payment_method, notes, driver_snapshot,
+        origin, destination, amount, currency, payment_method, notes, driver_snapshot,
         created_at
     """
 
@@ -761,7 +950,8 @@ class PostgresStore:
         amount = out.pop("amount", None)
         if amount is not None:
             out["amount_value"] = str(amount)
-            out["amount_display"] = f"{amount:.2f}".replace(".", ",")
+            out["amount_display"] = formatar_numero(amount, dados_da_moeda(out.get("currency"))[2])
+            out["valor_formatado"] = formatar_valor(amount, out.get("currency"))
         trip_date = out.get("trip_date")
         out["trip_date"] = trip_date.isoformat() if trip_date else ""
         out["trip_date_display"] = format_date_br(out["trip_date"])
@@ -782,6 +972,7 @@ class PostgresStore:
             "whatsapp", "city", "plate", "vehicle_model", "taxi_prefix",
             "license_number", "plan", "stripe_customer_id",
             "stripe_subscription_id", "subscription_status",
+            "country", "currency",
         }
         campos = {k: v for k, v in updates.items() if k in permitidas}
         if not campos:
@@ -844,7 +1035,9 @@ class PostgresStore:
         dados.setdefault("is_guest", False)
         dados["driver_id"] = dados.get("driver_id") or None
         dados["amount"] = dados.pop("amount_value", "0")
+        dados["currency"] = (dados.get("currency") or MOEDA_PADRAO).upper()
         dados.pop("amount_display", None)
+        dados.pop("valor_formatado", None)
         dados.pop("trip_date_display", None)
         dados.pop("_id", None)
         dados["driver_snapshot"] = Json(dados.get("driver_snapshot") or {})
@@ -885,14 +1078,15 @@ class PostgresStore:
                     (rid, driver_id, is_guest, passenger, passenger_email,
                      passenger_whatsapp, passenger_document, passenger_company,
                      trip_date, trip_time,
-                     origin, destination, amount, payment_method, notes,
+                     origin, destination, amount, currency, payment_method, notes,
                      driver_snapshot{col_extra})
                     values (%(rid)s, %(driver_id)s, %(is_guest)s, %(passenger)s,
                             %(passenger_email)s, %(passenger_whatsapp)s,
                             %(passenger_document)s, %(passenger_company)s,
                             %(trip_date)s,
                             %(trip_time)s, %(origin)s, %(destination)s, %(amount)s,
-                            %(payment_method)s, %(notes)s, %(driver_snapshot)s{val_extra})
+                            %(currency)s, %(payment_method)s, %(notes)s,
+                            %(driver_snapshot)s{val_extra})
                     returning {self._RECEIPT_COLS}""",
                 dados,
             ).fetchone()
@@ -1561,6 +1755,8 @@ def inject_globals() -> dict:
         "free_monthly_limit": FREE_MONTHLY_LIMIT,
         "app_store_url": APP_STORE_URL,
         "play_store_url": PLAY_STORE_URL,
+        "paises": PAISES,
+        "moedas": MOEDAS,
     }
 
 
@@ -1675,6 +1871,12 @@ def cadastro():
             flash("A senha precisa ter pelo menos 8 caracteres.", "danger")
             return render_template("register.html", form=request.form), 400
 
+        try:
+            pais, moeda = pais_e_moeda(request.form.get("pais"), request.form.get("moeda"))
+        except ValueError as exc:
+            flash(str(exc), "danger")
+            return render_template("register.html", form=request.form), 400
+
         # O usuário nasce no Supabase Auth; o trigger on_auth_user_created
         # cria o perfil em `drivers` a partir deste metadata.
         try:
@@ -1690,6 +1892,8 @@ def cadastro():
                     "vehicle_model": vehicle_model,
                     "taxi_prefix": taxi_prefix,
                     "license_number": license_number,
+                    "country": pais,
+                    "currency": moeda,
                 },
             )
         except ValueError as exc:
@@ -1701,7 +1905,7 @@ def cadastro():
 
         avisar_novo_cadastro(user_id, {
             "email": email, "full_name": full_name, "whatsapp": whatsapp, "city": city,
-            "plate": plate, "vehicle_model": vehicle_model,
+            "plate": plate, "vehicle_model": vehicle_model, "country": pais, "currency": moeda,
         }, "site")
         session["user_id"] = user_id
         session["pw_stamp"] = ""
@@ -1808,6 +2012,15 @@ def perfil():
             flash("Preencha todos os campos obrigatórios.", "danger")
             return render_template("perfil.html", form=request.form), 400
 
+        # Campo ausente mantém o que está salvo: vazio não pode virar Brasil e
+        # trocar a moeda de quem é de fora sem ele pedir.
+        try:
+            pais, moeda = pais_e_moeda(request.form.get("pais") or g.user.get("country"),
+                                       request.form.get("moeda") or g.user.get("currency"))
+        except ValueError as exc:
+            flash(str(exc), "danger")
+            return render_template("perfil.html", form=request.form), 400
+
         if email != g.user["email"]:
             existente = get_store().get_user_by_email(email)
             if existente and existente["_id"] != g.user["_id"]:
@@ -1834,6 +2047,8 @@ def perfil():
                 "vehicle_model": request.form.get("modelo_veiculo", "").strip(),
                 "taxi_prefix": request.form.get("prefixo_taxi", "").strip(),
                 "license_number": request.form.get("numero_alvara", "").strip(),
+                "country": pais,
+                "currency": moeda,
                 "updated_at": now_iso(),
             },
         )
@@ -1926,6 +2141,7 @@ def dashboard():
             )
 
     user_plan = g.user.get("plan", "free")
+    _, simbolo, casas, _ = dados_da_moeda(g.user.get("currency"))
     return render_template(
         "dashboard.html",
         receipts=receipts,
@@ -1933,6 +2149,8 @@ def dashboard():
         today=today_br(),
         user_plan=user_plan,
         monthly_limit=None if user_plan in PAID_PLANS else FREE_MONTHLY_LIMIT,
+        moeda_simbolo=simbolo,
+        valor_exemplo=formatar_numero(0, casas),
     )
 
 
@@ -1954,8 +2172,9 @@ def recibo_criar():
         flash("Preencha os dados principais da corrida.", "danger")
         return redirect(url_for("dashboard"))
 
+    moeda = g.user.get("currency") or MOEDA_PADRAO
     try:
-        amount_value, amount_display = normalize_money(request.form.get("valor", ""))
+        amount_value, amount_display = normalize_money(request.form.get("valor", ""), moeda)
     except ValueError as exc:
         flash(str(exc), "danger")
         return redirect(url_for("dashboard"))
@@ -1969,7 +2188,7 @@ def recibo_criar():
         "passenger_email": normalize_email(request.form.get("email_passageiro", "")),
         "passenger_whatsapp": request.form.get("whatsapp_passageiro", "").strip(),
         "passenger_document": format_document_br(
-            request.form.get("documento_passageiro", "")),
+            request.form.get("documento_passageiro", ""), g.user.get("country") or PAIS_PADRAO),
         "passenger_company": razao_social_de(
             request.form.get("documento_passageiro", ""),
             request.form.get("razao_social", "")),
@@ -1980,19 +2199,11 @@ def recibo_criar():
         "destination": destination,
         "amount_value": amount_value,
         "amount_display": amount_display,
+        "currency": moeda,
         "payment_method": payment_method,
         "notes": request.form.get("observacoes", "").strip(),
         "created_at": now_iso(),
-        "driver_snapshot": {
-            "full_name": g.user["full_name"],
-            "email": g.user["email"],
-            "whatsapp": g.user.get("whatsapp", ""),
-            "city": g.user.get("city", ""),
-            "plate": g.user.get("plate", ""),
-            "vehicle_model": g.user.get("vehicle_model", ""),
-            "taxi_prefix": g.user.get("taxi_prefix", ""),
-            "license_number": g.user.get("license_number", ""),
-        },
+        "driver_snapshot": snapshot_do_motorista(g.user),
     }
 
     # Cota e gravação na mesma operação: sem a janela entre contar e inserir,
@@ -2434,6 +2645,12 @@ def api_cadastro():
     if len(campos["senha"]) < 8:
         return jsonify({"erro": "senha_curta", "minimo": 8}), 400
 
+    # As versões do app de antes da 0010 não mandam país nem moeda: vale o Brasil.
+    try:
+        pais, moeda = pais_e_moeda(str(dados.get("pais") or ""), str(dados.get("moeda") or ""))
+    except ValueError as exc:
+        return jsonify({"erro": "pais_ou_moeda_invalido", "mensagem": str(exc)}), 400
+
     try:
         user_id = auth_criar_usuario(
             campos["email"],
@@ -2444,7 +2661,8 @@ def api_cadastro():
             | {"full_name": campos["nome_completo"], "city": campos["cidade"],
                "plate": campos["placa"], "vehicle_model": campos["modelo_veiculo"],
                "taxi_prefix": campos["prefixo_taxi"],
-               "license_number": campos["numero_alvara"]},
+               "license_number": campos["numero_alvara"],
+               "country": pais, "currency": moeda},
         )
     except ValueError as exc:
         return jsonify({"erro": "email_em_uso", "mensagem": str(exc)}), 409
@@ -2454,6 +2672,7 @@ def api_cadastro():
     avisar_novo_cadastro(user_id, {
         "email": campos["email"], "full_name": campos["nome_completo"], "whatsapp": campos["whatsapp"],
         "city": campos["cidade"], "plate": campos["placa"], "vehicle_model": campos["modelo_veiculo"],
+        "country": pais, "currency": moeda,
     }, "app")
     tokens = auth_entrar_com_token(campos["email"], campos["senha"])
     if not tokens:
@@ -2467,12 +2686,20 @@ def api_sessao():
     """Quem sou eu — o app usa para saber se a sessão ainda vale."""
     mes_inicio, mes_fim = month_range_utc()
     plano = g.user.get("plan", "free")
+    moeda = g.user.get("currency") or MOEDA_PADRAO
+    _, simbolo, casas, _ = dados_da_moeda(moeda)
     return jsonify(
         {
             "id": g.user["_id"],
             "nome": g.user.get("full_name", ""),
             "email": g.user.get("email", ""),
             "plano": plano,
+            # O app imprime o recibo offline: guarda a moeda e o jeito de
+            # escrevê-la, para o PDF sair igual à página do recibo.
+            "pais": g.user.get("country") or PAIS_PADRAO,
+            "moeda": moeda,
+            "moeda_simbolo": simbolo,
+            "moeda_casas": casas,
             "limite_mensal": None if plano in PAID_PLANS else FREE_MONTHLY_LIMIT,
             # O app precisa saber a origem: quem assinou pela Stripe no site
             # gerencia lá; quem assinou pelo app gerencia na loja.
@@ -2496,6 +2723,21 @@ def api_sessao():
             },
         }
     )
+
+
+@app.get("/api/paises")
+def api_paises():
+    """Listas de país e moeda para a tela de cadastro do app.
+
+    Ficam no servidor, e não no app, para incluir um país sem esperar a
+    revisão das lojas. Público: é a mesma lista do formulário do site.
+    """
+    return jsonify({
+        "paises": [{"codigo": c, "nome": p[0], "moeda": p[1], "ddi": p[2]}
+                   for c, p in PAISES.items()],
+        "moedas": [{"codigo": c, "nome": m[0], "simbolo": m[1], "casas": m[2]}
+                   for c, m in MOEDAS.items()],
+    })
 
 
 @app.post("/api/recibos")
@@ -2533,8 +2775,14 @@ def api_criar_recibo():
     if not all([campos["passageiro"], campos["data"], campos["origem"], campos["destino"]]):
         return jsonify({"erro": "campos_obrigatorios"}), 400
 
+    # A versao do app que ja sabe a moeda manda a que imprimiu no PDF — o
+    # recibo pode ter sido emitido offline, antes de o motorista trocar de
+    # moeda no site. As versoes antigas nao mandam: vale a do cadastro.
+    moeda = str(dados.get("moeda") or "").strip().upper()
+    if moeda not in MOEDAS:
+        moeda = g.user.get("currency") or MOEDA_PADRAO
     try:
-        amount_value, amount_display = normalize_money(str(campos["valor"]))
+        amount_value, amount_display = normalize_money(str(campos["valor"]), moeda)
     except ValueError as exc:
         return jsonify({"erro": "valor_invalido", "mensagem": str(exc)}), 400
 
@@ -2546,7 +2794,8 @@ def api_criar_recibo():
         "passenger": str(campos["passageiro"]).strip(),
         "passenger_email": normalize_email(str(campos["email_passageiro"])),
         "passenger_whatsapp": str(campos["whatsapp_passageiro"]).strip(),
-        "passenger_document": format_document_br(str(campos["documento_passageiro"])),
+        "passenger_document": format_document_br(
+            str(campos["documento_passageiro"]), g.user.get("country") or PAIS_PADRAO),
         "passenger_company": razao_social_de(
             str(campos["documento_passageiro"]), str(campos["razao_social"])),
         "trip_date": str(campos["data"]).strip(),
@@ -2555,20 +2804,12 @@ def api_criar_recibo():
         "destination": str(campos["destino"]).strip(),
         "amount_value": amount_value,
         "amount_display": amount_display,
+        "currency": moeda,
         "payment_method": str(campos["forma_pagamento"]).strip() or "Pix",
         "notes": str(campos["observacoes"]).strip(),
         # So o booleano true conta: "sim", 1 ou qualquer outra coisa nao marca.
         "via_corrida": dados.get("via_corrida") is True,
-        "driver_snapshot": {
-            "full_name": g.user["full_name"],
-            "email": g.user["email"],
-            "whatsapp": g.user.get("whatsapp", ""),
-            "city": g.user.get("city", ""),
-            "plate": g.user.get("plate", ""),
-            "vehicle_model": g.user.get("vehicle_model", ""),
-            "taxi_prefix": g.user.get("taxi_prefix", ""),
-            "license_number": g.user.get("license_number", ""),
-        },
+        "driver_snapshot": snapshot_do_motorista(g.user),
     }
     if dados.get("created_at"):
         receipt["created_at"] = str(dados["created_at"])
@@ -3289,10 +3530,14 @@ def rodar_automacao_email(agora: datetime | None = None, enviar=None, restringir
         if enviar is None and not os.environ.get("RESEND_API_KEY", "").strip():
             return dict(resultado, ok=False, motivo="sem_resend")
 
+        # O dia tem fim, e não só começo: a suíte roda com o relógio em 2020, e
+        # "desde 15/01/2020" contava todo envio real de produção — passados 80,
+        # o teto parecia batido e a suíte não mandava nada.
         inicio_dia = agora.astimezone(BR_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
         usados_hoje = conn.execute(
-            "select count(*) as n from public.email_sends where created_at >= %s and status <> 'failed'",
-            (inicio_dia,)).fetchone()["n"]
+            """select count(*) as n from public.email_sends
+                where created_at >= %s and created_at < %s and status <> 'failed'""",
+            (inicio_dia, inicio_dia + timedelta(days=1))).fetchone()["n"]
         lista = conn.execute(
             """select * from public.email_templates
                 where (%(todos)s and active) or id = any(%(ids)s::uuid[])
@@ -3430,7 +3675,7 @@ def email_descadastro(token: str):
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="3 de outubro de 2026")
+    return render_template("privacidade.html", updated_at="12 de outubro de 2026")
 
 
 @app.get("/termos")
@@ -3475,6 +3720,7 @@ def recibo_view(rid: str):
     context["is_issuer"] = is_issuer
     context["is_guest"] = receipt.get("is_guest", False)
     context["just_created"] = request.args.get("created") == "1"
+    context["rotulo_documento"] = rotulo_documento(pais_do_recibo(receipt))
 
     return render_template("recibo_view.html", dados=context)
 
@@ -3790,7 +4036,7 @@ _SQL_ADMIN = {
         select count(*) as mes,
                count(*) filter (where created_at >= %(ini_hoje)s) as hoje,
                count(*) filter (where is_guest) as mes_guest,
-               coalesce(sum(amount), 0) as mes_valor
+               coalesce(sum(amount) filter (where currency = 'BRL'), 0) as mes_valor
           from public.receipts where created_at >= %(ini_mes)s""",
     "recibos_estim": """
         select greatest(reltuples, 0)::bigint as n from pg_class where oid = 'public.receipts'::regclass""",
@@ -3842,18 +4088,19 @@ _SQL_ADMIN = {
                count(*) filter (where not is_guest) as logado,
                count(*) filter (where is_guest) as guest,
                count(*) as n,
-               coalesce(sum(amount), 0) as valor
+               coalesce(sum(amount) filter (where currency = 'BRL'), 0) as valor
           from public.receipts where created_at >= %(ini_30d)s group by 1 order by 1""",
     "uso_por_mes": """
         select public.br_period(created_at) as mes,
                count(*) filter (where not is_guest) as logado,
                count(*) filter (where is_guest) as guest,
                count(*) as n,
-               coalesce(sum(amount), 0) as valor,
+               coalesce(sum(amount) filter (where currency = 'BRL'), 0) as valor,
                count(distinct driver_id) as motoristas_ativos
           from public.receipts where created_at >= %(ini_12m)s group by 1 order by 1""",
     "pagamentos": """
-        select payment_method as forma, count(*) as n, coalesce(sum(amount), 0) as valor
+        select payment_method as forma, count(*) as n,
+               coalesce(sum(amount) filter (where currency = 'BRL'), 0) as valor
           from public.receipts where created_at >= %(ini_30d)s group by 1 order by n desc limit 6""",
     "cidades_recibos": """
         select coalesce(nullif(initcap(trim(driver_snapshot->>'city')), ''), '(sem cidade)') as cidade,
@@ -3867,9 +4114,10 @@ _SQL_ADMIN = {
         select round(avg(amount), 2) as media,
                percentile_cont(0.5) within group (order by amount) as mediana,
                min(amount) as minimo, max(amount) as maximo
-          from public.receipts where created_at >= %(ini_30d)s""",
+          from public.receipts where created_at >= %(ini_30d)s and currency = 'BRL'""",
     "top_emissores": """
-        select d.id, d.full_name, d.plan, count(*) as n, sum(r.amount) as valor
+        select d.id, d.full_name, d.plan, count(*) as n,
+               coalesce(sum(r.amount) filter (where r.currency = 'BRL'), 0) as valor
           from public.receipts r join public.drivers d on d.id = r.driver_id
          where r.created_at >= %(ini_30d)s
          group by d.id, d.full_name, d.plan order by n desc limit 10""",
@@ -3878,7 +4126,7 @@ _SQL_ADMIN = {
           from public.receipts where created_at >= %(ini_30d)s group by 1 order by 1""",
     "ultimos_recibos": """
         select rid, is_guest, driver_id, driver_snapshot->>'full_name' as motorista,
-               driver_snapshot->>'city' as cidade, passenger, amount, payment_method, created_at
+               driver_snapshot->>'city' as cidade, passenger, amount, currency, payment_method, created_at
           from public.receipts order by created_at desc limit 20""",
     "logins": """
         select count(*) filter (where u.last_sign_in_at >= now() - interval '1 day') as login_24h,
@@ -4228,11 +4476,16 @@ def admin_motorista(driver_id):
         if not perfil:
             abort(404)
         totais = conn.execute(
-            """select count(*) as n, coalesce(sum(amount), 0) as valor,
+            """select count(*) as n,
                       min(created_at) as primeiro, max(created_at) as ultimo,
                       count(*) filter (where created_at >= %(ini_30d)s) as n_30d
                  from public.receipts where driver_id = %(id)s""",
             {"id": did, "ini_30d": _inicio_dia_br(29)}).fetchone()
+        # Uma soma por moeda: somar colones com reais daria um número sem sentido.
+        por_moeda = conn.execute(
+            """select currency, sum(amount) as valor from public.receipts
+                where driver_id = %s group by currency order by currency <> 'BRL', currency""",
+            (did,)).fetchall()
         cotas = conn.execute(
             "select period, used from public.receipt_quotas where driver_id = %s order by period desc limit 6",
             (did,)).fetchall()
@@ -4261,6 +4514,8 @@ def admin_motorista(driver_id):
     app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
     return render_template(
         "admin/motorista.html", m=dict(perfil), totais=dict(totais), cotas=[dict(c) for c in cotas],
+        valor_emitido=" · ".join(formatar_valor(l["valor"], l["currency"]) for l in por_moeda)
+        or formatar_valor(0),
         sessoes=sessoes, emails_hoje=(emails_hoje or {}).get("count", 0), recibos=recibos,
         automacao=dict(automacao) if automacao else None,
         limite=FREE_MONTHLY_LIMIT,
@@ -4667,6 +4922,12 @@ def filtro_brl(valor) -> str:
         return "-"
     inteiro, _, dec = f"{n:,.2f}".partition(".")
     return "R$ " + inteiro.replace(",", ".") + "," + dec
+
+
+@app.template_filter("valor")
+def filtro_valor(valor, moeda=None) -> str:
+    """Valor na moeda do recibo. O `brl` fica para as somas, que são só em reais."""
+    return formatar_valor(valor, moeda)
 
 
 @app.template_filter("mascarar_cpf")

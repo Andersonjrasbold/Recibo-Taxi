@@ -16,6 +16,7 @@
         <tr><td>WhatsApp</td><td>{{ m.whatsapp }}</td></tr>
         <tr><td>CPF</td><td>{{ m.cpf | mascarar_cpf }}</td></tr>
         <tr><td>Cidade</td><td>{{ m.city }}</td></tr>
+        <tr><td>País · moeda</td><td>{{ (paises.get(m.country) or (m.country,))[0] }} · {{ m.currency }}</td></tr>
         <tr><td>Placa · veículo</td><td>{{ m.plate }} · {{ m.vehicle_model or '-' }}</td></tr>
         <tr><td>Prefixo · alvará</td><td>{{ m.taxi_prefix or '-' }} · {{ m.license_number or '-' }}</td></tr>
         <tr><td>Cadastro</td><td>{{ m.created_at | data_br }}</td></tr>
@@ -64,7 +65,7 @@
       <div class="db-stats adm-kpis">
         {{ ui.kpi(totais.n, 'Recibos no total', 'receipt', 'coral') }}
         {{ ui.kpi(totais.n_30d, 'Nos últimos 30 dias', 'calendar-month', 'blue') }}
-        {{ ui.kpi(totais.valor | brl, 'Valor emitido', 'cash', 'green') }}
+        {{ ui.kpi(valor_emitido, 'Valor emitido', 'cash', 'green') }}
       </div>
       <table class="adm-tabela adm-tabela-mini mt-3">
         <tr><td>Primeiro recibo</td><td>{{ totais.primeiro | data_br }}</td><td>Último recibo</td><td>{{ totais.ultimo | data_br }}</td></tr>
@@ -86,7 +87,7 @@
             <td>{{ r.passenger }}{% if r.passenger_company %}<br><small class="adm-suave">{{ r.passenger_company }}</small>{% endif %}</td>
             <td>{{ r.passenger_document | mascarar_cpf }}</td>
             <td>{{ r.passenger_email | mascarar_email }} {{ r.passenger_whatsapp | mascarar_fone }}</td>
-            <td class="adm-num">{{ r.amount | brl }}</td><td>{{ r.payment_method }}</td>
+            <td class="adm-num">{{ r.valor_formatado }}</td><td>{{ r.payment_method }}</td>
             <td><a href="{{ url_for('recibo_view', rid=r.rid) }}" class="adm-link" target="_blank" rel="noopener">{{ r.rid }}</a></td></tr>
         {% else %}<tr><td colspan="8" class="adm-suave">Nenhum recibo.</td></tr>{% endfor %}</tbody>
       </table></div>

@@ -17,7 +17,7 @@
   {{ ui.kpi(d.mrr.piso | brl ~ ' – ' ~ d.mrr.teto | brl, 'MRR estimado (faixa)', 'cash-coin', 'green') }}
   {{ ui.kpi(r.mes, 'Recibos no mês', 'receipt', 'coral', ' (' ~ r.mes_guest ~ ' sem login)') }}
   {{ ui.kpi(r.hoje, 'Recibos hoje', 'calendar-day', 'coral') }}
-  {{ ui.kpi(r.mes_valor | brl, 'Valor emitido no mês', 'currency-dollar', 'green') }}
+  {{ ui.kpi(r.mes_valor | brl, 'Valor emitido no mês (só em R$)', 'currency-dollar', 'green') }}
   {{ ui.kpi(g.past_due ~ ' / ' ~ g.cancel_pendente, 'Inadimplentes / cancelando', 'exclamation-triangle', 'orange') }}
 </div>
 
@@ -104,7 +104,7 @@
       <h3 class="adm-h3">Recibos por dia (30 dias) · ≈ {{ (d.recibos_estim or {}).n }} no total</h3>
       {{ ui.barras(d.uso_por_dia, 'dia', 'n', 'Recibos por dia') }}
       <table class="adm-tabela adm-tabela-mini mt-2">
-        <thead><tr><th>Dia</th><th class="adm-num">Com login</th><th class="adm-num">Sem login</th><th class="adm-num">Valor</th></tr></thead>
+        <thead><tr><th>Dia</th><th class="adm-num">Com login</th><th class="adm-num">Sem login</th><th class="adm-num">Valor (R$)</th></tr></thead>
         <tbody>{% for l in d.uso_por_dia[-7:] | reverse %}
         <tr><td>{{ l.dia.strftime('%d/%m') }}</td><td class="adm-num">{{ l.logado }}</td><td class="adm-num">{{ l.guest }}</td><td class="adm-num">{{ l.valor | brl }}</td></tr>
         {% endfor %}</tbody>
@@ -114,7 +114,7 @@
       <h3 class="adm-h3">Recibos por mês (12 meses)</h3>
       {{ ui.barras(d.uso_por_mes, 'mes', 'n', 'Recibos por mês') }}
       <table class="adm-tabela adm-tabela-mini mt-2">
-        <thead><tr><th>Mês</th><th class="adm-num">Com login</th><th class="adm-num">Sem login</th><th class="adm-num">Motoristas ativos</th><th class="adm-num">Valor</th></tr></thead>
+        <thead><tr><th>Mês</th><th class="adm-num">Com login</th><th class="adm-num">Sem login</th><th class="adm-num">Motoristas ativos</th><th class="adm-num">Valor (R$)</th></tr></thead>
         <tbody>{% for l in d.uso_por_mes[-6:] | reverse %}
         <tr><td>{{ l.mes }}</td><td class="adm-num">{{ l.logado }}</td><td class="adm-num">{{ l.guest }}</td><td class="adm-num">{{ l.motoristas_ativos }}</td><td class="adm-num">{{ l.valor | brl }}</td></tr>
         {% endfor %}</tbody>
@@ -138,7 +138,7 @@
   <div class="row g-4 mt-1">
     <div class="col-lg-4">
       {% set t = d.ticket or {} %}
-      <h3 class="adm-h3">Ticket (30 dias)</h3>
+      <h3 class="adm-h3">Ticket (30 dias, só em R$)</h3>
       <table class="adm-tabela">
         <tr><td>Média</td><td class="adm-num">{{ t.media | brl }}</td></tr>
         <tr><td>Mediana</td><td class="adm-num">{{ t.mediana | brl }}</td></tr>
@@ -152,7 +152,7 @@
       <h3 class="adm-h3">Quem mais emite (30 dias)</h3>
       {% if d.top_emissores is none %}{{ ui.indisponivel() }}{% else %}
       <table class="adm-tabela">
-        <thead><tr><th>Motorista</th><th>Plano</th><th class="adm-num">Recibos</th><th class="adm-num">Valor</th></tr></thead>
+        <thead><tr><th>Motorista</th><th>Plano</th><th class="adm-num">Recibos</th><th class="adm-num">Valor (R$)</th></tr></thead>
         <tbody>{% for m in d.top_emissores %}
         <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a></td><td>{{ m.plan }}</td><td class="adm-num">{{ m.n }}</td><td class="adm-num">{{ m.valor | brl }}</td></tr>
         {% else %}<tr><td colspan="4" class="adm-suave">Nenhum recibo com login no período.</td></tr>{% endfor %}</tbody>
@@ -165,7 +165,7 @@
         <tbody>{% for r in d.ultimos_recibos %}
         <tr><td>{{ r.created_at | data_br }}</td>
             <td>{% if r.driver_id %}<a href="{{ url_for('admin_motorista', driver_id=r.driver_id) }}" class="adm-link">{{ r.motorista }}</a>{% else %}{{ r.motorista }} <small class="adm-suave">(sem login)</small>{% endif %}</td>
-            <td>{{ r.cidade }}</td><td>{{ r.passenger }}</td><td class="adm-num">{{ r.amount | brl }}</td><td>{{ r.payment_method }}</td>
+            <td>{{ r.cidade }}</td><td>{{ r.passenger }}</td><td class="adm-num">{{ r.amount | valor(r.currency) }}</td><td>{{ r.payment_method }}</td>
             <td><a href="{{ url_for('recibo_view', rid=r.rid) }}" class="adm-link" target="_blank" rel="noopener">{{ r.rid }}</a></td></tr>
         {% endfor %}</tbody></table></div>
       {% endif %}

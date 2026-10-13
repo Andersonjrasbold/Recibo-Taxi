@@ -110,9 +110,9 @@
                 placeholder="Local de desembarque" required>
             </div>
             <div class="col-7">
-              <label class="form-label-db" for="valor">Valor (R$) <span class="required-star">*</span></label>
+              <label class="form-label-db" for="valor">Valor ({{ moeda_simbolo }}) <span class="required-star">*</span></label>
               <input type="text" id="valor" name="valor" class="form-control form-control-db"
-                placeholder="0,00" required inputmode="decimal">
+                placeholder="{{ valor_exemplo }}" required inputmode="decimal">
             </div>
             <div class="col-5">
               <label class="form-label-db" for="forma_pagamento">Pagamento</label>
@@ -204,6 +204,10 @@
             <span class="profile-item-label">Prefixo</span>
             <span class="profile-item-value">{{ current_user.taxi_prefix or '—' }}</span>
           </div>
+          <div class="profile-item">
+            <span class="profile-item-label">País · moeda</span>
+            <span class="profile-item-value">{{ (paises.get(current_user.country) or ('—',))[0] }} · {{ moeda_simbolo }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -234,7 +238,7 @@
               </div>
             </div>
             <div class="receipt-row-right">
-              <div class="receipt-row-amount">R$ {{ r.amount_display }}</div>
+              <div class="receipt-row-amount">{{ r.valor_formatado }}</div>
               <div class="receipt-row-actions">
                 <a href="{{ url_for('recibo_view', rid=r.rid) }}" class="btn btn-action btn-action-view" title="Ver recibo">
                   <i class="bi bi-eye-fill"></i>

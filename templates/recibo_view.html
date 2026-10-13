@@ -56,7 +56,7 @@
         <!-- Amount highlight -->
         <div class="receipt-amount-highlight">
           <span class="receipt-amount-label">Valor da corrida</span>
-          <span class="receipt-amount-value">R$ {{ dados.amount_display }}</span>
+          <span class="receipt-amount-value">{{ dados.valor_formatado }}</span>
           <span class="receipt-payment-method">{{ dados.payment_method }}</span>
         </div>
 
@@ -74,7 +74,7 @@
             </div>
             {% if dados.passenger_document %}
             <div class="detail-item">
-              <span class="detail-label">CPF/CNPJ</span>
+              <span class="detail-label">{{ dados.rotulo_documento }}</span>
               <span class="detail-value mono">{{ dados.passenger_document }}</span>
             </div>
             {% endif %}

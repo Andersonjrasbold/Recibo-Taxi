@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_pais_moeda.html" as pm with context %}
 {% block title %}Meu cadastro{% endblock %}
 
 {% block content %}
@@ -33,7 +34,7 @@
             </div>
 
             <div class="col-md-5">
-              <label class="form-label-db" for="cpf">CPF *</label>
+              <label class="form-label-db" for="cpf" data-rotulo-documento>CPF <span>*</span></label>
               <input type="text" id="cpf" name="cpf" maxlength="14" required
                      class="form-control form-control-db mono" value="{{ form.cpf or '' }}">
             </div>
@@ -80,6 +81,14 @@
                      class="form-control form-control-db" value="{{ form.license_number or form.get('numero_alvara', '') }}">
             </div>
 
+            {{ pm.campos(form.country or form.get('pais'), form.currency or form.get('moeda'),
+                         'form-label-db', 'form-control-db', 'col-md-6') }}
+            <div class="col-12">
+              <p class="danger-text mb-0">
+                A moeda vale para os recibos novos. Os já emitidos continuam na moeda em que saíram.
+              </p>
+            </div>
+
             <div class="col-12"><hr class="my-2"></div>
 
             <div class="col-md-6">
@@ -110,3 +119,5 @@
   </div>
 </div>
 {% endblock %}
+
+{% block scripts %}{{ pm.script() }}{% endblock %}

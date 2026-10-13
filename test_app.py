@@ -360,7 +360,8 @@ for ruim in ["NaN", "nan", "  NaN  ", "-50,00", "-0,01", "0", "0,00", "Infinity"
         check(f"rejeita {ruim!r}", False, "aceitou")
     except ValueError:
         check(f"rejeita {ruim!r}", True)
-for bom, esperado in [("45,00","45,00"), ("45.50","45,50"), ("1.234,56","1234,56"), ("0,01","0,01")]:
+for bom, esperado in [("45,00","45,00"), ("45.50","45,50"), ("1.234,56","1.234,56"), ("0,01","0,01"),
+                      ("1.500","1.500,00")]:
     try:
         _, disp = A.normalize_money(bom)
         check(f"aceita {bom!r}", disp == esperado, f"virou {disp}")
@@ -2055,6 +2056,81 @@ check("o painel conta as estimativas",
 # -- Data API do Supabase fechada (migracao 0006) ---------------------------
 # O app nao usa o PostgREST, mas o Supabase expoe o schema public por ele.
 # Tabela sem RLS ali e tabela legivel por quem tiver a chave publicavel.
+# -- Pais e moeda (migracao 0010) ------------------------------------------
+# Em 2026-10 um motorista da Costa Rica emitia recibo com "R$" na frente de um
+# valor em colones, e "15.000" virava R$ 15,00 no banco enquanto o app mostrava
+# 15.000. O recibo guarda a moeda; o painel nao soma moedas diferentes.
+print("\n-- Pais e moeda --")
+for _entrada, _moeda, _esperado in [("1.500", "BRL", "1500.00"), ("1,500", "BRL", "1500.00"),
+        ("15.000", "CRC", "15000.00"), ("15 000", "CRC", "15000.00"),
+        ("1,234.56", "MXN", "1234.56"), ("150.000", "PYG", "150000")]:
+    _lido_v = A.normalize_money(_entrada, _moeda)[0]
+    check(f"valor {_entrada!r} em {_moeda} vira {_esperado}", _lido_v == _esperado, _lido_v)
+for _ruim, _moeda in [("150.000", "BRL"), ("1.2.3", "BRL"), ("12abc34", "BRL")]:
+    try:
+        A.normalize_money(_ruim, _moeda)
+        check(f"recusa {_ruim!r} em {_moeda}", False, "aceitou")
+    except ValueError:
+        check(f"recusa {_ruim!r} em {_moeda}", True)
+check("formata colon", A.formatar_valor("15000", "CRC") == "₡ 15.000,00")
+check("formata guarani sem centavos", A.formatar_valor("150000", "PYG") == "₲ 150.000")
+for _entrada, _pais, _esperado in [("8888-9999", "CR", "50688889999"), ("+506 8888 9999", "CR", "50688889999"),
+                                   ("+506 8888 9999", "BR", "50688889999"), ("8888-9999", "ZZ", "")]:
+    check(f"telefone {_entrada!r} ({_pais})", A.phone_e164(_entrada, _pais) == _esperado,
+          A.phone_e164(_entrada, _pais))
+
+novo_cliente("moeda-br@teste.invalid")
+_mbr = store.get_user_by_email("moeda-br@teste.invalid")
+check("cadastro sem os campos novos fica no Brasil",
+      _mbr and (_mbr["country"], _mbr["currency"]) == ("BR", "BRL"))
+_cm = A.app.test_client()
+_cm.post("/cadastro", data={"nome_completo": "Bryan Teste", "email": "moeda-cr@teste.invalid",
+    "senha": "senha12345", "whatsapp": "+506 8888 7777", "cpf": "1-1234-5678", "cidade": "San José",
+    "placa": "BTS022", "pais": "CR", "moeda": "CRC"})
+_mcr = store.get_user_by_email("moeda-cr@teste.invalid")
+check("cadastro grava Costa Rica e colon", _mcr and (_mcr["country"], _mcr["currency"]) == ("CR", "CRC"),
+      str(_mcr and (_mcr.get("country"), _mcr.get("currency"))))
+check("dashboard pede o valor em ₡", "Valor (₡)" in _cm.get("/dashboard").get_data(as_text=True))
+r = _cm.post("/recibo", data={"passageiro": "Chama", "data": "2026-10-11", "origem": "San José",
+                              "destino": "Atenas", "valor": "15.000", "whatsapp_passageiro": "8888-9999"})
+_rid_cr = r.headers.get("Location", "").rsplit("/", 1)[-1].split("?")[0]
+_rec_cr = store.get_receipt(_rid_cr) or {}
+check("recibo grava 15000 em CRC", (_rec_cr.get("amount_value"), _rec_cr.get("currency")) == ("15000.00", "CRC"),
+      str((_rec_cr.get("amount_value"), _rec_cr.get("currency"))))
+_pg_cr = _cm.get(f"/recibo/{_rid_cr}").get_data(as_text=True)
+check("pagina do recibo mostra ₡ 15.000,00", "₡ 15.000,00" in _pg_cr)
+check("WhatsApp do passageiro ganha o 506", "wa.me/50688889999" in _pg_cr)
+_cm.post("/perfil", data={"senha_atual": "senha12345", "nome_completo": "Bryan Teste",
+    "email": "moeda-cr@teste.invalid", "whatsapp": "+506 8888 7777", "cpf": "1-1234-5678",
+    "cidade": "San José", "placa": "BTS022"})
+check("perfil sem os campos nao volta para o Brasil",
+      store.get_user_by_email("moeda-cr@teste.invalid")["currency"] == "CRC")
+_ses = _cm.get("/api/sessao").get_json() or {}
+check("/api/sessao traz a moeda", (_ses.get("moeda"), _ses.get("moeda_simbolo")) == ("CRC", "₡"), str(_ses.get("moeda")))
+_rid_app = os.urandom(7).hex().upper()
+r = _cm.post("/api/recibos", json={"rid": _rid_app, "passageiro": "Maria Jose", "data": "2026-10-11",
+                                   "origem": "Alajuela", "destino": "Heredia", "valor": "12.500"})
+check("app sem o campo moeda usa a do cadastro",
+      (store.get_receipt(_rid_app) or {}).get("currency") == "CRC", r.status_code)
+check("/api/paises lista a Costa Rica",
+      any(p["codigo"] == "CR" for p in A.app.test_client().get("/api/paises").get_json()["paises"]))
+r = A.app.test_client().post("/cadastro", data={"nome_completo": "X", "email": "moeda-xx@teste.invalid",
+    "senha": "senha12345", "whatsapp": "1", "cpf": "1", "cidade": "c", "placa": "p", "pais": "XX"})
+check("pais fora da lista e recusado",
+      r.status_code == 400 and not store.get_user_by_email("moeda-xx@teste.invalid"), r.status_code)
+
+# A ficha do motorista lia r.amount, que o store renomeia para amount_value, e
+# mostrava R$ 0,00 em todo recibo de todo motorista.
+_email_adm_m = f"admin-moeda-{os.urandom(3).hex()}@teste.invalid"
+A.get_store().upsert_admin(_email_adm_m, _gph("1234"))
+_cam = A.app.test_client()
+_cam.post("/admin/login", data={"email": _email_adm_m, "senha": "1234"},
+          environ_base={"REMOTE_ADDR": "203.0.113.250"})
+_ficha = _cam.get(f"/admin/motoristas/{_mcr['_id']}").get_data(as_text=True)
+check("ficha mostra o valor de cada recibo", "₡ 15.000,00" in _ficha and "R$ 0,00" not in _ficha)
+check("ficha mostra pais e moeda", "Costa Rica · CRC" in _ficha)
+check("painel soma so reais", "só em R$" in _cam.get("/admin").get_data(as_text=True))
+
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:
     _sem_rls = [l["relname"] for l in _conn.execute(

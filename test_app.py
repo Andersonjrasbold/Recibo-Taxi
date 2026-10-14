@@ -78,6 +78,12 @@ def limpar_contas_de_teste():
                     conn.execute("delete from public.email_templates where name like 'teste-suite-%%'")
             except A.psycopg.errors.UndefinedTable:
                 pass  # migracao 0007 ainda nao aplicada
+            # Eventos de cobranca sem motorista (os com motorista sairam no cascade).
+            try:
+                with conn.transaction():
+                    conn.execute("delete from public.billing_events where event_id like 'teste-suite-%%'")
+            except A.psycopg.errors.UndefinedTable:
+                pass  # migracao 0011 ainda nao aplicada
     return removidas
 
 
@@ -744,7 +750,7 @@ _seg_antigo = os.environ.get("REVENUECAT_WEBHOOK_SECRET")
 os.environ["REVENUECAT_WEBHOOK_SECRET"] = "segredo-de-teste-123"
 _wc = A.app.test_client()
 def _rc(auth):
-    kw = {"data": '{"event":{"type":"TEST"}}', "content_type": "application/json"}
+    kw = {"data": '{"event":{"type":"TEST","id":"teste-suite-header"}}', "content_type": "application/json"}
     if auth is not None: kw["headers"] = {"Authorization": auth}
     return _wc.post("/webhook/revenuecat", **kw).status_code
 check("aceita 'Bearer <segredo>'", _rc("Bearer segredo-de-teste-123") == 200)
@@ -2130,6 +2136,136 @@ _ficha = _cam.get(f"/admin/motoristas/{_mcr['_id']}").get_data(as_text=True)
 check("ficha mostra o valor de cada recibo", "₡ 15.000,00" in _ficha and "R$ 0,00" not in _ficha)
 check("ficha mostra pais e moeda", "Costa Rica · CRC" in _ficha)
 check("painel soma so reais", "só em R$" in _cam.get("/admin").get_data(as_text=True))
+
+# -- Webhook do RevenueCat: transferencia, alias e registro ------------------
+# Tres furos: TRANSFER vem sem app_user_id e era ignorado (quem recebeu a
+# assinatura nao virava Pro, quem perdeu continuava); compra num App User ID
+# anonimo era "motorista desconhecido" mesmo com o id do motorista em aliases;
+# e nada ficava registrado. Agora cada evento vira uma linha em billing_events
+# (migracao 0011), e a ficha e o painel mostram o historico.
+print("\n-- Webhook do RevenueCat: transferencia, alias e registro --")
+_suf_rc2 = os.urandom(3).hex()
+_seg_rc2 = os.environ.get("REVENUECAT_WEBHOOK_SECRET")
+os.environ["REVENUECAT_WEBHOOK_SECRET"] = "segredo-de-teste-123"
+try:
+    def _rc2(evento):
+        evento.setdefault("id", f"teste-suite-{_suf_rc2}-{evento['type']}-{os.urandom(2).hex()}")
+        return A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                                        json={"event": evento})
+
+    def _eventos_de(did):
+        with store.pool.connection() as conn:
+            return [dict(l) for l in conn.execute(
+                "select type, outcome, app_user_id, seq from public.billing_events where driver_id = %s order by received_at, seq",
+                (did,)).fetchall()]
+
+    _nomes_rc2 = ("origem", "destino", "alias", "exstripe", "stripe")
+    for _n in _nomes_rc2:
+        novo_cliente(f"rc-{_n}-{_suf_rc2}@teste.invalid")
+    _ids = {n: store.get_user_by_email(f"rc-{n}-{_suf_rc2}@teste.invalid")["_id"] for n in _nomes_rc2}
+    _plano = lambda n: (store.get_user_by_id(_ids[n]) or {}).get("plan")
+
+    r = _rc2({"type": "INITIAL_PURCHASE", "app_user_id": _ids["origem"], "store": "APP_STORE",
+              "environment": "PRODUCTION", "product_id": "br.com.recibotaxi.app.pro.mensal",
+              "price_in_purchased_currency": 19.9, "currency": "BRL"})
+    check("compra vira Pro", r.status_code == 200 and _plano("origem") == "pro", str(r.get_json()))
+    _ev = _eventos_de(_ids["origem"])
+    check("compra fica registrada com o resultado",
+          bool(_ev) and _ev[-1]["type"] == "INITIAL_PURCHASE" and _ev[-1]["outcome"] == "pro", str(_ev))
+    _id_rep = f"teste-suite-{_suf_rc2}-repetido"
+    _rc2({"type": "RENEWAL", "id": _id_rep, "app_user_id": _ids["origem"], "store": "APP_STORE"})
+    _rc2({"type": "RENEWAL", "id": _id_rep, "app_user_id": _ids["origem"], "store": "APP_STORE"})
+    check("reenvio do mesmo evento registra uma vez",
+          sum(1 for e in _eventos_de(_ids["origem"]) if e["type"] == "RENEWAL") == 1)
+
+    # TRANSFER: quem recebeu vira Pro, quem perdeu volta ao Gratis. Sem app_user_id.
+    r = _rc2({"type": "TRANSFER", "store": "APP_STORE",
+              "transferred_from": [_ids["origem"]], "transferred_to": [_ids["destino"]]})
+    check("TRANSFER responde 200", r.status_code == 200, r.status_code)
+    check("quem recebeu a assinatura vira Pro", _plano("destino") == "pro")
+    check("quem perdeu a assinatura volta ao Gratis",
+          _plano("origem") == "free" and store.get_user_by_id(_ids["origem"])["subscription_status"] == "transferred")
+    check("TRANSFER registrado nos dois motoristas",
+          any(e["type"] == "TRANSFER" and e["outcome"].startswith("pro") for e in _eventos_de(_ids["destino"]))
+          and any(e["type"] == "TRANSFER" and e["outcome"].startswith("free") for e in _eventos_de(_ids["origem"])))
+
+    # TRANSFER para um id anonimo (aparelho recem-instalado, antes do logIn):
+    # quem "perdeu" continua sendo cobrado pela loja, entao continua Pro.
+    _anon = f"$RCAnonymousID:{_suf_rc2}aaaa"
+    r = _rc2({"type": "TRANSFER", "transferred_from": [_ids["destino"]], "transferred_to": [_anon]})
+    check("TRANSFER para anonimo nao rebaixa ninguem", r.status_code == 200 and _plano("destino") == "pro")
+    with store.pool.connection() as conn:
+        _orf = conn.execute("select outcome, driver_id from public.billing_events where app_user_id = %s", (_anon,)).fetchone()
+    check("TRANSFER para anonimo fica registrado sem motorista",
+          _orf is not None and _orf["driver_id"] is None and "desconhecido" in _orf["outcome"], str(_orf))
+
+    # Compra chega num anonimo, com o id do motorista em aliases.
+    _anon2 = f"$RCAnonymousID:{_suf_rc2}bbbb"
+    r = _rc2({"type": "INITIAL_PURCHASE", "app_user_id": _anon2, "original_app_user_id": _anon2,
+              "aliases": [_anon2, _ids["alias"]], "store": "PLAY_STORE", "environment": "PRODUCTION",
+              "product_id": "br.com.recibotaxi.app.pro.anual:anual", "price_in_purchased_currency": 119.9,
+              "currency": "BRL"})
+    check("compra num id anonimo acha o motorista pelos aliases", r.status_code == 200 and _plano("alias") == "pro",
+          str(r.get_json()))
+    _ev = _eventos_de(_ids["alias"])
+    check("registro guarda o id anonimo e marca o alias",
+          bool(_ev) and _ev[-1]["app_user_id"] == _anon2 and "alias" in _ev[-1]["outcome"], str(_ev))
+    r = _rc2({"type": "EXPIRATION", "app_user_id": _anon2, "store": "PLAY_STORE"})
+    check("evento seguinte so com o anonimo ainda acha o motorista (aprendido do registro)",
+          r.status_code == 200 and _plano("alias") == "free", str(r.get_json()))
+    _anon3 = f"$RCAnonymousID:{_suf_rc2}cccc"
+    _rc2({"type": "RENEWAL", "app_user_id": _anon3, "original_app_user_id": _ids["alias"], "store": "PLAY_STORE"})
+    check("original_app_user_id tambem identifica", _plano("alias") == "pro")
+    _anon4 = f"$RCAnonymousID:{_suf_rc2}dddd"
+    r = _rc2({"type": "INITIAL_PURCHASE", "app_user_id": _anon4, "aliases": [_anon4]})
+    check("id desconhecido de verdade: 200 e registrado como desconhecido",
+          r.status_code == 200 and r.get_json().get("ignorado") == "motorista_desconhecido", str(r.get_json()))
+
+    # EXPIRATION: ex-assinante da Stripe (so o customer_id ficou) e rebaixado;
+    # assinante ATIVO da Stripe, nao — sao assinaturas independentes.
+    store.update_user(_ids["exstripe"], {"plan": "pro", "stripe_customer_id": f"cus_ex_{_suf_rc2}",
+                                         "stripe_subscription_id": None, "subscription_status": "active"})
+    _rc2({"type": "EXPIRATION", "app_user_id": _ids["exstripe"], "store": "APP_STORE"})
+    check("ex-assinante da Stripe que assinou pelo app e rebaixado na expiracao", _plano("exstripe") == "free")
+    store.update_user(_ids["stripe"], {"plan": "pro", "stripe_customer_id": f"cus_at_{_suf_rc2}",
+                                       "stripe_subscription_id": f"sub_at_{_suf_rc2}", "subscription_status": "active"})
+    _rc2({"type": "EXPIRATION", "app_user_id": _ids["stripe"], "store": "APP_STORE"})
+    check("assinante ativo da Stripe nao e rebaixado por evento da loja", _plano("stripe") == "pro")
+    check("e o registro diz por que", any(e["outcome"].startswith("mantido_stripe") for e in _eventos_de(_ids["stripe"])))
+    _rc2({"type": "TRANSFER", "transferred_from": [_ids["stripe"]], "transferred_to": [_ids["exstripe"]]})
+    check("TRANSFER nao tira o Pro de quem paga pela Stripe", _plano("stripe") == "pro" and _plano("exstripe") == "pro")
+
+    _rc2({"type": "BILLING_ISSUE", "app_user_id": _ids["destino"], "store": "APP_STORE"})
+    check("BILLING_ISSUE nao mexe no plano e fica registrado",
+          _plano("destino") == "pro"
+          and any(e["type"] == "BILLING_ISSUE" and e["outcome"] == "sem_efeito" for e in _eventos_de(_ids["destino"])))
+
+    if os.environ.get("STRIPE_SECRET_KEY", "").strip() and os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip():
+        webhook_stripe(A.app.test_client(), "checkout.session.completed", {
+            "id": f"cs_{_suf_rc2}", "metadata": {"user_id": _ids["origem"], "plan": "pro", "ciclo": "mensal"},
+            "customer": f"cus_rc2_{_suf_rc2}", "subscription": f"sub_rc2_{_suf_rc2}",
+            "amount_total": 1990, "currency": "brl"})
+        with store.pool.connection() as conn:
+            _st = conn.execute("""select type, outcome, store, cycle, price, environment from public.billing_events
+                                   where driver_id = %s and source = 'stripe'""", (_ids["origem"],)).fetchone()
+        check("checkout da Stripe fica registrado, marcado como teste",
+              _st is not None and _st["outcome"] == "pro" and _st["cycle"] == "mensal"
+              and float(_st["price"]) == 19.9 and _st["environment"] == "TEST", str(_st))
+
+    _cadm2 = A.app.test_client()
+    _email_adm2 = f"admin-rc-{_suf_rc2}@teste.invalid"
+    A.get_store().upsert_admin(_email_adm2, _gph("1234"))
+    _cadm2.post("/admin/login", data={"email": _email_adm2, "senha": "1234"}, environ_base={"REMOTE_ADDR": "203.0.113.251"})
+    _fx = _cadm2.get(f"/admin/motoristas/{_ids['destino']}").get_data(as_text=True)
+    check("ficha mostra os eventos de cobranca", "TRANSFER" in _fx and "App Store" in _fx and "recebeu a assinatura" in _fx)
+    _dx = _cadm2.get("/admin?atualizar=1").get_data(as_text=True)
+    check("painel mostra assinaturas por mes e os ultimos eventos",
+          "Assinaturas novas por mês" in _dx and "Últimos eventos de cobrança" in _dx and "TRANSFER" in _dx)
+finally:
+    if _seg_rc2 is None:
+        os.environ.pop("REVENUECAT_WEBHOOK_SECRET", None)
+    else:
+        os.environ["REVENUECAT_WEBHOOK_SECRET"] = _seg_rc2
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

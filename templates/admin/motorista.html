@@ -39,6 +39,19 @@
         {% if m.stripe_subscription_id %}<tr><td>Assinatura Stripe</td><td><a class="adm-link" href="https://dashboard.stripe.com/subscriptions/{{ m.stripe_subscription_id }}" target="_blank" rel="noopener noreferrer">{{ m.stripe_subscription_id }}</a></td></tr>{% endif %}
         <tr><td>Última alteração</td><td>{{ m.updated_at | data_br }}</td></tr>
       </table>
+      <h3 class="adm-h3 mt-3">Eventos de cobrança</h3>
+      {% if eventos is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Quando</th><th>Origem</th><th>Evento</th><th class="adm-num">Valor</th><th>Resultado</th></tr></thead>
+        <tbody>{% for e in eventos %}
+        <tr><td>{{ e.received_at | data_br }}</td>
+            <td>{{ e.origem }}{% if e.environment in ('SANDBOX', 'TEST') %} <small class="adm-falha">teste</small>{% endif %}</td>
+            <td>{{ e.type }}{% if e.cycle %} · {{ e.cycle }}{% endif %}</td>
+            <td class="adm-num">{{ e.price | valor(e.currency) if e.price is not none else '-' }}</td>
+            <td>{{ e.outcome }}</td></tr>
+        {% else %}<tr><td colspan="5" class="adm-suave">Nenhum evento registrado (o registro começou em outubro de 2026).</td></tr>{% endfor %}</tbody>
+      </table>
+      {% endif %}
     </section>
     <section class="adm-painel adm-perigo">
       <h2 class="adm-h2 adm-falha"><i class="bi bi-exclamation-octagon-fill me-2"></i>Excluir cadastro</h2>

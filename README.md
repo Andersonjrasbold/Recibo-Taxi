@@ -108,6 +108,8 @@ Schema em `supabase/migrations/`. Tabelas principais:
 - `receipt_quotas` — cota mensal do plano Grátis
 - `email_templates`, `email_sends` e `email_settings` — automação de e-mails
   (migração 0007; ver a seção própria)
+- `billing_events` — webhooks do RevenueCat e da Stripe como chegaram, e o
+  que o servidor fez com cada um (migração 0011; ver "Planos")
 
 **Toda tabela de `public` tem RLS ligado e nenhuma policy** (migração 0006). O
 app conecta como `postgres`, dono das tabelas, e não é afetado; o que o RLS
@@ -274,6 +276,26 @@ em "Ligar o motor".
 O limite é aplicado em `recibo_criar`. O webhook da Stripe rebaixa a conta para
 Grátis quando a assinatura é cancelada ou a cobrança falha em definitivo —
 `past_due` mantém o plano enquanto a Stripe retenta.
+
+**Webhook do RevenueCat** (`/webhook/revenuecat`, assinatura pelo app): o
+motorista é procurado em `app_user_id`, `original_app_user_id` e `aliases` —
+o SDK nasce anônimo e, depois de reinstalar, a compra pode ficar num
+`$RCAnonymousID` que não foi juntado à conta. Um anônimo que chegou com o
+motorista em `aliases` fica ligado a ele em `billing_events`, e o evento
+seguinte que vier só com o anônimo ainda o acha. `TRANSFER` (restaurar compras
+em outra conta) dá o Pro a `transferred_to` e tira de `transferred_from`; se o
+destino é desconhecido (anônimo), ninguém é rebaixado — quem perdeu continua
+sendo cobrado pela loja. Evento da loja nunca rebaixa quem tem assinatura
+ATIVA na Stripe (`stripe_subscription_id`); o `stripe_customer_id` sozinho
+fica depois do cancelamento e não conta.
+
+**Eventos de cobrança** (`billing_events`, migração 0011): os dois webhooks
+gravam cada evento como chegou e o que o servidor fez (`outcome`: `pro`,
+`free`, `mantido_stripe`, `cancelamento_agendado`, `sem_efeito`,
+`ignorado: ...`). Reenvio do mesmo evento não duplica. O registro nunca
+derruba o webhook. O painel mostra assinaturas novas por mês (loja × site,
+mensal × anual, sem sandbox) e os últimos eventos; a ficha do motorista, os
+dele.
 
 ## Rotina de limpeza
 

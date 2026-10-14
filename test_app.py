@@ -1101,6 +1101,13 @@ check("a tela oferece o anual e o mensal",
       'id="plano-anual"' in _tela_pro and 'id="plano-mensal"' in _tela_pro)
 check("o app compra pelo identificador do pacote",
       "'$rc_annual'" in _appjs and "'$rc_monthly'" in _appjs and "pacotesPro[planoEscolhido]" in _appjs)
+# Configurar sem o id e fazer logIn depois criava um cliente anonimo por
+# instalacao no RevenueCat (99 "clientes" para 65 motoristas em 2026-10), e
+# logOut cria outro. O id do motorista vai no proprio configure.
+check("o RevenueCat e configurado ja com o id do motorista",
+      "Purchases.configure({ apiKey: chave, appUserID: perfil })" in _appjs
+      and "Purchases.logIn(" not in _appjs)
+check("o app nunca faz logOut no RevenueCat", "Purchases.logOut" not in _appjs)
 check("nenhum preco do anual escrito no app",
       not _re.search(r"119[,.]\d", _html_app + _appjs))
 check("o preco do anual vem da loja", "anual.priceString" in _appjs)

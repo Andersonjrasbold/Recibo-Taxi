@@ -864,15 +864,26 @@ $('btn-compartilhar').addEventListener('click', async () => {
 // Google na politica de Pagamentos. Nao ha, e nao pode haver, link para
 // assinar no site dentro do app.
 
+// Id do motorista com que o SDK da loja foi configurado neste processo.
+let comprasPara = '';
+
 async function iniciarCompras() {
   const { Purchases } = P();
   const chave = chaveDaLoja();
-  if (!Purchases || !chave) return false;
+  // Amarra a compra ao motorista: sem isto o webhook não sabe quem assinou.
+  // O id vai JA no configure. Configurar sem ele e fazer logIn depois criava
+  // um cliente anonimo ($RCAnonymousID) a cada instalacao, e o RevenueCat so
+  // junta o primeiro a conta: reinstalacao, troca de aparelho, revisao das
+  // lojas e teste deixavam clientes sobrando (99 para 65 motoristas em
+  // 2026-10). Sem o id ainda nao configura: comprar exige estar logado, e a
+  // tela de assinatura chama de novo. Nunca chamar o logOut do SDK ao sair
+  // da conta — ele cria outro anonimo.
+  const perfil = Guardado.get('motorista_id');
+  if (!Purchases || !chave || !perfil) return false;
+  if (comprasPara === perfil) return true;
   try {
-    await Purchases.configure({ apiKey: chave });
-    // Amarra a compra ao motorista: sem isto o webhook não sabe quem assinou.
-    const perfil = Guardado.get('motorista_id');
-    if (perfil) await Purchases.logIn({ appUserID: perfil });
+    await Purchases.configure({ apiKey: chave, appUserID: perfil });
+    comprasPara = perfil;
     return true;
   } catch (e) {
     return false;
@@ -948,6 +959,8 @@ function mostrarAssinaturaAtiva(link) {
 async function conferirNaLoja() {
   const { Purchases } = P();
   if (!Purchases || !chaveDaLoja()) return;
+  // Se o id do motorista ainda nao existia quando o app abriu, configura agora.
+  if (!(await iniciarCompras())) return;
   try {
     const { customerInfo } = await Purchases.getCustomerInfo();
     if (customerInfo?.entitlements?.active?.pro || assinaPeloServidor()) {

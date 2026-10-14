@@ -2427,12 +2427,15 @@ def stripe_webhook():
     obj = evento.get("data", {}).get("object") or {}
     tipo = evento.get("type", "")
     store = get_store()
+    # O que foi feito e com quem, para o registro de eventos no fim.
+    resultado, motorista_id = "sem_efeito", None
 
     if tipo == "checkout.session.completed":
         user_id = obj.get("metadata", {}).get("user_id")
         # plano_base por segurança: um checkout antigo/manual com "pro_anual"
         # no metadata não pode gravar um plano que os gates não conhecem.
         plan = plano_base(obj.get("metadata", {}).get("plan", "pro")) or "pro"
+        resultado = "ignorado: sem_user_id"
         if user_id:
             store.update_user(user_id, {
                 "plan": plan,
@@ -2441,7 +2444,9 @@ def stripe_webhook():
                 "subscription_status": "active",
             })
             motorista = store.get_user_by_id(user_id)
+            resultado = "ignorado: motorista_desconhecido"
             if motorista:
+                motorista_id, resultado = motorista["_id"], plan
                 meta = obj.get("metadata", {})
                 avisar_nova_assinatura(
                     motorista, "anual" if meta.get("ciclo") == "anual" else "mensal", "site (Stripe)",
@@ -2460,25 +2465,44 @@ def stripe_webhook():
 
     elif tipo == "customer.subscription.deleted":
         user = store.get_user_by_stripe_customer(obj.get("customer"))
+        resultado = "ignorado: cliente_desconhecido"
         if user:
             store.update_user(user["_id"], {
                 "plan": "free",
                 "stripe_subscription_id": None,
                 "subscription_status": "canceled",
             })
+            motorista_id, resultado = user["_id"], "free"
 
     elif tipo == "customer.subscription.updated":
         user = store.get_user_by_stripe_customer(obj.get("customer"))
+        resultado = "ignorado: cliente_desconhecido"
         if user:
             status = obj.get("status") or "inactive"
+            motorista_id = user["_id"]
             if status in ACTIVE_SUBSCRIPTION_STATUSES:
                 store.update_user(user["_id"], {"subscription_status": status})
+                resultado = f"status: {status}"
             else:
                 store.update_user(user["_id"], {
                     "plan": "free",
                     "subscription_status": status,
                 })
+                resultado = f"free ({status})"
 
+    meta = obj.get("metadata") or {}
+    registrar_evento_cobranca(
+        "stripe", tipo, resultado, event_id=str(evento.get("id") or ""), driver_id=motorista_id,
+        app_user_id=str(obj.get("customer") or ""), store="STRIPE",
+        environment="PRODUCTION" if evento.get("livemode") else "TEST",
+        product_id=str(meta.get("plan") or ""), cycle=str(meta.get("ciclo") or ""),
+        price=(obj.get("amount_total") or 0) / 100 if obj.get("amount_total") else None,
+        currency=str(obj.get("currency") or ""),
+        # So o que o painel usa: o objeto inteiro da Stripe passa de 5 KB.
+        payload={"id": evento.get("id"), "type": tipo, "livemode": evento.get("livemode"),
+                 "object": {k: obj.get(k) for k in (
+                     "id", "customer", "subscription", "status", "metadata", "amount_total",
+                     "currency", "cancel_at_period_end", "current_period_end") if k in obj}})
     return jsonify({"ok": True})
 
 
@@ -3069,12 +3093,200 @@ def api_estimativa():
 # (app). Todas convergem para a mesma coluna `plan` — o app e o site só olham
 # para ela, e nunca precisam saber de onde a assinatura veio.
 
-# Eventos que concedem acesso, e os que tiram.
+# Eventos que concedem acesso, e os que tiram. TRANSFER fica fora dos dois:
+# ele mexe em duas contas e vem sem app_user_id (ver transferir_assinatura_rc).
 RC_EVENTOS_ATIVA = {
     "INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION",
-    "PRODUCT_CHANGE", "SUBSCRIPTION_EXTENDED", "TRANSFER",
+    "PRODUCT_CHANGE", "SUBSCRIPTION_EXTENDED",
 }
 RC_EVENTOS_ENCERRA = {"EXPIRATION", "SUBSCRIPTION_PAUSED"}
+RC_LOJAS = {"APP_STORE": "App Store (iPhone)", "PLAY_STORE": "Google Play (Android)"}
+# Nome curto da loja para o painel. A chave vem do RevenueCat (`store`) ou e
+# "STRIPE", que o webhook da Stripe grava por conta propria.
+LOJAS_NOME = {"APP_STORE": "App Store", "PLAY_STORE": "Google Play", "STRIPE": "Stripe (site)",
+              "MAC_APP_STORE": "Mac App Store", "AMAZON": "Amazon", "PROMOTIONAL": "Promocional"}
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def nome_da_loja(store: str, source: str = "") -> str:
+    chave = (store or "").upper()
+    return LOJAS_NOME.get(chave) or chave or ("RevenueCat" if source == "revenuecat" else source)
+
+
+def _decimal_ou_none(valor):
+    try:
+        n = Decimal(str(valor))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return n if n.is_finite() else None
+
+
+def registrar_evento_cobranca(source: str, tipo: str, outcome: str, *, event_id: str = "",
+                              seq: int = 0, driver_id: str | None = None, app_user_id: str = "",
+                              store: str = "", environment: str = "", product_id: str = "",
+                              cycle: str = "", price=None, currency: str = "",
+                              payload: dict | None = None) -> None:
+    """Guarda o webhook como chegou e o que o servidor fez com ele (migracao 0011).
+
+    Nunca derruba o webhook: se a tabela ainda nao existe ou o banco falhou, o
+    plano do motorista ja mudou e a origem recebe o 200 do mesmo jeito — senao
+    ela reenviaria para sempre. Reenvio do mesmo evento (mesmo id e posicao)
+    cai no indice unico e nao duplica.
+    """
+    try:
+        with get_store().pool.connection() as conn:
+            conn.execute(
+                """insert into public.billing_events
+                     (source, event_id, seq, type, driver_id, app_user_id, store, environment,
+                      product_id, cycle, price, currency, outcome, payload)
+                   values (%(source)s, %(event_id)s, %(seq)s, %(type)s, %(driver_id)s, %(app_user_id)s,
+                           %(store)s, %(environment)s, %(product_id)s, %(cycle)s, %(price)s,
+                           %(currency)s, %(outcome)s, %(payload)s)
+                   on conflict (source, event_id, seq) where event_id <> '' do nothing""",
+                {
+                    "source": source, "event_id": str(event_id or "")[:200], "seq": seq,
+                    "type": str(tipo or "")[:80], "driver_id": driver_id,
+                    "app_user_id": str(app_user_id or "")[:200], "store": str(store or "")[:40],
+                    "environment": str(environment or "")[:20], "product_id": str(product_id or "")[:200],
+                    "cycle": str(cycle or "")[:10], "price": _decimal_ou_none(price),
+                    "currency": str(currency or "")[:10].upper(), "outcome": str(outcome or "")[:200],
+                    "payload": Json(payload if isinstance(payload, dict) else {}),
+                })
+    except Exception as exc:
+        app.logger.error("Evento de cobrança não registrado (%s %s): %s", source, tipo, exc)
+
+
+def motorista_por_app_user_id(valor: str) -> dict | None:
+    """Motorista por um App User ID do RevenueCat.
+
+    Com cara de uuid, e o proprio id do motorista (o app faz logIn com ele).
+    Sem, e um id anonimo do SDK ($RCAnonymousID:...); ai vale o que o registro
+    de eventos ja aprendeu: um anonimo que chegou com o motorista em `aliases`
+    ficou ligado a ele.
+    """
+    valor = str(valor or "").strip()
+    if not valor:
+        return None
+    store = get_store()
+    if _UUID_RE.match(valor):
+        return store.get_user_by_id(valor)
+    try:
+        with store.pool.connection() as conn:
+            linha = conn.execute(
+                """select driver_id from public.billing_events
+                    where app_user_id = %s and driver_id is not null
+                    order by received_at desc limit 1""", (valor,)).fetchone()
+    except Exception:
+        return None  # migracao 0011 ainda nao aplicada
+    return store.get_user_by_id(str(linha["driver_id"])) if linha else None
+
+
+def motorista_do_evento_rc(evento: dict) -> tuple[dict | None, str]:
+    """(motorista, id que bateu) ou (None, "").
+
+    O SDK nasce anonimo e so depois o app faz logIn; reinstalado o app, a
+    compra pode ficar num anonimo que o RevenueCat nao juntou a conta. Por
+    isso ele manda app_user_id, original_app_user_id e aliases, e recomenda
+    procurar em todos. Antes so o primeiro era olhado, e a compra virava
+    "motorista desconhecido" com o id do motorista logo ali em aliases.
+    """
+    aliases = evento.get("aliases")
+    candidatos = [evento.get("app_user_id"), evento.get("original_app_user_id"),
+                  *(aliases if isinstance(aliases, list) else [])]
+    vistos: set = set()
+    for valor in candidatos:
+        valor = str(valor or "").strip()
+        if not valor or valor.lower() in vistos:
+            continue
+        vistos.add(valor.lower())
+        usuario = motorista_por_app_user_id(valor)
+        if usuario:
+            return usuario, valor
+    return None, ""
+
+
+def pro_vem_da_stripe(usuario: dict) -> bool:
+    """Assinatura ativa na Stripe. Evento da loja nao mexe nela: sao
+    assinaturas independentes (Guideline 3.1.3b).
+
+    O customer_id sozinho nao conta: ele fica depois do cancelamento, e um
+    ex-assinante do site que passou a assinar pelo app precisa ser rebaixado
+    quando a loja mandar o EXPIRATION — antes ele ficava Pro para sempre.
+    """
+    return bool(usuario.get("stripe_subscription_id"))
+
+
+def ativar_pro_pela_loja(user_id: str) -> None:
+    get_store().update_user(user_id, {
+        "plan": "pro",
+        "subscription_status": "active",
+        "stripe_subscription_id": None,
+    })
+
+
+def _registrar_rc(evento: dict, outcome: str, *, driver_id: str | None = None,
+                  app_user_id: str = "", seq: int = 0) -> None:
+    produto = str(evento.get("product_id") or "")
+    registrar_evento_cobranca(
+        "revenuecat", str(evento.get("type") or ""), outcome,
+        event_id=str(evento.get("id") or ""), seq=seq, driver_id=driver_id,
+        app_user_id=app_user_id, store=str(evento.get("store") or ""),
+        environment=str(evento.get("environment") or "").upper(), product_id=produto,
+        cycle=ciclo_do_produto(produto) if produto else "",
+        price=evento.get("price_in_purchased_currency"), currency=str(evento.get("currency") or ""),
+        payload=evento)
+
+
+def transferir_assinatura_rc(evento: dict) -> dict:
+    """TRANSFER: a assinatura passou de um App User ID para outro.
+
+    Acontece quando alguem toca em "Restaurar compras" logado em outra conta:
+    a loja so reconhece um dono por recibo, e o RevenueCat move a assinatura.
+    O evento traz transferred_from e transferred_to, e o app_user_id pode nem
+    vir. Antes ele caia no caminho comum e era ignorado — quem recebeu nao
+    virava Pro e quem perdeu continuava Pro.
+    """
+    def motoristas(chave: str) -> dict:
+        ids = evento.get(chave)
+        achados: dict = {}
+        for valor in (ids if isinstance(ids, list) else []):
+            usuario = motorista_por_app_user_id(str(valor or ""))
+            if usuario:
+                achados[usuario["_id"]] = usuario
+        return achados
+
+    recebem = motoristas("transferred_to")
+    perdem = {k: u for k, u in motoristas("transferred_from").items() if k not in recebem}
+
+    if not recebem:
+        # Destino desconhecido: quase sempre um App User ID anonimo de um
+        # aparelho recem-instalado, antes do logIn (o SDK ja sincroniza o
+        # recibo da loja). Quem "perdeu" continua sendo cobrado pela loja,
+        # entao continua Pro; o evento seguinte do anonimo, com aliases, ou o
+        # TRANSFER de volta acertam o resto. Rebaixar aqui tiraria o Pro de
+        # quem esta pagando.
+        destinos = evento.get("transferred_to")
+        _registrar_rc(evento, "ignorado: destino_desconhecido",
+                      app_user_id=", ".join(str(d) for d in (destinos if isinstance(destinos, list) else [])))
+        for seq, usuario in enumerate(perdem.values(), start=1):
+            _registrar_rc(evento, "mantido (destino desconhecido)", driver_id=usuario["_id"],
+                          app_user_id=usuario["_id"], seq=seq)
+        return {"receberam": [], "perderam": [], "mantidos": list(perdem)}
+
+    feitos: list[tuple[dict, str]] = []
+    for usuario in recebem.values():
+        ativar_pro_pela_loja(usuario["_id"])
+        feitos.append((usuario, "pro (recebeu a assinatura)"))
+    for usuario in perdem.values():
+        if pro_vem_da_stripe(usuario):
+            feitos.append((usuario, "mantido_stripe (a da loja foi para outra conta)"))
+        else:
+            get_store().update_user(usuario["_id"], {"plan": "free", "subscription_status": "transferred"})
+            feitos.append((usuario, "free (a assinatura foi para outra conta)"))
+    for seq, (usuario, outcome) in enumerate(feitos):
+        _registrar_rc(evento, outcome, driver_id=usuario["_id"], app_user_id=usuario["_id"], seq=seq)
+    return {"receberam": list(recebem), "perderam": list(perdem)}
 
 
 @app.post("/webhook/revenuecat")
@@ -3096,47 +3308,58 @@ def webhook_revenuecat():
     if not hmac.compare_digest(enviado.encode("utf-8", "replace"), segredo.encode("utf-8")):
         abort(401)
 
-    evento = (corpo_json()).get("event") or {}
+    evento = corpo_json().get("event")
+    evento = evento if isinstance(evento, dict) else {}
     tipo = str(evento.get("type", ""))
 
-    # app_user_id é o id do motorista: o app faz logIn no RevenueCat com ele.
-    user_id = str(evento.get("app_user_id") or "").strip()
-    if not user_id:
-        return jsonify({"ok": True, "ignorado": "sem_app_user_id"})
+    if tipo == "TRANSFER":
+        return jsonify({"ok": True, "evento": tipo, "resultado": transferir_assinatura_rc(evento)})
+
+    app_user_id = str(evento.get("app_user_id") or "").strip()
+    usuario, id_batido = motorista_do_evento_rc(evento)
+    if not usuario:
+        motivo = "motorista_desconhecido" if app_user_id else "sem_app_user_id"
+        if app_user_id:
+            app.logger.warning("RevenueCat: motorista %s não encontrado.", app_user_id)
+        _registrar_rc(evento, f"ignorado: {motivo}", app_user_id=app_user_id)
+        return jsonify({"ok": True, "ignorado": motivo})
 
     store = get_store()
-    usuario = store.get_user_by_id(user_id)
-    if not usuario:
-        app.logger.warning("RevenueCat: motorista %s não encontrado.", user_id)
-        return jsonify({"ok": True, "ignorado": "motorista_desconhecido"})
-
+    user_id = usuario["_id"]
     if tipo == "CANCELLATION":
         # Cancelou, mas segue com acesso até o fim do período pago. Quem tira o
         # acesso é o EXPIRATION, depois.
         store.update_user(user_id, {"subscription_status": "canceled_pendente"})
+        resultado = "cancelamento_agendado"
 
     elif tipo in RC_EVENTOS_ATIVA:
-        store.update_user(user_id, {
-            "plan": "pro",
-            "subscription_status": "active",
-            "stripe_subscription_id": None,
-        })
+        ativar_pro_pela_loja(user_id)
+        resultado = "pro"
         if tipo == "INITIAL_PURCHASE":
             loja = str(evento.get("store") or "")
             avisar_nova_assinatura(
                 usuario, ciclo_do_produto(str(evento.get("product_id") or "")),
-                {"APP_STORE": "App Store (iPhone)", "PLAY_STORE": "Google Play (Android)"}.get(loja, loja or "app"),
+                RC_LOJAS.get(loja, loja or "app"),
                 valor_da_compra(evento.get("price_in_purchased_currency"), evento.get("currency")),
                 teste=str(evento.get("environment") or "").upper() == "SANDBOX",
                 evento_id=str(evento.get("id") or ""))
 
     elif tipo in RC_EVENTOS_ENCERRA:
-        # Só rebaixa se o Pro veio do app. Quem assinou pela Stripe no site
-        # continua — são assinaturas independentes (Guideline 3.1.3b).
-        if not usuario.get("stripe_customer_id"):
+        if pro_vem_da_stripe(usuario):
+            resultado = "mantido_stripe"
+        else:
             store.update_user(user_id, {"plan": "free", "subscription_status": tipo.lower()})
+            resultado = "free"
 
-    return jsonify({"ok": True, "evento": tipo})
+    else:
+        # BILLING_ISSUE (periodo de carencia), TEST (botao do painel do
+        # RevenueCat) e o que mais vier: fica registrado, sem mexer no plano.
+        resultado = "sem_efeito"
+
+    if id_batido and id_batido.lower() != app_user_id.lower():
+        resultado += " (pelo alias)"
+    _registrar_rc(evento, resultado, driver_id=user_id, app_user_id=app_user_id or id_batido)
+    return jsonify({"ok": True, "evento": tipo, "resultado": resultado})
 
 
 # ── Manutenção ────────────────────────────────────────────────────────────────
@@ -4202,6 +4425,27 @@ _SQL_ADMIN = {
     "indices": """
         select indexname from pg_indexes where schemaname = 'public'
            and indexname in ('receipts_created_idx', 'drivers_created_idx')""",
+    # Cobranca, pelos webhooks (migracao 0011). Teste = sandbox das lojas e
+    # modo teste da Stripe: nao e assinatura, nao entra nas contagens.
+    "assinaturas_por_mes": """
+        with e as (
+            select *, environment in ('SANDBOX', 'TEST') as teste
+              from public.billing_events where received_at >= %(ini_12m)s)
+        select public.br_period(received_at) as mes,
+               count(*) filter (where not teste and type in ('INITIAL_PURCHASE', 'checkout.session.completed')) as novas,
+               count(*) filter (where not teste and type = 'INITIAL_PURCHASE') as loja,
+               count(*) filter (where not teste and type = 'checkout.session.completed') as site,
+               count(*) filter (where not teste and type in ('INITIAL_PURCHASE', 'checkout.session.completed')
+                                  and cycle = 'anual') as anuais,
+               count(*) filter (where not teste and type in ('CANCELLATION', 'customer.subscription.deleted')) as cancelamentos,
+               count(*) filter (where not teste and outcome like 'free%%') as rebaixados,
+               count(*) filter (where teste) as testes
+          from e group by 1 order by 1""",
+    "ultimos_eventos": """
+        select e.received_at, e.source, e.type, e.store, e.environment, e.cycle, e.price, e.currency,
+               e.outcome, e.app_user_id, e.driver_id, d.full_name
+          from public.billing_events e left join public.drivers d on d.id = e.driver_id
+         order by e.received_at desc, e.seq desc limit 15""",
     "ultimo_webhook": """
         select max(updated_at) as em from public.drivers where plan <> 'free'""",
     "admins": """
@@ -4325,6 +4569,9 @@ def montar_dashboard_admin() -> dict:
     d["por_hora"] = _com_maximo([{"hora": h, "n": por_hora.get(h, 0)} for h in range(24)], "n")
     for nome in ("pagamentos", "cidades_recibos", "cidades_cadastro"):
         d[nome] = _com_maximo(d.get(nome) or [], "n")
+    if d.get("ultimos_eventos") is not None:
+        d["ultimos_eventos"] = [dict(e, origem=nome_da_loja(e.get("store"), e.get("source")))
+                                for e in d["ultimos_eventos"]]
 
     # MRR como faixa: o banco nao diz quem e mensal e quem e anual, nem o preco
     # do Business legado. Piso = todo Pro da Stripe anual (119,90/12);
@@ -4510,6 +4757,15 @@ def admin_motorista(driver_id):
                         group by d.id""", (did,)).fetchone()
         except Exception:
             automacao = None  # migração 0007 ainda não aplicada
+        try:
+            with conn.transaction():
+                eventos = [dict(e, origem=nome_da_loja(e["store"], e["source"])) for e in conn.execute(
+                    """select received_at, source, type, store, environment, cycle, price, currency,
+                              outcome, app_user_id
+                         from public.billing_events where driver_id = %s
+                        order by received_at desc, seq desc limit 30""", (did,)).fetchall()]
+        except Exception:
+            eventos = None  # migração 0011 ainda não aplicada
     recibos = store.list_receipts_by_driver(did, limit=20)
     app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
     return render_template(
@@ -4518,6 +4774,7 @@ def admin_motorista(driver_id):
         or formatar_valor(0),
         sessoes=sessoes, emails_hoje=(emails_hoje or {}).get("count", 0), recibos=recibos,
         automacao=dict(automacao) if automacao else None,
+        eventos=eventos,
         limite=FREE_MONTHLY_LIMIT,
     )
 

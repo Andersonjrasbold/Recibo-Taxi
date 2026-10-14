@@ -47,9 +47,33 @@
         {% else %}<tr><td class="adm-suave">Ninguém cancelou.</td></tr>{% endfor %}
       </table>
       {% endif %}
-      <p class="adm-suave mt-3">Não dá para medir hoje: data de upgrade/cancelamento, novas assinaturas por mês, mensal × anual. Precisa de uma tabela de eventos de cobrança alimentada pelos webhooks.</p>
+      <h3 class="adm-h3 mt-4">Assinaturas novas por mês</h3>
+      {% if d.assinaturas_por_mes is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        <thead><tr><th>Mês</th><th class="adm-num">Novas</th><th class="adm-num">Loja</th><th class="adm-num">Site</th><th class="adm-num">Anuais</th><th class="adm-num">Cancel.</th><th class="adm-num">Rebaix.</th></tr></thead>
+        <tbody>{% for l in d.assinaturas_por_mes | reverse %}
+        <tr><td>{{ l.mes.strftime('%m/%Y') }}</td><td class="adm-num">{{ l.novas }}</td><td class="adm-num">{{ l.loja }}</td><td class="adm-num">{{ l.site }}</td><td class="adm-num">{{ l.anuais }}</td><td class="adm-num">{{ l.cancelamentos }}</td><td class="adm-num">{{ l.rebaixados }}</td></tr>
+        {% else %}<tr><td colspan="7" class="adm-suave">Nenhum evento de cobrança ainda (o registro começou em outubro de 2026).</td></tr>{% endfor %}</tbody>
+      </table>
+      <p class="adm-suave">Pelos webhooks do RevenueCat e da Stripe. Compras de teste (sandbox das lojas, modo teste da Stripe) ficam de fora.</p>
+      {% endif %}
     </div>
   </div>
+  <h3 class="adm-h3 mt-4">Últimos eventos de cobrança</h3>
+  {% if d.ultimos_eventos is none %}{{ ui.indisponivel() }}{% else %}
+  <div class="table-responsive"><table class="adm-tabela adm-tabela-mini">
+    <thead><tr><th>Quando</th><th>Motorista</th><th>Origem</th><th>Evento</th><th class="adm-num">Valor</th><th>Resultado</th></tr></thead>
+    <tbody>{% for e in d.ultimos_eventos %}
+    <tr><td>{{ e.received_at | data_br }}</td>
+        <td>{% if e.driver_id %}<a href="{{ url_for('admin_motorista', driver_id=e.driver_id) }}" class="adm-link">{{ e.full_name }}</a>{% else %}<code class="adm-suave">{{ e.app_user_id or '-' }}</code>{% endif %}</td>
+        <td>{{ e.origem }}{% if e.environment in ('SANDBOX', 'TEST') %} <small class="adm-falha">teste</small>{% endif %}</td>
+        <td>{{ e.type }}{% if e.cycle %} · {{ e.cycle }}{% endif %}</td>
+        <td class="adm-num">{{ e.price | valor(e.currency) if e.price is not none else '-' }}</td>
+        <td>{{ e.outcome }}</td></tr>
+    {% else %}<tr><td colspan="6" class="adm-suave">Nenhum evento de cobrança registrado ainda.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="adm-suave">Motorista em cinza = o App User ID que veio do RevenueCat não é de ninguém no banco (anônimo de aparelho recém-instalado, ou conta já excluída).</p>
+  {% endif %}
 </section>
 
 {# ── 3. Crescimento ────────────────────────────────────────────────── #}

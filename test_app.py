@@ -1113,6 +1113,21 @@ check("o RevenueCat e configurado ja com o id do motorista",
       "Purchases.configure({ apiKey: chave, appUserID: perfil })" in _appjs
       and "Purchases.logIn(" not in _appjs)
 check("o app nunca faz logOut no RevenueCat", "Purchases.logOut" not in _appjs)
+
+# -- Indicacao no app -----------------------------------------------------
+# A tela do app so fala do mes de Pro. O cupom de 70% existe no SITE, e falar
+# dele dentro do app seria levar o motorista a comprar fora da loja — o que a
+# Apple recusa (3.1.1) e, no Brasil, passou a comissionar.
+print("\n-- Indicacao no app --")
+_tela_ind = _html_app.split('id="tela-indicar"', 1)[1].split("</section>", 1)[0] if 'id="tela-indicar"' in _html_app else ""
+check("o app tem a tela de indicacao, com o codigo e o WhatsApp",
+      'id="codigo-indicacao"' in _tela_ind and 'id="btn-indicar-whats"' in _tela_ind)
+check("o cadastro do app manda o codigo de indicacao",
+      'id="c-indicacao"' in _html_app and "indicacao:" in _appjs and "codigo_indicacao_invalido" in _appjs)
+check("a tela de indicacao nao fala de desconto nem do site (3.1.1)",
+      _tela_ind and "desconto" not in _tela_ind.lower() and "70%" not in _tela_ind and "recibotaxi.com.br/indicar" not in _tela_ind)
+check("o app guarda o codigo e o pro_until da sessao",
+      "'codigo_indicacao'" in _appjs and "'pro_until'" in _appjs)
 check("nenhum preco do anual escrito no app",
       not _re.search(r"119[,.]\d", _html_app + _appjs))
 check("o preco do anual vem da loja", "anual.priceString" in _appjs)

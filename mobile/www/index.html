@@ -33,6 +33,7 @@
           <small id="menu-plano" class="menu-plano"></small>
         </div>
         <button id="btn-pro" class="menu-item">Recibo Táxi Pro</button>
+        <button id="btn-indicar" class="menu-item">Indicar um colega</button>
         <button id="btn-historico" class="menu-item">Ver histórico</button>
         <button id="btn-tarifa" class="menu-item">Tarifa da cidade</button>
         <a href="https://recibo-taxi.vercel.app/privacidade" class="menu-item">Política de Privacidade</a>
@@ -128,6 +129,10 @@
     <label for="c-modelo">Modelo do veículo</label>
     <input type="text" id="c-modelo" maxlength="80">
 
+    <label for="c-indicacao">Código de indicação <span class="ajuda">(opcional)</span></label>
+    <input type="text" id="c-indicacao" maxlength="12" autocapitalize="characters"
+           autocomplete="off" spellcheck="false" placeholder="Ex.: ABC234">
+
     <button type="submit" class="primario">Criar conta</button>
     <p id="erro-cadastro" class="erro" hidden></p>
     <p class="ajuda" style="margin-top:1rem">
@@ -179,6 +184,13 @@
       </span>
     </button>
   </div>
+
+  <!-- Indicacao: um cartao, nao um terceiro caminho. Os caminhos sao o
+       trabalho do dia; isto e para quando sobra um minuto. -->
+  <button id="btn-ir-indicar" class="indicar-cartao">
+    <strong>Indique um colega, ganhe 1 mês de Pro</strong>
+    <small>Ele cria a conta com o seu código; quando emitir o primeiro recibo, você ganha.</small>
+  </button>
 </section>
 
 <!-- ── Corrida ─────────────────────────────────────────────────────────── -->
@@ -393,7 +405,7 @@
   <!-- Quem ja assina nao ve outra compra. No Google Play o mensal e o anual
        sao assinaturas separadas: comprar a outra cobraria as duas. -->
   <div id="pro-ativo" class="aviso" hidden>
-    Sua assinatura Pro está ativa.
+    <span id="pro-ativo-texto">Sua assinatura Pro está ativa.</span>
     <a id="link-gerenciar" href="#" class="ligacao" hidden>Gerenciar assinatura</a>
   </div>
 
@@ -434,6 +446,40 @@
     ·
     <a href="https://recibo-taxi.vercel.app/privacidade" class="ligacao">Política de Privacidade</a>
   </p>
+</section>
+
+<!-- ── Indicar ─────────────────────────────────────────────────────────── -->
+<!-- So o mes de Pro aparece aqui. O cupom de 70% do site NAO e citado no app
+     nem ha link para a pagina do site: seria levar o motorista a comprar fora
+     da loja, o que a Apple recusa (3.1.1). -->
+<section id="tela-indicar" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Indique um colega</h1>
+    <button id="btn-fechar-indicar" class="texto">Voltar</button>
+  </div>
+  <p class="ajuda">
+    Cada colega que cria a conta com o seu código e emite o primeiro recibo
+    rende <strong>1 mês de Pro grátis</strong> para você, até 3 meses.
+  </p>
+
+  <div class="cartao-pro cartao-indicacao">
+    <span class="ajuda">Seu código</span>
+    <strong id="codigo-indicacao" class="codigo-indicacao">······</strong>
+    <span id="link-indicacao" class="link-indicacao"></span>
+  </div>
+
+  <button id="btn-indicar-whats" class="primario">Indicar pelo WhatsApp</button>
+  <button id="btn-copiar-indicacao" class="secundario">Copiar a mensagem</button>
+  <p id="aviso-indicacao" class="aviso-email" hidden></p>
+
+  <div class="cartao-pro">
+    <ul class="lista-pro">
+      <li>O colega informa o código ao criar a conta.</li>
+      <li>A recompensa libera no primeiro recibo dele, não no cadastro.</li>
+      <li>Os meses somam: quem já tem Pro de indicação ganha mais 30 dias no fim do prazo.</li>
+      <li>Quem já assina o Pro não recebe o mês grátis.</li>
+    </ul>
+  </div>
 </section>
 
 <!-- ── Excluir conta ───────────────────────────────────────────────────── -->

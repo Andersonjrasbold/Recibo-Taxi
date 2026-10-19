@@ -203,7 +203,7 @@ async function sincronizar() {
 const $ = (id) => document.getElementById(id);
 const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-inicio',
                'tela-corrida', 'tela-tarifa', 'tela-emitir', 'tela-recibo',
-               'tela-assinatura', 'tela-historico', 'tela-excluir'];
+               'tela-assinatura', 'tela-indicar', 'tela-historico', 'tela-excluir'];
 
 // Telas de onde o motorista sai para o menu. Fechar o historico, a assinatura,
 // a exclusao ou a tarifa volta para a ultima delas, e nao sempre para o
@@ -668,10 +668,12 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
     cidade: $('c-cidade').value.trim(),
     placa: $('c-placa').value.trim(),
     modelo_veiculo: $('c-modelo').value.trim(),
+    indicacao: $('c-indicacao').value.trim().toUpperCase(),
   };
 
   const mensagens = {
     email_em_uso: 'Já existe uma conta com este e-mail.',
+    codigo_indicacao_invalido: 'Código de indicação não encontrado. Confira com quem te indicou ou deixe em branco.',
     senha_curta: 'A senha precisa ter pelo menos 8 caracteres.',
     campos_obrigatorios: 'Preencha todos os campos marcados com *.',
     campo_longo: 'Um dos campos ficou longo demais.',
@@ -979,6 +981,11 @@ function abrirAssinatura(motivo) {
 
   const jaAssina = assinaPeloServidor();
   $('pro-ativo').hidden = !jaAssina;
+  // Pro pre-pago (anual ou mes de indicacao) tem data de fim; assinatura, nao.
+  const fimPro = Guardado.get('pro_until');
+  $('pro-ativo-texto').textContent = jaAssina && fimPro
+    ? `Seu Pro vale até ${new Date(fimPro).toLocaleDateString('pt-BR')}. Depois disso, é só assinar por aqui.`
+    : 'Sua assinatura Pro está ativa.';
   $('planos-pro').hidden = jaAssina;
   $('btn-assinar').hidden = jaAssina;
   mostrarPlanos();
@@ -1111,6 +1118,7 @@ function encerrarSessao() {
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
+  Guardado.del('codigo_indicacao'); Guardado.del('link_indicacao'); Guardado.del('pro_until');
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -1148,6 +1156,11 @@ async function atualizarSessao() {
     Guardado.set('plano', s.plano);
     Guardado.set('limite', s.limite_mensal);
     Guardado.set('usados', s.usados_no_mes);
+    // Codigo de indicacao e fim do Pro pre-pago: guardados para a tela de
+    // indicar e a de assinatura funcionarem sem sinal.
+    Guardado.set('codigo_indicacao', s.codigo_indicacao || '');
+    Guardado.set('link_indicacao', s.link_indicacao || '');
+    Guardado.set('pro_until', s.pro_until || '');
     atualizarCabecalho();
     await reabrirRecusadosPorCota(s);
     return s;
@@ -1224,7 +1237,7 @@ function voltarUmNivel() {
   }
 
   if (!$('tela-historico').hidden || !$('tela-assinatura').hidden
-      || !$('tela-excluir').hidden || !$('tela-tarifa').hidden) {
+      || !$('tela-excluir').hidden || !$('tela-tarifa').hidden || !$('tela-indicar').hidden) {
     voltarParaBase();
     return true;
   }
@@ -1392,6 +1405,56 @@ $('btn-ir-emitir').addEventListener('click', () => { vibrar('LIGHT'); irParaEmit
 // Uma corrida por vez: com uma aberta, "Fazer corrida" volta para ela.
 $('btn-ir-corrida').addEventListener('click', () => { vibrar('LIGHT'); abrirCorrida(); });
 $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); abrirCorrida(); });
+
+// ── Indicação ──────────────────────────────────────────────────────────────
+//
+// O codigo vem do servidor com a sessao e fica guardado: a tela abre sem
+// sinal. A mensagem e a mesma do site, para o colega receber o mesmo texto
+// venha de onde vier. Nada aqui fala de desconto no site (Apple 3.1.1).
+
+function mensagemDeIndicacao() {
+  const codigo = Guardado.get('codigo_indicacao') || '';
+  const link = Guardado.get('link_indicacao') || `https://www.recibotaxi.com.br/cadastro?indicacao=${codigo}`;
+  const nome = ((Guardado.get('motorista') || {}).full_name || '').split(' ')[0] || 'um colega';
+  return 'Oi! Eu uso o Recibo Táxi para dar recibo de corrida pelo celular, sem internet, '
+    + `em 10 segundos. Cria sua conta grátis com o meu código *${codigo}* que a gente ganha `
+    + `um mês de Pro: ${link} — ${nome}`;
+}
+
+function abrirIndicacao() {
+  const codigo = Guardado.get('codigo_indicacao');
+  $('codigo-indicacao').textContent = codigo || '······';
+  $('link-indicacao').textContent = codigo
+    ? (Guardado.get('link_indicacao') || '')
+    : 'Conecte à internet uma vez para o app buscar o seu código.';
+  $('btn-indicar-whats').disabled = !codigo;
+  $('btn-copiar-indicacao').disabled = !codigo;
+  $('aviso-indicacao').hidden = true;
+  fecharMenu();
+  mostrar('tela-indicar');
+  // Sessao de antes do codigo existir: busca agora e redesenha uma vez.
+  if (!codigo) atualizarSessao().then((s) => { if (s && s.codigo_indicacao) abrirIndicacao(); });
+}
+
+$('btn-indicar').addEventListener('click', () => { vibrar('LIGHT'); abrirIndicacao(); });
+$('btn-ir-indicar').addEventListener('click', () => { vibrar('LIGHT'); abrirIndicacao(); });
+$('btn-fechar-indicar').addEventListener('click', voltarParaBase);
+$('btn-indicar-whats').addEventListener('click', () => {
+  vibrar('LIGHT');
+  window.open(`https://wa.me/?text=${encodeURIComponent(mensagemDeIndicacao())}`, '_blank');
+});
+$('btn-copiar-indicacao').addEventListener('click', async () => {
+  const aviso = $('aviso-indicacao');
+  try {
+    const { Clipboard } = P();
+    if (Clipboard) await Clipboard.write({ string: mensagemDeIndicacao() });
+    else await navigator.clipboard.writeText(mensagemDeIndicacao());
+    aviso.textContent = 'Mensagem copiada. Cole no grupo dos taxistas ou numa conversa.';
+  } catch {
+    aviso.textContent = 'Não deu para copiar. Use o botão do WhatsApp.';
+  }
+  aviso.hidden = false;
+});
 
 // ── Corrida ────────────────────────────────────────────────────────────────
 //

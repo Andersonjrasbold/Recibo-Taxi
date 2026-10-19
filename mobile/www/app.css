@@ -218,6 +218,23 @@ button:disabled { opacity:.5; }
 .caminho-texto small { color:var(--muted); font-size:.86rem; line-height:1.35; }
 
 /* A corrida aberta vem antes dos dois caminhos: é a coisa por terminar. */
+/* Cartao de indicacao no inicio: o mesmo desenho do aviso de corrida aberta,
+   em tom discreto, porque nao e urgente. */
+.indicar-cartao {
+  display:grid; gap:.2rem; width:100%; text-align:left; margin-top:1rem;
+  padding:.95rem 1.1rem; border-radius:16px; color:var(--paper);
+  background:rgba(247,245,242,.06); border:1px solid rgba(247,245,242,.14);
+}
+.indicar-cartao:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
+.indicar-cartao strong { font-size:1rem; }
+.indicar-cartao small { color:var(--muted); font-size:.86rem; line-height:1.35; }
+.cartao-indicacao { display:grid; gap:.3rem; text-align:center; margin-bottom:1rem; }
+.codigo-indicacao {
+  font-size:2rem; font-weight:800; letter-spacing:.25em; color:var(--ambar);
+  font-variant-numeric:tabular-nums;
+}
+.link-indicacao { color:var(--muted); font-size:.82rem; overflow-wrap:anywhere; }
+
 .corrida-aberta {
   display:grid; gap:.15rem; width:100%; text-align:left; margin-bottom:1rem;
   padding:.95rem 1.1rem; border-radius:16px;

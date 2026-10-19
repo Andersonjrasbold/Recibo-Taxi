@@ -51,12 +51,17 @@ def limpar_contas_de_teste():
       3. contadores de rate limit -> senao a segunda execucao ja nasce no teto
     """
     removidas = 0
-    for u in A.supabase_admin().auth.admin.list_users():
-        if (u.email or "").endswith(DOMINIO_TESTE):
-            A.supabase_admin().auth.admin.delete_user(str(u.id))
-            removidas += 1
-
     store = A.get_store()
+    # Pelo banco, nao por list_users(): a API do Auth pagina (50 por pagina)
+    # e, com mais de 50 usuarios, deixava contas de teste para tras — em
+    # 2026-10-19, com 80 usuarios, 5 contas da suite ficaram em producao.
+    with store.pool.connection() as conn:
+        ids = [str(r["id"]) for r in conn.execute(
+            "select id from auth.users where email like %s", (f"%{DOMINIO_TESTE}",)).fetchall()]
+    for uid in ids:
+        A.supabase_admin().auth.admin.delete_user(uid)
+        removidas += 1
+
     if getattr(store, "kind", "") == "postgres":
         with store.pool.connection() as conn:
             # Recibos sem conta montados a mao pela suite usam 'Teste' como

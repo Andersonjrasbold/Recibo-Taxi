@@ -61,6 +61,12 @@
                     placeholder="000.000.000-00" required
                     value="{{ (form or {}).get('cpf', '') }}">
                 </div>
+                <div class="col-md-6">
+                  <label for="indicacao" class="form-label-auth">Código de indicação (opcional)</label>
+                  <input type="text" id="indicacao" name="indicacao" class="form-control form-control-auth"
+                    placeholder="Ex.: ABC234" maxlength="12" autocapitalize="characters" style="text-transform:uppercase"
+                    value="{{ (form or {}).get('indicacao', '') or request.args.get('indicacao', '') }}">
+                </div>
               </div>
             </div>
 

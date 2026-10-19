@@ -192,6 +192,7 @@ SIGNUP_FIELD_LIMITS = {
     "modelo_veiculo": ("O modelo do veículo", 80),
     "prefixo_taxi": ("O prefixo do táxi", 20),
     "numero_alvara": ("O número do alvará", 40),
+    "indicacao": ("O código de indicação", 12),
 }
 
 # Teto por lote na limpeza, para a rotina não estourar o tempo da função
@@ -270,12 +271,34 @@ AVISO_CADASTRO_CHAVE = "aviso_cadastro"      # contador diário (a suíte troca)
 AVISO_ASSINATURA_CHAVE = "aviso_assinatura"  # um aviso por evento de webhook (a suíte troca)
 PRECO_PRO_MENSAL = "R$ 19,90"
 PRECO_PRO_ANUAL = "R$ 119,90"
+# Anual pago uma vez (Pix ou cartão), fora das lojas: oferta que sai pelo
+# WhatsApp e pela página /oferta/anual, que o app nunca aponta (regra 3.1.3(b)
+# da Apple: comprado fora vale no app, desde que o app não leve até a oferta).
+# O valor é decisão do Anderson (2026-10-19: 59,90 ou 49,90); trocar aqui e o
+# Price na Stripe basta.
+PRECO_PRO_ANUAL_PIX = "R$ 59,90"
+PRO_PREPAGO_DIAS = 365
 # Plano escolhido por quem clicou em "Assinar" antes de ter conta: aparece no
 # cadastro e no login, e depois deles a pessoa vai direto para o pagamento.
 PLANOS_ROTULO = {
     "pro": f"Pro mensal ({PRECO_PRO_MENSAL} por mês)",
     "pro_anual": f"Pro anual ({PRECO_PRO_ANUAL} por ano)",
+    "pro_anual_pix": f"Pro anual por Pix ({PRECO_PRO_ANUAL_PIX}, pagamento único)",
 }
+
+# Indicação: o colega indicado emite o primeiro recibo e quem indicou ganha um
+# mês de Pro (até INDICACAO_MAX_MESES, um por colega ativo) e o cupom de 70%
+# por 12 meses no Pro mensal do site. Teto de uma recompensa de cada tipo por
+# colega: sem teto, criar contas falsas renderia Pro para sempre.
+INDICACAO_MESES_POR_INDICADO = 1
+INDICACAO_MAX_MESES = 3
+INDICACAO_CUPOM_PCT = 70
+INDICACAO_CUPOM_MESES = 12
+INDICACAO_CUPOM_ID = "INDICACAO70"   # id do cupom na Stripe; criado sob demanda
+INDICACAO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # sem 0/O, 1/I
+INDICACAO_TAMANHO = 6
+# Pro que não é assinatura: vive em drivers.pro_until e o cron rebaixa.
+STATUS_PREPAGO = ("prepago", "indicacao")
 # Vai depois do botão, em todo e-mail automático: no texto ela ficaria antes dele.
 EMAIL_ASSINATURA = "Equipe Recibo Táxi"
 
@@ -317,9 +340,13 @@ STRIPE_PRICE_IDS = {
     # o metadata.plan do checkout continua "pro", então webhook, gates e a
     # tela de planos não distinguem ciclo — só o Stripe sabe.
     "pro_anual": "STRIPE_PRO_ANUAL_PRICE_ID",
+    # Pagamento único (mode=payment na Stripe), não assinatura: o Pro vale
+    # PRO_PREPAGO_DIAS a partir do pagamento e não renova sozinho.
+    "pro_anual_pix": "STRIPE_PRO_ANUAL_PIX_PRICE_ID",
 }
 # Ciclo de cada chave de checkout. Tudo que não é "anual" é mensal.
-PLAN_CYCLES = {"pro_anual": "anual"}
+PLAN_CYCLES = {"pro_anual": "anual", "pro_anual_pix": "anual"}
+PLANOS_PREPAGOS = {"pro_anual_pix"}
 # True = o anual renova sozinho a cada 12 meses (cancelável no portal, como o
 # mensal). False = "pagamento único" literal: o webhook marca
 # cancel_at_period_end e o Stripe encerra no fim do ano, derrubando pra free
@@ -897,7 +924,8 @@ class PostgresStore:
         id as _id, email, password_changed_at, full_name, cpf,
         whatsapp, city, plate, vehicle_model, taxi_prefix, license_number,
         plan, stripe_customer_id, stripe_subscription_id, subscription_status,
-        country, currency, created_at, updated_at
+        country, currency, referral_code, referred_by, pro_until, pro_reminder_sent_at,
+        referral_coupon_granted_at, referral_coupon_used_at, created_at, updated_at
     """
 
     _RECEIPT_COLS = """
@@ -937,9 +965,11 @@ class PostgresStore:
         # O resto do app trata _id como string: ele vai para a sessão, para o
         # token de reset (que é JSON) e para comparações com driver_id.
         out["_id"] = str(out["_id"])
-        for campo in ("created_at", "updated_at", "password_changed_at"):
+        for campo in ("created_at", "updated_at", "password_changed_at", "pro_until",
+                      "pro_reminder_sent_at", "referral_coupon_granted_at", "referral_coupon_used_at"):
             valor = out.get(campo)
             out[campo] = to_utc_iso(valor) if valor else ""
+        out["referred_by"] = str(out["referred_by"]) if out.get("referred_by") else ""
         return out
 
     @staticmethod
@@ -972,7 +1002,8 @@ class PostgresStore:
             "whatsapp", "city", "plate", "vehicle_model", "taxi_prefix",
             "license_number", "plan", "stripe_customer_id",
             "stripe_subscription_id", "subscription_status",
-            "country", "currency",
+            "country", "currency", "referral_code", "referred_by", "pro_until",
+            "pro_reminder_sent_at", "referral_coupon_granted_at", "referral_coupon_used_at",
         }
         campos = {k: v for k, v in updates.items() if k in permitidas}
         if not campos:
@@ -990,6 +1021,17 @@ class PostgresStore:
             row = conn.execute(
                 f"select {self._DRIVER_COLS} from public.drivers where lower(email) = lower(%s)",
                 (email,),
+            ).fetchone()
+        return self._driver_out(row)
+
+    def get_user_by_referral_code(self, codigo: str) -> dict | None:
+        codigo = (codigo or "").strip().upper()
+        if not codigo:
+            return None
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"select {self._DRIVER_COLS} from public.drivers where referral_code = %s",
+                (codigo,),
             ).fetchone()
         return self._driver_out(row)
 
@@ -1757,6 +1799,9 @@ def inject_globals() -> dict:
         "play_store_url": PLAY_STORE_URL,
         "paises": PAISES,
         "moedas": MOEDAS,
+        "preco_pro_anual_pix": PRECO_PRO_ANUAL_PIX,
+        "indicacao": {"pct": INDICACAO_CUPOM_PCT, "meses_cupom": INDICACAO_CUPOM_MESES,
+                      "meses_por_indicado": INDICACAO_MESES_POR_INDICADO, "max_meses": INDICACAO_MAX_MESES},
     }
 
 
@@ -1877,6 +1922,14 @@ def cadastro():
             flash(str(exc), "danger")
             return render_template("register.html", form=request.form), 400
 
+        # Código de quem indicou: opcional, mas, se veio, tem de existir —
+        # engolir um código errado deixaria a indicação sem dono.
+        codigo_indicacao = request.form.get("indicacao", "").strip().upper()
+        indicador = get_store().get_user_by_referral_code(codigo_indicacao) if codigo_indicacao else None
+        if codigo_indicacao and not indicador:
+            flash("Código de indicação não encontrado. Confira com quem te indicou ou deixe em branco.", "danger")
+            return render_template("register.html", form=request.form), 400
+
         # O usuário nasce no Supabase Auth; o trigger on_auth_user_created
         # cria o perfil em `drivers` a partir deste metadata.
         try:
@@ -1903,6 +1956,7 @@ def cadastro():
             flash(str(exc), "danger")
             return render_template("register.html", form=request.form), 503
 
+        registrar_indicacao(indicador, user_id)
         avisar_novo_cadastro(user_id, {
             "email": email, "full_name": full_name, "whatsapp": whatsapp, "city": city,
             "plate": plate, "vehicle_model": vehicle_model, "country": pais, "currency": moeda,
@@ -2151,6 +2205,8 @@ def dashboard():
         monthly_limit=None if user_plan in PAID_PLANS else FREE_MONTHLY_LIMIT,
         moeda_simbolo=simbolo,
         valor_exemplo=formatar_numero(0, casas),
+        pro_until=_instante(g.user.get("pro_until")) if g.user.get("subscription_status") in STATUS_PREPAGO else None,
+        prepago=g.user.get("subscription_status") in STATUS_PREPAGO,
     )
 
 
@@ -2218,6 +2274,7 @@ def recibo_criar():
         )
         return redirect(url_for("planos"))
 
+    ativar_indicacao(g.user)
     flash("Recibo gerado e salvo na sua conta!", "success")
     return redirect(url_for("recibo_view", rid=rid, created="1"))
 
@@ -2241,6 +2298,283 @@ def gerador():
 @app.get("/planos")
 def planos():
     return render_template("planos.html")
+
+
+# ── Indicação e Pro pré-pago ─────────────────────────────────────────────────
+#
+# Duas formas de Pro que não são assinatura: o anual pago uma vez (Pix ou
+# cartão, fora das lojas) e o mês ganho por indicar um colega. As duas vivem
+# em drivers.pro_until (migração 0012); o cron diário rebaixa quando a data
+# passa. Quem tem assinatura (Stripe ou loja) não depende de pro_until: se
+# também tiver dias pré-pagos, eles valem quando a assinatura acabar.
+
+def _instante(valor) -> datetime | None:
+    """ISO (como o store devolve) ou datetime → datetime com fuso; vazio → None."""
+    if not valor:
+        return None
+    if isinstance(valor, datetime):
+        return valor if valor.tzinfo else valor.replace(tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def pro_prepago_vigente(usuario: dict) -> bool:
+    fim = _instante(usuario.get("pro_until"))
+    return bool(fim and fim > datetime.now(timezone.utc))
+
+
+def conceder_pro_prepago(usuario: dict, dias: int, status: str) -> datetime:
+    """Soma `dias` ao Pro pré-pago e devolve o fim novo.
+
+    Quem ainda tem dias não perde nenhum: a soma parte do fim atual. Assinante
+    (Stripe ou loja) continua assinante e os dias ficam guardados; quem não é
+    vira Pro pré-pago. Pagar ("prepago") vale mais que ganhar ("indicacao"):
+    um Pro de indicação que compra o anual passa a prepago, e o contrário não.
+    """
+    agora = datetime.now(timezone.utc)
+    base = _instante(usuario.get("pro_until")) or agora
+    fim = max(base, agora) + timedelta(days=dias)
+    updates: dict = {"pro_until": to_utc_iso(fim), "pro_reminder_sent_at": None}
+    atual = usuario.get("subscription_status") or ""
+    if usuario.get("plan") == "free" or atual in STATUS_PREPAGO:
+        updates["plan"] = "pro"
+        updates["subscription_status"] = "prepago" if "prepago" in (status, atual) else status
+    get_store().update_user(usuario["_id"], updates)
+    usuario.update(updates)
+    return fim
+
+
+def expirar_pro_prepago() -> int:
+    """Rebaixa quem tinha Pro pré-pago e passou da data. Roda no cron diário."""
+    with get_store().pool.connection() as conn:
+        return conn.execute(
+            """update public.drivers
+                  set plan = 'free', subscription_status = 'expirado', updated_at = now()
+                where plan = 'pro' and subscription_status in ('prepago', 'indicacao')
+                  and pro_until < now()""").rowcount
+
+
+def lembrar_vencimento_prepago() -> int:
+    """Avisa por e-mail quem pagou o anual e vence em ~15 dias. Uma vez só.
+
+    Só o anual pago: o mês de indicação é presente, e um aviso de "vence" para
+    presente soa como cobrança.
+    """
+    store = get_store()
+    with store.pool.connection() as conn:
+        linhas = conn.execute(
+            """select id, email, full_name, pro_until from public.drivers
+                where plan = 'pro' and subscription_status = 'prepago'
+                  and pro_reminder_sent_at is null
+                  and pro_until between now() + interval '14 days' and now() + interval '16 days'
+                limit 50""").fetchall()
+    enviados = 0
+    for d in linhas:
+        if any(d["email"].endswith(s) for s in EMAIL_AUTO_SUFIXOS_EXCLUIDOS):
+            continue
+        fim = d["pro_until"].astimezone(BR_TZ).strftime("%d/%m/%Y")
+        corpo = "\n".join([
+            f"Olá, {(d['full_name'] or '').split()[0] if d['full_name'] else ''}.".replace("Olá, .", "Olá."),
+            "",
+            f"Seu {APP_NAME} Pro anual vale até {fim}. Depois dessa data a conta volta ao plano "
+            f"Grátis, com {FREE_MONTHLY_LIMIT} recibos por mês.",
+            "",
+            f"Para renovar por mais um ano ({PRECO_PRO_ANUAL_PIX}, Pix ou cartão), abra:",
+            absolute_url("oferta_anual"),
+            "",
+            "Os dias que ainda faltam não se perdem: o ano novo começa a contar no fim do atual.",
+        ])
+        if send_email(d["email"], f"Seu {APP_NAME} Pro vence em {fim}", corpo, timeout=8):
+            store.update_user(str(d["id"]), {"pro_reminder_sent_at": now_iso()})
+            enviados += 1
+    return enviados
+
+
+def codigo_de_indicacao(usuario: dict) -> str:
+    """Código do motorista para indicar colegas; nasce na primeira vez que é pedido."""
+    codigo = (usuario.get("referral_code") or "").strip()
+    if codigo:
+        return codigo
+    store = get_store()
+    for _ in range(10):
+        tentativa = "".join(secrets.choice(INDICACAO_ALFABETO) for _ in range(INDICACAO_TAMANHO))
+        if store.get_user_by_referral_code(tentativa):
+            continue
+        try:
+            store.update_user(usuario["_id"], {"referral_code": tentativa})
+        except psycopg.errors.UniqueViolation:
+            continue  # outro motorista tirou o mesmo código no mesmo instante
+        usuario["referral_code"] = tentativa
+        return tentativa
+    raise RuntimeError("não foi possível gerar um código de indicação")
+
+
+def link_de_indicacao(codigo: str) -> str:
+    return absolute_url("cadastro", indicacao=codigo)
+
+
+def mensagem_de_indicacao(usuario: dict, codigo: str) -> str:
+    """Texto pronto para o WhatsApp: o botão "Indicar" abre o wa.me com ele."""
+    nome = (usuario.get("full_name") or "").split()[0] if usuario.get("full_name") else "um colega"
+    return (
+        f"Oi! Eu uso o {APP_NAME} para dar recibo de corrida pelo celular, sem internet, "
+        f"em 10 segundos. Cria sua conta grátis com o meu código *{codigo}* que a gente ganha "
+        f"um mês de Pro: {link_de_indicacao(codigo)} — {nome}"
+    )
+
+
+def registrar_indicacao(indicador: dict | None, novo_id: str) -> None:
+    """Liga o cadastro novo a quem indicou. Chamado logo depois de criar a conta."""
+    if not indicador or str(indicador["_id"]) == str(novo_id):
+        return
+    store = get_store()
+    store.update_user(novo_id, {"referred_by": indicador["_id"]})
+    with store.pool.connection() as conn:
+        conn.execute(
+            """insert into public.referrals (referrer_id, referred_id) values (%s, %s)
+               on conflict (referred_id) do nothing""", (indicador["_id"], novo_id))
+
+
+def ativar_indicacao(usuario: dict) -> None:
+    """Primeiro recibo de quem foi indicado: libera a recompensa de quem indicou.
+
+    O UPDATE com `activated_at is null` é o que garante uma ativação só, mesmo
+    com dois recibos ao mesmo tempo. Nunca derruba a emissão: falha vira log.
+    """
+    if not usuario.get("referred_by"):
+        return
+    try:
+        store = get_store()
+        with store.pool.connection() as conn:
+            linha = conn.execute(
+                """update public.referrals set activated_at = now()
+                    where referred_id = %s and activated_at is null returning referrer_id""",
+                (usuario["_id"],)).fetchone()
+        if linha:
+            recompensar_indicador(str(linha["referrer_id"]), usuario)
+    except Exception as exc:
+        app.logger.error("Indicação de %s não ativada: %s", usuario.get("_id"), exc)
+
+
+def recompensar_indicador(indicador_id: str, indicado: dict) -> None:
+    store = get_store()
+    indicador = store.get_user_by_id(indicador_id)
+    if not indicador:
+        return
+    with store.pool.connection() as conn:
+        ativas = conn.execute(
+            "select count(*) as n from public.referrals where referrer_id = %s and activated_at is not null",
+            (indicador_id,)).fetchone()["n"]
+    recompensas = []
+    if not indicador.get("referral_coupon_granted_at"):
+        store.update_user(indicador_id, {"referral_coupon_granted_at": now_iso()})
+        recompensas.append("cupom")
+    fim = None
+    if ativas > INDICACAO_MAX_MESES:
+        recompensas.append("teto_de_meses")
+    elif indicador.get("plan") == "free" or indicador.get("subscription_status") in STATUS_PREPAGO:
+        fim = conceder_pro_prepago(indicador, 30 * INDICACAO_MESES_POR_INDICADO, "indicacao")
+        recompensas.append("mes_pro")
+    else:
+        recompensas.append("mes_pro_nao_aplicado_assinante")
+    with store.pool.connection() as conn:
+        conn.execute("update public.referrals set reward = %s where referred_id = %s",
+                     (",".join(recompensas), indicado["_id"]))
+    avisar_indicador(indicador, fim, "cupom" in recompensas)
+
+
+def avisar_indicador(indicador: dict, fim: datetime | None, cupom_novo: bool) -> bool:
+    email = normalize_email(indicador.get("email", ""))
+    if any(email.endswith(s) for s in EMAIL_AUTO_SUFIXOS_EXCLUIDOS):
+        return False
+    nome = (indicador.get("full_name") or "").split()[0] if indicador.get("full_name") else ""
+    linhas = [f"Olá, {nome}." if nome else "Olá.", "",
+              "Um colega que você indicou começou a usar o Recibo Táxi. Obrigado!", ""]
+    if fim:
+        linhas.append(f"Você ganhou {INDICACAO_MESES_POR_INDICADO} mês de Pro: recibos ilimitados até "
+                      f"{fim.astimezone(BR_TZ).strftime('%d/%m/%Y')}.")
+    if cupom_novo:
+        linhas.append(f"E o seu desconto de {INDICACAO_CUPOM_PCT}% por {INDICACAO_CUPOM_MESES} meses no "
+                      f"Pro mensal do site está liberado: é só assinar em {absolute_url('planos')} "
+                      "que ele entra sozinho.")
+    linhas += ["", f"Indique mais colegas em {absolute_url('indicar')}."]
+    try:
+        return send_email(email, "Seu colega começou a usar o Recibo Táxi", "\n".join(linhas), timeout=8)
+    except Exception as exc:
+        app.logger.error("Aviso de indicação para %s falhou: %s", indicador.get("_id"), exc)
+        return False
+
+
+def tem_cupom_de_indicacao(usuario: dict) -> bool:
+    return bool(usuario.get("referral_coupon_granted_at")) and not usuario.get("referral_coupon_used_at")
+
+
+def cupom_de_indicacao(stripe) -> str | None:
+    """Id do cupom na Stripe. Cria na primeira vez; None se a Stripe falhar."""
+    try:
+        stripe.Coupon.retrieve(INDICACAO_CUPOM_ID)
+        return INDICACAO_CUPOM_ID
+    except Exception:
+        pass
+    try:
+        stripe.Coupon.create(
+            id=INDICACAO_CUPOM_ID, percent_off=INDICACAO_CUPOM_PCT, duration="repeating",
+            duration_in_months=INDICACAO_CUPOM_MESES,
+            name=f"Indicação: {INDICACAO_CUPOM_PCT}% por {INDICACAO_CUPOM_MESES} meses")
+        return INDICACAO_CUPOM_ID
+    except Exception as exc:
+        app.logger.error("Cupom de indicação indisponível na Stripe: %s", exc)
+        return None
+
+
+def resumo_de_indicacoes(usuario: dict) -> dict:
+    """O que a página /indicar mostra: colegas indicados e o que já rendeu."""
+    with get_store().pool.connection() as conn:
+        linhas = conn.execute(
+            """select d.full_name, r.created_at, r.activated_at, r.reward
+                 from public.referrals r join public.drivers d on d.id = r.referred_id
+                where r.referrer_id = %s order by r.created_at desc limit 100""",
+            (usuario["_id"],)).fetchall()
+    colegas = []
+    for l in linhas:
+        partes = (l["full_name"] or "").split()
+        colegas.append({
+            "nome": (partes[0] + (f" {partes[-1][0]}." if len(partes) > 1 else "")) if partes else "(sem nome)",
+            "quando": l["created_at"], "ativo": bool(l["activated_at"]),
+            "meses": "mes_pro" in (l["reward"] or ""),
+        })
+    return {
+        "colegas": colegas,
+        "ativos": sum(1 for c in colegas if c["ativo"]),
+        "meses_ganhos": sum(1 for c in colegas if c["meses"]),
+        "cupom": "usado" if usuario.get("referral_coupon_used_at")
+                 else "liberado" if usuario.get("referral_coupon_granted_at") else "",
+    }
+
+
+@app.get("/indicar")
+def indicar():
+    """Código, link e regras do programa de indicação. Sem login mostra só as regras."""
+    if not g.user:
+        return render_template("indicar.html", resumo=None, codigo="", link="", whatsapp="")
+    codigo = codigo_de_indicacao(g.user)
+    return render_template(
+        "indicar.html", resumo=resumo_de_indicacoes(g.user), codigo=codigo,
+        link=link_de_indicacao(codigo),
+        whatsapp="https://wa.me/?text=" + quote(mensagem_de_indicacao(g.user, codigo)),
+        pro_until=_instante(g.user.get("pro_until")),
+    )
+
+
+@app.get("/oferta/anual")
+def oferta_anual():
+    """Pro anual pago uma vez, por Pix ou cartão. Não aparece no menu nem no app:
+    é o link que vai pelo WhatsApp e pelo e-mail de renovação."""
+    return render_template("oferta_anual.html",
+                           disponivel=bool(os.environ.get(STRIPE_PRICE_IDS["pro_anual_pix"], "").strip()),
+                           pro_until=_instante((g.user or {}).get("pro_until")))
 
 
 @app.post("/assinar/<plan>")
@@ -2273,7 +2607,13 @@ def iniciar_checkout(usuario: dict, plan: str):
     # paralela, cobrando duas vezes. Vale também para quem assinou pela loja —
     # antes só a Stripe era checada, e um Pro do app conseguia pagar de novo
     # aqui.
-    if usuario.get("plan") in PAID_PLANS:
+    # Pro pré-pago (anual por Pix ou mês de indicação) pode comprar de novo:
+    # outro ano soma ao fim do atual, e uma assinatura começa a valer já, com
+    # os dias pré-pagos guardados para quando ela acabar (é assim que quem
+    # ganhou o mês de indicação usa o cupom antes de o mês acabar). Assinante
+    # (Stripe ou loja) não — pagaria duas vezes pela mesma coisa.
+    prepago = usuario.get("subscription_status") in STATUS_PREPAGO
+    if usuario.get("plan") in PAID_PLANS and not prepago:
         # Exceção: mensal → anual na Stripe é troca de Price na assinatura que
         # já existe. O Stripe zera o ciclo, credita os dias não usados do mês e
         # cobra o ano na hora (always_invoice) — sem segunda assinatura.
@@ -2297,7 +2637,27 @@ def iniciar_checkout(usuario: dict, plan: str):
     # ou recibo-taxi.vercel.app): o cookie da sessão é de um domínio só, e
     # voltar para o outro deixava quem acabou de pagar deslogado.
     success_url = url_for("dashboard", subscribed=1, _external=True)
-    cancel_url = url_for("planos", _external=True)
+    cancel_url = url_for("oferta_anual" if plan in PLANOS_PREPAGOS else "planos", _external=True)
+
+    metadata = {"user_id": usuario["_id"], "plan": plano_base(plan),
+                "ciclo": PLAN_CYCLES.get(plan, "mensal")}
+    extras: dict = {}
+    if plan in PLANOS_PREPAGOS:
+        # Pagamento único: o webhook soma PRO_PREPAGO_DIAS ao pro_until.
+        metadata["modo"] = "prepago"
+        extras["mode"] = "payment"
+    else:
+        extras["mode"] = "subscription"
+        # Cupom de indicação: só no mensal, e só uma vez. A Stripe aplica os
+        # 12 meses sozinha; o webhook marca o cupom como usado.
+        if plan == "pro" and tem_cupom_de_indicacao(usuario):
+            cupom = cupom_de_indicacao(stripe)
+            if not cupom:
+                flash("Não conseguimos aplicar o seu desconto de indicação agora. "
+                      "Tente de novo em alguns instantes ou fale com o suporte.", "danger")
+                return redirect(url_for("planos"))
+            extras["discounts"] = [{"coupon": cupom}]
+            metadata["cupom"] = "indicacao"
 
     try:
         # Sem o parâmetro `customer`, o Checkout cria um Customer NOVO a cada
@@ -2319,15 +2679,14 @@ def iniciar_checkout(usuario: dict, plan: str):
         checkout = stripe.checkout.Session.create(
             customer=customer_id,
             line_items=[{"price": price_id, "quantity": 1}],
-            mode="subscription",
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={"user_id": usuario["_id"], "plan": plano_base(plan),
-                      "ciclo": PLAN_CYCLES.get(plan, "mensal")},
+            metadata=metadata,
             locale="pt-BR",
             # O domínio entra na chave: a mesma chave com outra success_url
             # seria recusada pela Stripe por "parâmetros diferentes".
             idempotency_key=f"assinar:{usuario['_id']}:{plan}:{request.host}",
+            **extras,
         )
     except Exception as exc:
         # A mensagem crua da Stripe pode conter identificadores internos.
@@ -2405,6 +2764,36 @@ def portal_cliente():
     return redirect(portal.url, code=303)
 
 
+def liberar_pro_prepago(obj: dict, evento: dict) -> tuple[str, str | None]:
+    """Checkout de pagamento único pago: soma um ano ao Pro do motorista.
+
+    Devolve (resultado, driver_id) para o registro de eventos. A sessão da
+    Stripe chega por dois eventos (completed e async_payment_succeeded) e a
+    Stripe reenvia o que não teve 200: o id da sessão vira um contador, e só
+    a primeira passagem soma os dias.
+    """
+    meta = obj.get("metadata") or {}
+    user_id = str(meta.get("user_id") or "")
+    if not user_id:
+        return "ignorado: sem_user_id", None
+    if (obj.get("payment_status") or "paid") != "paid":
+        return "aguardando_pagamento", None
+    store = get_store()
+    motorista = store.get_user_by_id(user_id)
+    if not motorista:
+        return "ignorado: motorista_desconhecido", None
+    if store.bump_counter(f"prepago:{obj.get('id') or evento.get('id')}") > 1:
+        return "repetido", motorista["_id"]
+    fim = conceder_pro_prepago(motorista, PRO_PREPAGO_DIAS, "prepago")
+    if obj.get("customer") and not motorista.get("stripe_customer_id"):
+        store.update_user(motorista["_id"], {"stripe_customer_id": obj["customer"]})
+    avisar_nova_assinatura(
+        motorista, "anual", "site (Pix ou cartão, pagamento único)",
+        valor_da_compra((obj.get("amount_total") or 0) / 100, obj.get("currency")),
+        teste=not evento.get("livemode", False), evento_id=str(evento.get("id") or ""))
+    return f"pro (pré-pago até {fim.astimezone(BR_TZ).strftime('%d/%m/%Y')})", motorista["_id"]
+
+
 @app.post("/webhook/stripe")
 def stripe_webhook():
     stripe = get_stripe()
@@ -2430,11 +2819,19 @@ def stripe_webhook():
     # O que foi feito e com quem, para o registro de eventos no fim.
     resultado, motorista_id = "sem_efeito", None
 
-    if tipo == "checkout.session.completed":
-        user_id = obj.get("metadata", {}).get("user_id")
+    meta_sessao = obj.get("metadata") or {}
+    sessao_prepaga = meta_sessao.get("modo") == "prepago" or obj.get("mode") == "payment"
+
+    if tipo in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and sessao_prepaga:
+        # Pix confirma em segundos, mas pode chegar como async_payment_succeeded
+        # depois de um completed ainda "unpaid"; os dois caem aqui.
+        resultado, motorista_id = liberar_pro_prepago(obj, evento)
+
+    elif tipo == "checkout.session.completed":
+        user_id = meta_sessao.get("user_id")
         # plano_base por segurança: um checkout antigo/manual com "pro_anual"
         # no metadata não pode gravar um plano que os gates não conhecem.
-        plan = plano_base(obj.get("metadata", {}).get("plan", "pro")) or "pro"
+        plan = plano_base(meta_sessao.get("plan", "pro")) or "pro"
         resultado = "ignorado: sem_user_id"
         if user_id:
             store.update_user(user_id, {
@@ -2442,21 +2839,24 @@ def stripe_webhook():
                 "stripe_customer_id": obj.get("customer"),
                 "stripe_subscription_id": obj.get("subscription"),
                 "subscription_status": "active",
+                # O cupom de indicação vale uma assinatura; a Stripe cuida dos 12 meses.
+                **({"referral_coupon_used_at": now_iso()} if meta_sessao.get("cupom") == "indicacao" else {}),
             })
             motorista = store.get_user_by_id(user_id)
             resultado = "ignorado: motorista_desconhecido"
             if motorista:
                 motorista_id, resultado = motorista["_id"], plan
-                meta = obj.get("metadata", {})
+                if meta_sessao.get("cupom") == "indicacao":
+                    resultado += " (cupom de indicação)"
                 avisar_nova_assinatura(
-                    motorista, "anual" if meta.get("ciclo") == "anual" else "mensal", "site (Stripe)",
+                    motorista, "anual" if meta_sessao.get("ciclo") == "anual" else "mensal", "site (Stripe)",
                     valor_da_compra((obj.get("amount_total") or 0) / 100, obj.get("currency")),
                     # Sem livemode = evento de teste (inclusive o da suíte).
                     teste=not evento.get("livemode", False), evento_id=str(evento.get("id") or ""))
         # "Pagamento único" literal: o anual não renova. O Stripe encerra no
         # fim dos 12 meses e o subscription.deleted abaixo derruba pra free.
         if (not ANUAL_RENOVA_AUTOMATICAMENTE
-                and obj.get("metadata", {}).get("ciclo") == "anual"
+                and meta_sessao.get("ciclo") == "anual"
                 and obj.get("subscription")):
             try:
                 stripe.Subscription.modify(obj["subscription"], cancel_at_period_end=True)
@@ -2467,12 +2867,18 @@ def stripe_webhook():
         user = store.get_user_by_stripe_customer(obj.get("customer"))
         resultado = "ignorado: cliente_desconhecido"
         if user:
-            store.update_user(user["_id"], {
-                "plan": "free",
-                "stripe_subscription_id": None,
-                "subscription_status": "canceled",
-            })
-            motorista_id, resultado = user["_id"], "free"
+            motorista_id = user["_id"]
+            if pro_prepago_vigente(user):
+                # Tinha dias pré-pagos guardados: a assinatura acabou, o Pro não.
+                store.update_user(user["_id"], {"stripe_subscription_id": None, "subscription_status": "prepago"})
+                resultado = "mantido_prepago"
+            else:
+                store.update_user(user["_id"], {
+                    "plan": "free",
+                    "stripe_subscription_id": None,
+                    "subscription_status": "canceled",
+                })
+                resultado = "free"
 
     elif tipo == "customer.subscription.updated":
         user = store.get_user_by_stripe_customer(obj.get("customer"))
@@ -2483,6 +2889,9 @@ def stripe_webhook():
             if status in ACTIVE_SUBSCRIPTION_STATUSES:
                 store.update_user(user["_id"], {"subscription_status": status})
                 resultado = f"status: {status}"
+            elif pro_prepago_vigente(user):
+                store.update_user(user["_id"], {"subscription_status": "prepago"})
+                resultado = f"mantido_prepago ({status})"
             else:
                 store.update_user(user["_id"], {
                     "plan": "free",
@@ -2675,6 +3084,11 @@ def api_cadastro():
     except ValueError as exc:
         return jsonify({"erro": "pais_ou_moeda_invalido", "mensagem": str(exc)}), 400
 
+    codigo_indicacao = str(dados.get("indicacao") or "").strip().upper()
+    indicador = get_store().get_user_by_referral_code(codigo_indicacao) if codigo_indicacao else None
+    if codigo_indicacao and not indicador:
+        return jsonify({"erro": "codigo_indicacao_invalido"}), 400
+
     try:
         user_id = auth_criar_usuario(
             campos["email"],
@@ -2693,6 +3107,7 @@ def api_cadastro():
     except RuntimeError:
         return jsonify({"erro": "indisponivel"}), 503
 
+    registrar_indicacao(indicador, user_id)
     avisar_novo_cadastro(user_id, {
         "email": campos["email"], "full_name": campos["nome_completo"], "whatsapp": campos["whatsapp"],
         "city": campos["cidade"], "plate": campos["placa"], "vehicle_model": campos["modelo_veiculo"],
@@ -2722,6 +3137,10 @@ def api_sessao():
             # escrevê-la, para o PDF sair igual à página do recibo.
             "pais": g.user.get("country") or PAIS_PADRAO,
             "moeda": moeda,
+            # Pro pré-pago (anual por Pix ou mês de indicação) vence; o app mostra a data.
+            "pro_until": g.user.get("pro_until") or None,
+            "codigo_indicacao": codigo_de_indicacao(g.user),
+            "link_indicacao": link_de_indicacao(codigo_de_indicacao(g.user)),
             "moeda_simbolo": simbolo,
             "moeda_casas": casas,
             "limite_mensal": None if plano in PAID_PLANS else FREE_MONTHLY_LIMIT,
@@ -2847,6 +3266,9 @@ def api_criar_recibo():
         if existente:
             return jsonify({"erro": "rid_de_outro_motorista"}), 409
         return jsonify({"erro": "limite_mensal", "limite": FREE_MONTHLY_LIMIT}), 402
+
+    if criado_agora:
+        ativar_indicacao(g.user)
 
     # O e-mail NAO sai daqui. Quem decide e o motorista, tocando em "Enviar por
     # e-mail" na tela do recibo (POST /api/recibos/<rid>/email). Preencher o
@@ -3347,6 +3769,11 @@ def webhook_revenuecat():
     elif tipo in RC_EVENTOS_ENCERRA:
         if pro_vem_da_stripe(usuario):
             resultado = "mantido_stripe"
+        elif pro_prepago_vigente(usuario):
+            # Dias pré-pagos guardados (anual por Pix ou mês de indicação)
+            # entram em vigor quando a assinatura da loja acaba.
+            store.update_user(user_id, {"subscription_status": "prepago"})
+            resultado = "mantido_prepago"
         else:
             store.update_user(user_id, {"plan": "free", "subscription_status": tipo.lower()})
             resultado = "free"
@@ -3394,6 +3821,15 @@ def tarefa_limpeza():
     counters_removed, counters_left = store.purge_counters_before(
         to_utc_iso(now - timedelta(days=COUNTER_RETENTION_DAYS)), CLEANUP_BATCH_LIMIT
     )
+    # Pro pré-pago (migração 0012): quem passou da data volta ao Grátis, e quem
+    # pagou o anual recebe o aviso de renovação 15 dias antes. Falha aqui não
+    # derruba a limpeza: vira log, e amanhã o cron tenta de novo.
+    pro_expirados = lembretes = 0
+    try:
+        pro_expirados = expirar_pro_prepago()
+        lembretes = lembrar_vencimento_prepago()
+    except Exception as exc:
+        app.logger.error("Pro pré-pago: expiração/lembretes falharam: %s", exc)
 
     incompleto = receipts_left or counters_left
     app.logger.info(
@@ -3407,6 +3843,8 @@ def tarefa_limpeza():
             "ok": True,
             "recibos_removidos": receipts_removed,
             "contadores_removidos": counters_removed,
+            "pro_expirados": pro_expirados,
+            "lembretes_enviados": lembretes,
             "backlog_restante": incompleto,
         }
     )
@@ -3898,12 +4336,12 @@ def email_descadastro(token: str):
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="12 de outubro de 2026")
+    return render_template("privacidade.html", updated_at="19 de outubro de 2026")
 
 
 @app.get("/termos")
 def termos():
-    return render_template("termos.html", updated_at="3 de outubro de 2026")
+    return render_template("termos.html", updated_at="19 de outubro de 2026")
 
 
 @app.get("/excluir-conta")
@@ -4766,6 +5204,16 @@ def admin_motorista(driver_id):
                         order by received_at desc, seq desc limit 30""", (did,)).fetchall()]
         except Exception:
             eventos = None  # migração 0011 ainda não aplicada
+        try:
+            with conn.transaction():
+                indicacoes = dict(conn.execute(
+                    """select count(*) as n, count(activated_at) as ativas
+                         from public.referrals where referrer_id = %s""", (did,)).fetchone())
+                indicacoes["por"] = conn.execute(
+                    "select id, full_name from public.drivers where id = %s",
+                    (perfil["referred_by"],)).fetchone() if perfil.get("referred_by") else None
+        except Exception:
+            indicacoes = None  # migração 0012 ainda não aplicada
     recibos = store.list_receipts_by_driver(did, limit=20)
     app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
     return render_template(
@@ -4774,7 +5222,7 @@ def admin_motorista(driver_id):
         or formatar_valor(0),
         sessoes=sessoes, emails_hoje=(emails_hoje or {}).get("count", 0), recibos=recibos,
         automacao=dict(automacao) if automacao else None,
-        eventos=eventos,
+        eventos=eventos, indicacoes=indicacoes,
         limite=FREE_MONTHLY_LIMIT,
     )
 

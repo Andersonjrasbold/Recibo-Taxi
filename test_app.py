@@ -51,12 +51,17 @@ def limpar_contas_de_teste():
       3. contadores de rate limit -> senao a segunda execucao ja nasce no teto
     """
     removidas = 0
-    for u in A.supabase_admin().auth.admin.list_users():
-        if (u.email or "").endswith(DOMINIO_TESTE):
-            A.supabase_admin().auth.admin.delete_user(str(u.id))
-            removidas += 1
-
     store = A.get_store()
+    # Pelo banco, nao por list_users(): a API do Auth pagina (50 por pagina)
+    # e, com mais de 50 usuarios, deixava contas de teste para tras — em
+    # 2026-10-19, com 80 usuarios, 5 contas da suite ficaram em producao.
+    with store.pool.connection() as conn:
+        ids = [str(r["id"]) for r in conn.execute(
+            "select id from auth.users where email like %s", (f"%{DOMINIO_TESTE}",)).fetchall()]
+    for uid in ids:
+        A.supabase_admin().auth.admin.delete_user(uid)
+        removidas += 1
+
     if getattr(store, "kind", "") == "postgres":
         with store.pool.connection() as conn:
             # Recibos sem conta montados a mao pela suite usam 'Teste' como
@@ -2273,6 +2278,268 @@ finally:
         os.environ.pop("REVENUECAT_WEBHOOK_SECRET", None)
     else:
         os.environ["REVENUECAT_WEBHOOK_SECRET"] = _seg_rc2
+
+# -- Indicacao e Pro pre-pago (migracao 0012) --------------------------------
+# Duas formas de Pro que nao sao assinatura: o anual pago uma vez (Pix ou
+# cartao, fora das lojas) e o mes ganho por indicar um colega que emitiu o
+# primeiro recibo. As duas vivem em drivers.pro_until; o cron rebaixa.
+print("\n-- Indicacao e Pro pre-pago --")
+_suf_in = os.urandom(3).hex()
+_send_in, _stripe_in_orig = A.send_email, A.get_stripe
+_env_in = {k: os.environ.get(k) for k in ("STRIPE_PRO_PRICE_ID", "STRIPE_PRO_ANUAL_PIX_PRICE_ID", "CRON_SECRET",
+                                           "REVENUECAT_WEBHOOK_SECRET")}
+_avisos_in = []
+A.send_email = lambda para, assunto, corpo, timeout=15: _avisos_in.append((para, assunto, corpo)) or True
+_agora_in = A.datetime.now(A.timezone.utc)
+_dias = lambda iso: (A._instante(iso) - _agora_in).days if iso else None
+
+
+class _StripeIn:
+    """Stripe de mentira com cupom: anota sessoes e cupons criados."""
+    def __init__(self):
+        self.sessoes, self.cupons = [], []
+        falso = self
+
+        class _Customer:
+            @staticmethod
+            def create(**kw):
+                return type("C", (), {"id": f"cus_in_{_suf_in}_{len(falso.sessoes)}"})()
+
+        class _Session:
+            @staticmethod
+            def create(**kw):
+                falso.sessoes.append(kw)
+                return type("S", (), {"url": "https://checkout.stripe.com/c/pay/cs_falso"})()
+
+        class _Coupon:
+            @staticmethod
+            def retrieve(cid):
+                if not any(c["id"] == cid for c in falso.cupons):
+                    raise Exception("No such coupon")
+                return {"id": cid}
+
+            @staticmethod
+            def create(**kw):
+                falso.cupons.append(kw)
+                return kw
+
+        self.Customer, self.Coupon = _Customer, _Coupon
+        self.checkout = type("K", (), {"Session": _Session})
+
+
+_sf_in = _StripeIn()
+A.get_stripe = lambda: _sf_in
+os.environ["STRIPE_PRO_PRICE_ID"] = "price_falso_mensal"
+os.environ["STRIPE_PRO_ANUAL_PIX_PRICE_ID"] = "price_falso_pix"
+try:
+    _email_ind = f"indicador-{_suf_in}@teste.invalid"
+    _ci = novo_cliente(_email_ind)
+    _ind = store.get_user_by_email(_email_ind)
+    check("quem nunca indicou nao tem codigo", not _ind["referral_code"])
+    h = _ci.get("/indicar").get_data(as_text=True)
+    _cod = store.get_user_by_email(_email_ind)["referral_code"] or ""
+    check("a pagina de indicacao gera o codigo", len(_cod) == A.INDICACAO_TAMANHO and _cod in h, repr(_cod))
+    check("o codigo nao muda na segunda visita", _cod in _ci.get("/indicar").get_data(as_text=True)
+          and store.get_user_by_email(_email_ind)["referral_code"] == _cod)
+    check("a pagina traz o link com o codigo e o botao do WhatsApp",
+          f"/cadastro?indicacao={_cod}" in h and "wa.me/?text=" in h and "Como funciona" in h)
+    check("sem login, /indicar mostra as regras e convida a criar conta",
+          "Como funciona" in A.app.test_client().get("/indicar").get_data(as_text=True))
+    check("o link preenche o codigo no cadastro",
+          f'value="{_cod}"' in A.app.test_client().get(f"/cadastro?indicacao={_cod}").get_data(as_text=True))
+    r = A.app.test_client().post("/cadastro", data=dict(_dados_pg, nome_completo="Errado",
+                                                        email=f"errado-{_suf_in}@teste.invalid", indicacao="ZZZZZZ"))
+    check("codigo de indicacao inexistente e recusado",
+          r.status_code == 400 and not store.get_user_by_email(f"errado-{_suf_in}@teste.invalid"), r.status_code)
+
+    def _indicado(n, codigo=None):
+        c = A.app.test_client()
+        c.post("/cadastro", data=dict(_dados_pg, nome_completo=f"Indicado {n} Silva",
+                                      email=f"indicado{n}-{_suf_in}@teste.invalid", indicacao=codigo or _cod.lower()))
+        return c, store.get_user_by_email(f"indicado{n}-{_suf_in}@teste.invalid")
+
+    def _referral(did):
+        with store.pool.connection() as conn:
+            return conn.execute("select activated_at, reward from public.referrals where referred_id = %s", (did,)).fetchone()
+
+    _recibo = {"passageiro": "P", "data": "2026-10-19", "origem": "A", "destino": "B", "valor": "10,00"}
+    _c1, _i1 = _indicado(1)
+    check("cadastro com o codigo (em minusculas) liga ao indicador",
+          _i1 is not None and _i1["referred_by"] == _ind["_id"], str(_i1 and _i1.get("referred_by")))
+    check("a indicacao fica registrada, ainda nao ativada",
+          _referral(_i1["_id"]) is not None and _referral(_i1["_id"])["activated_at"] is None)
+    check("so o cadastro nao rende nada", store.get_user_by_id(_ind["_id"])["plan"] == "free")
+
+    _c1.post("/recibo", data=_recibo)
+    _ind2 = store.get_user_by_id(_ind["_id"])
+    check("primeiro recibo do indicado: indicador vira Pro por um mes",
+          _ind2["plan"] == "pro" and _ind2["subscription_status"] == "indicacao" and _dias(_ind2["pro_until"]) in (29, 30),
+          str((_ind2["plan"], _ind2["subscription_status"], _ind2["pro_until"])))
+    check("...e ganha o cupom", bool(_ind2["referral_coupon_granted_at"]) and not _ind2["referral_coupon_used_at"])
+    _ref1 = _referral(_i1["_id"])
+    check("a indicacao fica ativada com a recompensa anotada",
+          _ref1["activated_at"] is not None and "mes_pro" in _ref1["reward"] and "cupom" in _ref1["reward"], str(_ref1))
+    check("contas de teste nao recebem o e-mail de recompensa", not any(p == _email_ind for p, _, _ in _avisos_in))
+    _c1.post("/recibo", data=_recibo)
+    check("segundo recibo do mesmo indicado nao rende de novo",
+          store.get_user_by_id(_ind["_id"])["pro_until"] == _ind2["pro_until"])
+    h = _ci.get("/indicar").get_data(as_text=True)
+    check("a pagina mostra o colega ativo e o mes ganho", "já emitiu recibo" in h and f"1 de {A.INDICACAO_MAX_MESES}" in h)
+    h = _ci.get("/dashboard").get_data(as_text=True)
+    check("o painel mostra o Pro ate a data e o botao de renovar", "Plano Pro · até" in h and "Renovar o Pro" in h)
+
+    for _n in (2, 3, 4):
+        _cn, _ = _indicado(_n)
+        _cn.post("/recibo", data=_recibo)
+    _ind3 = store.get_user_by_id(_ind["_id"])
+    check("tres colegas ativos = tres meses, somados", _dias(_ind3["pro_until"]) in (89, 90), str(_ind3["pro_until"]))
+    with store.pool.connection() as conn:
+        _rewards = [l["reward"] for l in conn.execute(
+            "select reward from public.referrals where referrer_id = %s order by created_at", (_ind["_id"],)).fetchall()]
+    check("o quarto colega conta, mas bate no teto de meses",
+          len(_rewards) == 4 and _rewards[-1] == "teto_de_meses", str(_rewards))
+    check("o resumo conta os colegas e os meses", f"{A.INDICACAO_MAX_MESES} de {A.INDICACAO_MAX_MESES}"
+          in _ci.get("/indicar").get_data(as_text=True))
+
+    _email_ass = f"assinante-{_suf_in}@teste.invalid"
+    _ca = novo_cliente(_email_ass)
+    _ass = store.get_user_by_email(_email_ass)
+    store.update_user(_ass["_id"], {"plan": "pro", "subscription_status": "active",
+                                    "stripe_customer_id": f"cus_ass_{_suf_in}", "stripe_subscription_id": f"sub_ass_{_suf_in}"})
+    _ca.get("/indicar")
+    _cA, _ = _indicado("A", store.get_user_by_id(_ass["_id"])["referral_code"])
+    _cA.post("/recibo", data=_recibo)
+    _ass2 = store.get_user_by_id(_ass["_id"])
+    check("assinante que indica ganha o cupom, mas nao o mes (ja e Pro)",
+          bool(_ass2["referral_coupon_granted_at"]) and not _ass2["pro_until"] and _ass2["subscription_status"] == "active",
+          str((_ass2["referral_coupon_granted_at"], _ass2["pro_until"], _ass2["subscription_status"])))
+
+    # Cupom de 70% no checkout do mensal, mesmo com o mes de indicacao correndo.
+    r = _ci.post("/assinar/pro")
+    _s = _sf_in.sessoes[-1] if _sf_in.sessoes else {}
+    check("checkout do mensal leva o cupom de indicacao",
+          r.status_code == 303 and _s.get("discounts") == [{"coupon": A.INDICACAO_CUPOM_ID}]
+          and _s.get("metadata", {}).get("cupom") == "indicacao" and _s.get("mode") == "subscription",
+          f"{r.status_code} {_s.get('discounts')} {_s.get('mode')}")
+    check("o cupom e criado na Stripe com 70% por 12 meses",
+          bool(_sf_in.cupons) and _sf_in.cupons[0]["percent_off"] == 70 and _sf_in.cupons[0]["duration_in_months"] == 12
+          and _sf_in.cupons[0]["duration"] == "repeating", str(_sf_in.cupons))
+    _n_s = len(_sf_in.sessoes)
+    _c1.post("/assinar/pro")
+    check("quem nao tem cupom nao leva desconto",
+          len(_sf_in.sessoes) == _n_s + 1 and "discounts" not in _sf_in.sessoes[-1])
+
+    # Pro anual por Pix: oferta, checkout de pagamento unico e webhook.
+    h = _c1.get("/oferta/anual").get_data(as_text=True)
+    check("a oferta anual mostra o preco, o botao e pede noindex",
+          A.PRECO_PRO_ANUAL_PIX.split()[1] in h and "/assinar/pro_anual_pix" in h and 'content="noindex' in h)
+    r = _c1.post("/assinar/pro_anual_pix")
+    _s = _sf_in.sessoes[-1]
+    check("checkout do anual por Pix e pagamento unico",
+          r.status_code == 303 and _s.get("mode") == "payment" and _s["metadata"].get("modo") == "prepago"
+          and _s["line_items"][0]["price"] == "price_falso_pix" and "discounts" not in _s, str(_s.get("mode")))
+    check("cancelar o pagamento volta para a oferta", "/oferta/anual" in _s.get("cancel_url", ""))
+    _obj = {"id": f"cs_in_{_suf_in}", "mode": "payment", "payment_status": "paid", "customer": f"cus_pix_{_suf_in}",
+            "amount_total": 5990, "currency": "brl",
+            "metadata": {"user_id": _i1["_id"], "plan": "pro", "ciclo": "anual", "modo": "prepago"}}
+    _res, _did = A.liberar_pro_prepago(_obj, {"id": f"evt_in_{_suf_in}", "livemode": False})
+    _i1b = store.get_user_by_id(_i1["_id"])
+    check("pagamento unico confirmado: Pro pre-pago por 365 dias",
+          _res.startswith("pro") and _did == _i1["_id"] and _i1b["plan"] == "pro"
+          and _i1b["subscription_status"] == "prepago" and _dias(_i1b["pro_until"]) in (364, 365),
+          str((_res, _i1b["subscription_status"], _i1b["pro_until"])))
+    # O indicado ja tinha cliente na Stripe (do checkout do mensal acima); o do
+    # pagamento unico nao substitui, senao o portal perderia as faturas antigas.
+    check("o motorista fica com um cliente na Stripe", bool(_i1b["stripe_customer_id"]))
+    _res2, _ = A.liberar_pro_prepago(_obj, {"id": f"evt_in2_{_suf_in}", "livemode": False})
+    check("o segundo evento da mesma sessao nao soma de novo",
+          _res2 == "repetido" and store.get_user_by_id(_i1["_id"])["pro_until"] == _i1b["pro_until"], _res2)
+    _res3, _ = A.liberar_pro_prepago(dict(_obj, id=f"cs_np_{_suf_in}", payment_status="unpaid"), {"id": "e", "livemode": False})
+    check("Pix ainda nao pago nao libera", _res3 == "aguardando_pagamento", _res3)
+    A.liberar_pro_prepago(dict(_obj, id=f"cs_in3_{_suf_in}"), {"id": f"evt_in3_{_suf_in}", "livemode": False})
+    check("renovar antes do fim soma 365 dias ao prazo que falta",
+          _dias(store.get_user_by_id(_i1["_id"])["pro_until"]) in (729, 730),
+          str(store.get_user_by_id(_i1["_id"])["pro_until"]))
+    h = _c1.get("/oferta/anual").get_data(as_text=True)
+    check("a oferta mostra ate quando vale e que renovar soma", "Seu Pro vale até" in h)
+    _sess = _c1.get("/api/sessao").get_json() or {}
+    check("/api/sessao traz pro_until e o codigo de indicacao",
+          bool(_sess.get("pro_until")) and len(_sess.get("codigo_indicacao") or "") == A.INDICACAO_TAMANHO
+          and "/cadastro?indicacao=" in (_sess.get("link_indicacao") or ""), str(_sess.get("codigo_indicacao")))
+
+    # Pre-pago vigente segura o Pro quando a loja ou a Stripe mandam encerrar.
+    os.environ["REVENUECAT_WEBHOOK_SECRET"] = "segredo-de-teste-123"
+    r = A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                                 json={"event": {"type": "EXPIRATION", "id": f"teste-suite-{_suf_in}-exp",
+                                                 "app_user_id": _i1["_id"], "store": "APP_STORE"}})
+    check("EXPIRATION da loja nao derruba quem tem pre-pago vigente",
+          r.status_code == 200 and (r.get_json() or {}).get("resultado") == "mantido_prepago"
+          and store.get_user_by_id(_i1["_id"])["plan"] == "pro", str(r.get_json()))
+
+    # Cron: vencido volta ao Gratis; assinante com data velha guardada fica; lembrete 15 dias antes.
+    _email_ven, _email_lem, _email_loja = (f"{n}-{_suf_in}@teste.invalid" for n in ("vencido", "lembrete", "loja"))
+    for _e in (_email_ven, _email_lem, _email_loja):
+        novo_cliente(_e)
+    _ven, _lem, _loja = (store.get_user_by_email(e) for e in (_email_ven, _email_lem, _email_loja))
+    store.update_user(_ven["_id"], {"plan": "pro", "subscription_status": "prepago",
+                                    "pro_until": A.to_utc_iso(_agora_in - A.timedelta(days=1))})
+    store.update_user(_lem["_id"], {"plan": "pro", "subscription_status": "prepago",
+                                    "pro_until": A.to_utc_iso(_agora_in + A.timedelta(days=15))})
+    store.update_user(_loja["_id"], {"plan": "pro", "subscription_status": "active",
+                                     "pro_until": A.to_utc_iso(_agora_in - A.timedelta(days=1))})
+    os.environ["CRON_SECRET"] = "segredo-de-teste"
+    r = A.app.test_client().get("/tarefas/limpeza", headers={"Authorization": "Bearer segredo-de-teste"})
+    _j = r.get_json() or {}
+    _ven2 = store.get_user_by_id(_ven["_id"])
+    check("cron rebaixa o pre-pago vencido",
+          _ven2["plan"] == "free" and _ven2["subscription_status"] == "expirado" and _j.get("pro_expirados", 0) >= 1,
+          str((_ven2["plan"], _ven2["subscription_status"], _j.get("pro_expirados"))))
+    check("cron nao mexe em assinante com data velha guardada", store.get_user_by_id(_loja["_id"])["plan"] == "pro")
+    check("cron nao mexe em quem ainda tem dias", store.get_user_by_id(_lem["_id"])["plan"] == "pro")
+    # O lembrete pula contas de teste; para testar, libera o sufixo por um instante.
+    _suf_orig = A.EMAIL_AUTO_SUFIXOS_EXCLUIDOS
+    A.EMAIL_AUTO_SUFIXOS_EXCLUIDOS = ("@recibotaxi.com.br",)
+    try:
+        # Direto, sem o cron: precisa do contexto de requisicao que o cron tem (url_for).
+        with A.app.test_request_context("/"):
+            _n1 = A.lembrar_vencimento_prepago()
+            _n2 = A.lembrar_vencimento_prepago()
+    finally:
+        A.EMAIL_AUTO_SUFIXOS_EXCLUIDOS = _suf_orig
+    _lem2 = store.get_user_by_id(_lem["_id"])
+    check("lembrete sai 15 dias antes, uma vez so",
+          _n1 >= 1 and _n2 == 0 and bool(_lem2["pro_reminder_sent_at"])
+          and any(p == _email_lem and "/oferta/anual" in c for p, _, c in _avisos_in), str((_n1, _n2)))
+
+    # API do app: cadastro com codigo.
+    r = A.app.test_client().post("/api/cadastro", json={
+        "nome_completo": "Via App", "email": f"viaapp-{_suf_in}@teste.invalid", "senha": "senha12345",
+        "whatsapp": "1", "cpf": "1", "cidade": "c", "placa": "p", "indicacao": _cod})
+    _va = store.get_user_by_email(f"viaapp-{_suf_in}@teste.invalid")
+    check("app: cadastro com codigo liga ao indicador", r.status_code == 201 and _va and _va["referred_by"] == _ind["_id"],
+          str(r.status_code))
+    r = A.app.test_client().post("/api/cadastro", json={
+        "nome_completo": "Via App 2", "email": f"viaapp2-{_suf_in}@teste.invalid", "senha": "senha12345",
+        "whatsapp": "1", "cpf": "1", "cidade": "c", "placa": "p", "indicacao": "NOPE"})
+    check("app: codigo errado e recusado", r.status_code == 400 and (r.get_json() or {}).get("erro") == "codigo_indicacao_invalido")
+
+    # Painel: ficha mostra quem indicou quem e o pre-pago.
+    _cadm3 = A.app.test_client()
+    _email_adm3 = f"admin-in-{_suf_in}@teste.invalid"
+    A.get_store().upsert_admin(_email_adm3, _gph("1234"))
+    _cadm3.post("/admin/login", data={"email": _email_adm3, "senha": "1234"}, environ_base={"REMOTE_ADDR": "203.0.113.252"})
+    _fi = _cadm3.get(f"/admin/motoristas/{_i1['_id']}").get_data(as_text=True)
+    check("ficha do indicado mostra quem indicou e o pre-pago", "Indicado por" in _fi and "Ana Souza" in _fi and "Pro pré-pago até" in _fi)
+    _fo = _cadm3.get(f"/admin/motoristas/{_ind['_id']}").get_data(as_text=True)
+    # 4 pelo site (todos com recibo) + 1 pelo app (sem recibo).
+    check("ficha do indicador conta os colegas", "5 colega(s), 4 com recibo" in _fo and _cod in _fo)
+finally:
+    A.send_email, A.get_stripe = _send_in, _stripe_in_orig
+    for _k, _v in _env_in.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

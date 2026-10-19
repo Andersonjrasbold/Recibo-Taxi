@@ -85,6 +85,7 @@ reservadas para documentação.
 | `STRIPE_SECRET_KEY` | para cobrar | Vazio desativa o checkout |
 | `STRIPE_PUBLISHABLE_KEY` | para cobrar | — |
 | `STRIPE_WEBHOOK_SECRET` | para cobrar | Valida a assinatura do webhook |
+| `STRIPE_PRO_ANUAL_PIX_PRICE_ID` | oferta anual por Pix | Price de pagamento único (`mode=payment`); sem ele a página /oferta/anual diz "indisponível" |
 | `STRIPE_PRO_PRICE_ID` | para cobrar | Preço do plano Pro |
 | `RESEND_API_KEY` | para o reset de senha | Vazio: cai para SMTP |
 | `EMAIL_FROM` | recomendada | Remetente. Exige domínio verificado no Resend |
@@ -110,6 +111,8 @@ Schema em `supabase/migrations/`. Tabelas principais:
   (migração 0007; ver a seção própria)
 - `billing_events` — webhooks do RevenueCat e da Stripe como chegaram, e o
   que o servidor fez com cada um (migração 0011; ver "Planos")
+- `referrals` — quem indicou quem e quando o indicado emitiu o 1º recibo
+  (migração 0012; ver "Planos")
 
 **Toda tabela de `public` tem RLS ligado e nenhuma policy** (migração 0006). O
 app conecta como `postgres`, dono das tabelas, e não é afetado; o que o RLS
@@ -288,6 +291,24 @@ destino é desconhecido (anônimo), ninguém é rebaixado — quem perdeu contin
 sendo cobrado pela loja. Evento da loja nunca rebaixa quem tem assinatura
 ATIVA na Stripe (`stripe_subscription_id`); o `stripe_customer_id` sozinho
 fica depois do cancelamento e não conta.
+
+**Pro pré-pago e indicação** (migração 0012): duas formas de Pro que não são
+assinatura vivem em `drivers.pro_until`, e o cron diário (`/tarefas/limpeza`)
+rebaixa quem passou da data (`subscription_status` `prepago`/`indicacao` →
+`expirado`). (1) **Anual por Pix**: `/oferta/anual` (noindex, fora do menu e do
+app — regra 3.1.3(b) da Apple) abre um checkout `mode=payment`; o webhook soma
+`PRO_PREPAGO_DIAS` ao `pro_until` (renovar antes do fim soma ao que falta), com
+o id da sessão como contador para o par completed/async_payment_succeeded não
+somar duas vezes; lembrete por e-mail 15 dias antes, uma vez. (2)
+**Indicação**: código por motorista (`referral_code`, gerado na primeira vez
+que `/indicar` ou `/api/sessao` o pede), campo no cadastro (site; app na
+próxima versão), tabela `referrals`; o primeiro recibo do indicado ativa a
+recompensa (`UPDATE ... where activated_at is null`): 1 mês de Pro por colega
+ativo (até 3; assinante não recebe, cupom fica guardado) e o cupom
+`INDICACAO70` (70% por 12 meses, criado na Stripe sob demanda), aplicado no
+checkout do Pro mensal e marcado como usado pelo webhook. Pré-pago vigente
+segura o Pro quando a loja ou a Stripe encerram a assinatura. Regras em
+`/indicar` e nos Termos (6.7 e 6.8).
 
 **Eventos de cobrança** (`billing_events`, migração 0011): os dois webhooks
 gravam cada evento como chegou e o que o servidor fez (`outcome`: `pro`,

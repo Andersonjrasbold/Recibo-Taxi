@@ -38,6 +38,9 @@
         {% if m.stripe_customer_id %}<tr><td>Cliente Stripe</td><td><a class="adm-link" href="https://dashboard.stripe.com/customers/{{ m.stripe_customer_id }}" target="_blank" rel="noopener noreferrer">{{ m.stripe_customer_id }}</a></td></tr>{% endif %}
         {% if m.stripe_subscription_id %}<tr><td>Assinatura Stripe</td><td><a class="adm-link" href="https://dashboard.stripe.com/subscriptions/{{ m.stripe_subscription_id }}" target="_blank" rel="noopener noreferrer">{{ m.stripe_subscription_id }}</a></td></tr>{% endif %}
         <tr><td>Última alteração</td><td>{{ m.updated_at | data_br }}</td></tr>
+        {% if m.pro_until %}<tr><td>Pro pré-pago até</td><td>{{ m.pro_until | data_br(false) }}{% if m.subscription_status not in ('prepago', 'indicacao') %} <small class="adm-suave">(guardado; vale quando a assinatura acabar)</small>{% endif %}</td></tr>{% endif %}
+        <tr><td>Indicado por</td><td>{% if indicacoes is none %}-{% elif indicacoes.por %}<a href="{{ url_for('admin_motorista', driver_id=indicacoes.por.id) }}" class="adm-link">{{ indicacoes.por.full_name }}</a>{% else %}ninguém{% endif %}</td></tr>
+        <tr><td>Indicou</td><td>{% if indicacoes is none %}-{% else %}{{ indicacoes.n }} colega(s), {{ indicacoes.ativas }} com recibo · cupom {% if m.referral_coupon_used_at %}usado{% elif m.referral_coupon_granted_at %}liberado{% else %}não{% endif %}{% if m.referral_code %} · código <code>{{ m.referral_code }}</code>{% endif %}{% endif %}</td></tr>
       </table>
       <h3 class="adm-h3 mt-3">Eventos de cobrança</h3>
       {% if eventos is none %}{{ ui.indisponivel() }}{% else %}

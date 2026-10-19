@@ -116,6 +116,7 @@
                 <tr><td>Grátis</td><td>R$ 0,00</td><td>Até {{ free_monthly_limit }} recibos salvos por mês</td></tr>
                 <tr><td>Pro</td><td>R$ 19,90/mês</td><td>Ilimitado</td></tr>
                 <tr><td>Pro anual</td><td>R$ 119,90/ano, em pagamento único (quase metade do valor de 12 mensalidades)</td><td>Ilimitado</td></tr>
+                <tr><td>Pro anual por Pix (oferta)</td><td>{{ preco_pro_anual_pix }} por 12 meses, pagamento único por Pix ou cartão, sem renovação automática (item 6.7)</td><td>Ilimitado</td></tr>
               </tbody>
             </table>
           </div>
@@ -169,6 +170,24 @@
             Podemos alterar os preços com aviso de pelo menos 30 dias por e-mail. O novo valor só
             vale para as renovações seguintes ao aviso, e você pode cancelar antes disso.
           </p>
+
+          <h3 class="legal-h3">6.7 Pro anual por pagamento único (Pix ou cartão)</h3>
+          <ul class="legal-list">
+            <li>É uma oferta à parte, contratada pelo site ({{ preco_pro_anual_pix }}). Dá acesso ao Pro por <strong>12 meses contados do pagamento</strong>.</li>
+            <li><strong>Não renova automaticamente.</strong> No fim do prazo a conta volta ao plano Grátis; avisamos por e-mail cerca de 15 dias antes.</li>
+            <li>Renovar antes do fim soma 12 meses ao prazo que ainda falta: nenhum dia pago se perde.</li>
+            <li>Vale o direito de arrependimento do item 6.4. Fora dele, não há reembolso proporcional.</li>
+            <li>Quem já assina o Pro (pelo site ou pelas lojas) não pode contratar esta oferta sem antes cancelar a assinatura, para não pagar duas vezes.</li>
+          </ul>
+
+          <h3 class="legal-h3">6.8 Programa de indicação</h3>
+          <ul class="legal-list">
+            <li>Cada motorista tem um código. Quem cria a conta com ele fica ligado a quem indicou.</li>
+            <li>A recompensa libera quando o indicado <strong>emite o primeiro recibo</strong>: quem indicou ganha {{ indicacao.meses_por_indicado }} mês de Pro por colega ativo, até {{ indicacao.max_meses }} meses, e um desconto de {{ indicacao.pct }}% por {{ indicacao.meses_cupom }} meses no Pro mensal contratado pelo site, uma vez por motorista.</li>
+            <li>Os meses de Pro ganhos não são assinatura: têm data de fim, somam-se entre si e não geram cobrança. Quem já assina o Pro não recebe o mês grátis.</li>
+            <li>Contas criadas só para obter a recompensa (sem uso real, dados falsos ou repetidos) podem ser removidas junto com a recompensa.</li>
+            <li>O programa pode ser alterado ou encerrado a qualquer momento, com aviso no site. O que já foi concedido continua valendo até o fim do prazo.</li>
+          </ul>
 
           <h2 class="legal-h2">7. Encerramento da conta</h2>
           <ul class="legal-list">

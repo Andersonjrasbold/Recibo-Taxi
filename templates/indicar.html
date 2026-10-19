@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Indique um colega{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+  <div class="row justify-content-center">
+    <div class="col-lg-8 col-xl-7">
+
+      {% if current_user %}
+      <div class="mb-3">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-back-dash">
+          <i class="bi bi-arrow-left me-1"></i>Voltar ao painel
+        </a>
+      </div>
+      {% endif %}
+
+      <div class="db-card">
+        <div class="db-card-header">
+          <h1 class="db-card-title"><i class="bi bi-people-fill me-2"></i>Indique um colega</h1>
+        </div>
+
+        <p class="mb-4">
+          Cada colega que se cadastra com o seu código e emite o primeiro recibo rende
+          <strong>{{ indicacao.meses_por_indicado }} mês de Pro grátis</strong> para você
+          (até {{ indicacao.max_meses }} meses) e libera o seu
+          <strong>desconto de {{ indicacao.pct }}% por {{ indicacao.meses_cupom }} meses</strong>
+          no Pro mensal do site.
+        </p>
+
+        {% if current_user %}
+        <div class="row g-3 mb-4">
+          <div class="col-md-5">
+            <label class="form-label-db" for="codigo">Seu código</label>
+            <input type="text" id="codigo" class="form-control form-control-db mono" value="{{ codigo }}" readonly>
+          </div>
+          <div class="col-md-7">
+            <label class="form-label-db" for="link">Seu link</label>
+            <div class="d-flex gap-2">
+              <input type="text" id="link" class="form-control form-control-db" value="{{ link }}" readonly>
+              <button type="button" class="btn btn-manage-plan" id="btn-copiar" title="Copiar link">
+                <i class="bi bi-clipboard"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+        <a href="{{ whatsapp }}" target="_blank" rel="noopener" class="btn btn-generate w-100 mb-4">
+          <i class="bi bi-whatsapp me-2"></i>Indicar pelo WhatsApp
+        </a>
+
+        <h2 class="db-card-title mb-3"><i class="bi bi-gift-fill me-2"></i>O que já rendeu</h2>
+        <div class="profile-grid-db mb-4">
+          <div class="profile-item">
+            <span class="profile-item-label">Colegas indicados</span>
+            <span class="profile-item-value">{{ resumo.colegas | length }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">Já emitiram recibo</span>
+            <span class="profile-item-value">{{ resumo.ativos }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">Meses de Pro ganhos</span>
+            <span class="profile-item-value">{{ resumo.meses_ganhos }} de {{ indicacao.max_meses }}</span>
+          </div>
+          <div class="profile-item">
+            <span class="profile-item-label">Desconto de {{ indicacao.pct }}%</span>
+            <span class="profile-item-value">
+              {% if resumo.cupom == 'usado' %}em uso na sua assinatura
+              {% elif resumo.cupom == 'liberado' %}liberado: <a href="{{ url_for('planos') }}">assinar o Pro mensal</a>
+              {% else %}ainda não{% endif %}
+            </span>
+          </div>
+          {% if pro_until %}
+          <div class="profile-item">
+            <span class="profile-item-label">Seu Pro vale até</span>
+            <span class="profile-item-value">{{ pro_until | data_br(false) }}</span>
+          </div>
+          {% endif %}
+        </div>
+
+        {% if resumo.colegas %}
+        <table class="table table-sm align-middle">
+          <thead><tr><th>Colega</th><th>Cadastro</th><th>Situação</th></tr></thead>
+          <tbody>
+            {% for c in resumo.colegas %}
+            <tr>
+              <td>{{ c.nome }}</td>
+              <td>{{ c.quando | data_br(false) }}</td>
+              <td>{% if c.ativo %}<span class="text-success"><i class="bi bi-check-circle-fill me-1"></i>já emitiu recibo</span>{% else %}<span class="text-muted">ainda não emitiu recibo</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="danger-text">Ninguém se cadastrou com o seu código ainda. Mande o link para um colega de ponto.</p>
+        {% endif %}
+        {% else %}
+        <div class="d-flex gap-2 flex-wrap mb-4">
+          <a href="{{ url_for('cadastro') }}" class="btn btn-generate">
+            <i class="bi bi-person-plus-fill me-2"></i>Criar conta grátis
+          </a>
+          <a href="{{ url_for('login') }}" class="btn btn-manage-plan">Entrar para ver meu código</a>
+        </div>
+        {% endif %}
+
+        <h2 class="db-card-title mt-4 mb-2"><i class="bi bi-list-check me-2"></i>Como funciona</h2>
+        <ul class="legal-list">
+          <li>O colega cria a conta com o seu código (no site, no campo "Código de indicação"; no app, na próxima versão).</li>
+          <li>A recompensa libera quando ele <strong>emite o primeiro recibo</strong>, não no cadastro.</li>
+          <li>Você ganha {{ indicacao.meses_por_indicado }} mês de Pro por colega ativo, até {{ indicacao.max_meses }} meses. Os meses somam: quem já tem Pro de indicação ganha mais 30 dias no fim do prazo.</li>
+          <li>Quem já assina o Pro (pelo site ou pelo app) não recebe o mês grátis, porque já tem tudo; o desconto fica guardado para quando a assinatura acabar.</li>
+          <li>O desconto de {{ indicacao.pct }}% vale para o <strong>Pro mensal assinado pelo site</strong>, por {{ indicacao.meses_cupom }} meses, e é aplicado sozinho na hora de assinar. Uma vez por motorista.</li>
+          <li>Conta criada só para ganhar a recompensa pode ser removida, junto com a recompensa.</li>
+          <li>Podemos encerrar ou mudar o programa a qualquer momento; o que já foi ganho continua valendo.</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if current_user %}
+<script nonce="{{ csp_nonce }}">
+  (function () {
+    var botao = document.getElementById('btn-copiar');
+    var campo = document.getElementById('link');
+    if (!botao || !campo) return;
+    botao.addEventListener('click', function () {
+      var feito = function () { botao.innerHTML = '<i class="bi bi-check-lg"></i>'; setTimeout(function () { botao.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500); };
+      if (navigator.clipboard) { navigator.clipboard.writeText(campo.value).then(feito); }
+      else { campo.select(); document.execCommand('copy'); feito(); }
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

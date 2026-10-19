@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Pro anual por Pix{% endblock %}
+
+{% block head %}
+{# Oferta que vai pelo WhatsApp e pelo e-mail de renovação. Não aparece no
+   menu, no app nem em busca: o app não pode levar até ela (regra 3.1.3(b)
+   da Apple), e a página de planos continua sendo a vitrine pública. #}
+<meta name="robots" content="noindex, nofollow">
+{% endblock %}
+
+{% block content %}
+<section class="planos-section">
+  <div class="container">
+    <div class="planos-header">
+      <div class="section-label">Oferta</div>
+      <h1 class="planos-title">Recibo Táxi Pro por um ano</h1>
+      <p class="planos-subtitle">
+        Pagamento único, por Pix ou cartão. Sem renovação automática: quando o ano acabar, você decide se continua.
+      </p>
+    </div>
+
+    <div class="row g-4 justify-content-center">
+      <div class="col-sm-10 col-md-7 col-lg-5">
+        <div class="pricing-card pricing-featured">
+          <div class="pricing-popular-badge">Pagamento único</div>
+          <div class="pricing-plan-name">Pro anual</div>
+          <div class="pricing-price-wrap">
+            <span class="pricing-currency">R$</span>
+            <span class="pricing-amount">{{ preco_pro_anual_pix.replace('R$ ', '').split(',')[0] }}</span>
+            <span class="pricing-period">,{{ preco_pro_anual_pix.split(',')[1] }} por ano</span>
+          </div>
+          <p class="pricing-tagline">Pix ou cartão, uma vez só. Vale 12 meses.</p>
+          <ul class="pricing-features">
+            <li class="on"><i class="bi bi-check-lg"></i>Recibos ilimitados no site e no app</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Histórico ilimitado</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Não renova sozinho: nenhuma cobrança surpresa</li>
+            <li class="on"><i class="bi bi-check-lg"></i>Renovou antes do fim? Os dias que faltam somam ao ano novo</li>
+            <li class="on"><i class="bi bi-check-lg"></i>7 dias para desistir, com devolução integral</li>
+          </ul>
+
+          {% if current_user %}
+            {% if pro_until %}
+            <p class="pricing-note">Seu Pro vale até <strong>{{ pro_until | data_br(false) }}</strong>. Renovar agora soma mais 12 meses a partir dessa data.</p>
+            {% elif current_user.get('plan', 'free') != 'free' %}
+            <p class="pricing-note">Você já é Pro por assinatura. Esta oferta é para quem não assina; se quiser trocar, cancele a assinatura primeiro.</p>
+            {% endif %}
+            {% if disponivel %}
+            <form action="{{ url_for('assinar', plan='pro_anual_pix') }}" method="post">
+              <button type="submit" class="btn btn-pricing-primary w-100">
+                <i class="bi bi-qr-code me-2"></i>Pagar {{ preco_pro_anual_pix }} por Pix ou cartão
+              </button>
+            </form>
+            {% else %}
+            <p class="pricing-note">Esta oferta ainda não está disponível. Fale com a gente pelo WhatsApp que te avisamos.</p>
+            {% endif %}
+          {% else %}
+          <a href="{{ url_for('cadastro', plano='pro_anual_pix') }}" class="btn btn-pricing-primary w-100">Criar conta e pagar</a>
+          <p class="pricing-note mt-2">Já tem conta? <a href="{{ url_for('login', plano='pro_anual_pix') }}">Entre para pagar</a>.</p>
+          {% endif %}
+          <p class="pricing-cobranca mt-3">Pagamento processado pela Stripe. Valor em reais, com os tributos incluídos. Regras em <a href="{{ url_for('termos') }}">Termos de Uso</a>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

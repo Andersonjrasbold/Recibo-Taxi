@@ -12,7 +12,7 @@
       </div>
       <div class="db-plan-badge db-plan-{{ user_plan }}">
         {% if user_plan == 'pro' %}
-        <i class="bi bi-star-fill me-1"></i>Plano Pro
+        <i class="bi bi-star-fill me-1"></i>Plano Pro{% if pro_until %} · até {{ pro_until | data_br(false) }}{% endif %}
         {% elif user_plan == 'business' %}
         <i class="bi bi-briefcase-fill me-1"></i>Business
         {% else %}
@@ -164,7 +164,11 @@
       <div class="db-card profile-card mt-4">
         <div class="db-card-header">
           <h2 class="db-card-title"><i class="bi bi-person-badge-fill me-2"></i>Meu perfil</h2>
-          {% if user_plan != 'free' %}
+          {% if prepago %}
+          <a href="{{ url_for('oferta_anual') }}" class="btn btn-manage-plan btn-sm">
+            <i class="bi bi-arrow-repeat me-1"></i>Renovar o Pro
+          </a>
+          {% elif user_plan != 'free' %}
           <form action="{{ url_for('portal_cliente') }}" method="post">
             <button type="submit" class="btn btn-manage-plan btn-sm">
               <i class="bi bi-gear me-1"></i>Gerenciar plano
@@ -209,6 +213,19 @@
             <span class="profile-item-value">{{ (paises.get(current_user.country) or ('—',))[0] }} · {{ moeda_simbolo }}</span>
           </div>
         </div>
+      </div>
+
+      <!-- Indicação -->
+      <div class="db-card mt-4">
+        <div class="db-card-header">
+          <h2 class="db-card-title"><i class="bi bi-people-fill me-2"></i>Indique um colega</h2>
+        </div>
+        <p class="mb-3">Cada colega que se cadastra com o seu código e emite o primeiro recibo rende
+          {{ indicacao.meses_por_indicado }} mês de Pro grátis para você (até {{ indicacao.max_meses }} meses) e libera
+          {{ indicacao.pct }}% de desconto por {{ indicacao.meses_cupom }} meses no Pro mensal.</p>
+        <a href="{{ url_for('indicar') }}" class="btn btn-generate w-100">
+          <i class="bi bi-whatsapp me-2"></i>Ver meu código e indicar
+        </a>
       </div>
     </div>
 

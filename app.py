@@ -3209,6 +3209,8 @@ def api_sessao():
             # O app imprime o recibo offline: guarda a moeda e o jeito de
             # escrevê-la, para o PDF sair igual à página do recibo.
             "pais": g.user.get("country") or PAIS_PADRAO,
+            # Codigo de discagem do pais: o app monta o wa.me do passageiro com ele.
+            "ddi": PAISES.get(g.user.get("country") or PAIS_PADRAO, ("", "", ""))[2],
             "moeda": moeda,
             # Pro pré-pago (anual por Pix ou mês de indicação) vence; o app mostra a data.
             "pro_until": g.user.get("pro_until") or None,

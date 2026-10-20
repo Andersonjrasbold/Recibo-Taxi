@@ -2581,6 +2581,51 @@ finally:
         else:
             os.environ[_k] = _v
 
+# -- Km rodado e hora de chegada (migracao 0013) ----------------------------
+# Pedido de motorista: a empresa do passageiro quer percurso, km e horario de
+# inicio e fim. Opcionais; versao antiga do app (sem os campos) continua ok.
+print("\n-- Km rodado e hora de chegada --")
+_ck = novo_cliente(f"km-{os.urandom(3).hex()}@teste.invalid")
+r = _ck.post("/recibo", data={"passageiro": "P", "data": "2026-10-20", "origem": "A", "destino": "B", "valor": "45,00",
+                              "hora": "08:10", "hora_fim": "08:45", "km": "12,4"})
+_rid_km = r.headers.get("Location", "").rsplit("/", 1)[-1].split("?")[0]
+_rk = store.get_receipt(_rid_km) or {}
+check("site: chegada e km ficam no recibo",
+      _rk.get("trip_time") == "08:10" and _rk.get("trip_end_time") == "08:45" and _rk.get("distance_km") == "12.4"
+      and _rk.get("km_display") == "12,4 km", str((_rk.get("trip_time"), _rk.get("trip_end_time"), _rk.get("distance_km"))))
+_pg_km = _ck.get(f"/recibo/{_rid_km}").get_data(as_text=True)
+check("pagina do recibo mostra horario e distancia", "08:10 às 08:45" in _pg_km and "12,4 km" in _pg_km)
+_msg_km = A.compose_receipt_message(dict(_rk), "https://x")
+check("mensagem do WhatsApp leva horario e distancia", "🕐 Horário: 08:10 às 08:45" in _msg_km and "📏 Distância: 12,4 km" in _msg_km)
+for _km_bom, _esp in [("12.4", "12.4"), ("12", "12.0"), ("12,45", "12.5"), ("", None), ("  ", None), ("12 km", "12.0")]:
+    check(f"km {_km_bom!r} -> {_esp!r}", A.normalize_km(_km_bom) == _esp, str(A.normalize_km(_km_bom)))
+for _km_ruim in ("uns 12", "0", "-3", "abc", "99999", "NaN"):
+    try:
+        A.normalize_km(_km_ruim)
+        check(f"km {_km_ruim!r} e recusado", False, "aceitou")
+    except ValueError:
+        check(f"km {_km_ruim!r} e recusado", True)
+_n_antes = len(store.list_receipts_by_driver(store.get_user_by_email(_ck.get("/api/sessao").get_json()["email"])["_id"]))
+r = _ck.post("/recibo", data={"passageiro": "P", "data": "2026-10-20", "origem": "A", "destino": "B", "valor": "45,00", "km": "uns 12"})
+check("site: km invalido nao cria recibo", "/recibo/" not in r.headers.get("Location", "")
+      and len(store.list_receipts_by_driver(store.get_user_by_email(_ck.get("/api/sessao").get_json()["email"])["_id"])) == _n_antes)
+check("hora fora do formato vira vazia, nao quebra", A.hora_valida("8h10") == "" and A.hora_valida("08:10") == "08:10")
+_rid_api_km = os.urandom(7).hex().upper()
+r = _ck.post("/api/recibos", json={"rid": _rid_api_km, "passageiro": "P", "data": "2026-10-20", "origem": "A", "destino": "B",
+                                   "valor": "30,00", "hora": "09:00", "hora_fim": "09:20", "km": "7,8"})
+_ra_km = store.get_receipt(_rid_api_km) or {}
+check("app: chegada e km ficam no recibo", r.status_code == 201 and _ra_km.get("trip_end_time") == "09:20" and _ra_km.get("distance_km") == "7.8",
+      str((r.status_code, _ra_km.get("trip_end_time"), _ra_km.get("distance_km"))))
+r = _ck.post("/api/recibos", json={"rid": os.urandom(7).hex().upper(), "passageiro": "P", "data": "2026-10-20", "origem": "A",
+                                   "destino": "B", "valor": "30,00", "km": "abc"})
+check("app: km invalido responde 400 km_invalido", r.status_code == 400 and (r.get_json() or {}).get("erro") == "km_invalido")
+r = _ck.post("/api/recibos", json={"rid": os.urandom(7).hex().upper(), "passageiro": "P", "data": "2026-10-20", "origem": "A",
+                                   "destino": "B", "valor": "30,00"})
+check("app antigo, sem os campos, continua emitindo", r.status_code == 201)
+check("o app tem chegada e km no formulario e no PDF",
+      'id="hora-fim"' in _html_app and 'id="km"' in _html_app and "hora_fim:" in _appjs
+      and "Distância" in io.open("mobile/www/pdf.js", encoding="utf-8").read())
+
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:
     _sem_rls = [l["relname"] for l in _conn.execute(

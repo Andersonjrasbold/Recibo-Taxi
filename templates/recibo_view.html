@@ -86,8 +86,20 @@
             {% endif %}
             <div class="detail-item">
               <span class="detail-label">Data</span>
-              <span class="detail-value">{{ dados.trip_date_display }}{% if dados.trip_time %} às {{ dados.trip_time }}{% endif %}</span>
+              <span class="detail-value">{{ dados.trip_date_display }}</span>
             </div>
+            {% if dados.horario %}
+            <div class="detail-item">
+              <span class="detail-label">Horário</span>
+              <span class="detail-value">{{ dados.horario }}</span>
+            </div>
+            {% endif %}
+            {% if dados.km_display %}
+            <div class="detail-item">
+              <span class="detail-label">Distância</span>
+              <span class="detail-value">{{ dados.km_display }}</span>
+            </div>
+            {% endif %}
             <div class="detail-item detail-item-full">
               <span class="detail-label">Origem</span>
               <span class="detail-value">{{ dados.origin or '—' }}</span>

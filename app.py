@@ -11,7 +11,7 @@ import http.client
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from email.message import EmailMessage
 from functools import wraps
 from urllib.parse import quote
@@ -174,6 +174,8 @@ RECEIPT_FIELD_LIMITS = {
     "razao_social": ("A razão social", 140),
     "data": ("A data", 10),
     "hora": ("A hora", 5),
+    "hora_fim": ("A hora de chegada", 5),
+    "km": ("A distância", 12),
     "nome_motorista": ("O nome do motorista", 120),
     "placa": ("A placa", 10),
     "whatsapp_motorista": ("O WhatsApp do motorista", 20),
@@ -599,6 +601,41 @@ def normalize_money(value: str, moeda: str | None = None) -> tuple[str, str]:
     return str(amount), formatar_numero(amount, casas)
 
 
+def normalize_km(value) -> str | None:
+    """"12,4", "12.4" ou "12" → "12.4" para o banco; vazio → None.
+
+    Opcional de proposito: quem nao sabe o km nao pode ficar sem recibo. Mas
+    o que vier tem de ser numero: "uns 12" vira erro na tela, nao lixo no PDF.
+    """
+    bruto = re.sub(r"\s", "", str(value or "")).lower().replace("km", "")
+    if not bruto:
+        return None
+    try:
+        km = Decimal(bruto.replace(",", "."))
+    except InvalidOperation as exc:
+        raise ValueError("Informe a distância em km, só o número (ex.: 12,4).") from exc
+    if not km.is_finite() or km <= 0 or km > Decimal("9999.9"):
+        raise ValueError("Informe a distância em km, só o número (ex.: 12,4).")
+    # Arredondamento de escola (12,45 → 12,5), não o "para o par" do Decimal.
+    return str(km.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def formatar_km(valor) -> str:
+    """"12.4" → "12,4 km"; vazio → ""."""
+    if valor is None or valor == "":
+        return ""
+    try:
+        return f"{formatar_numero(valor, 1)} km"
+    except (InvalidOperation, ValueError):
+        return ""
+
+
+def hora_valida(valor: str) -> str:
+    """"HH:MM" ou vazio; qualquer outra coisa vira vazio em vez de quebrar o recibo."""
+    valor = (valor or "").strip()
+    return valor if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", valor) else ""
+
+
 def pais_e_moeda(pais: str | None, moeda: str | None) -> tuple[str, str]:
     """Confere o país e a moeda escolhidos. Vazio vira o padrão: Brasil e a
     moeda do país. Fora da lista levanta ValueError com a frase para a tela."""
@@ -637,6 +674,18 @@ def rotulo_documento(pais: str) -> str:
     return "CPF/CNPJ" if pais == "BR" else "Documento"
 
 
+def horario_da_corrida(receipt: dict) -> str:
+    """"08:10 às 08:45", "saída 08:10" ou "" — para mensagem, página e e-mail."""
+    saida, chegada = receipt.get("trip_time") or "", receipt.get("trip_end_time") or ""
+    if saida and chegada:
+        return f"{saida} às {chegada}"
+    if saida:
+        return f"saída {saida}"
+    if chegada:
+        return f"chegada {chegada}"
+    return ""
+
+
 def compose_receipt_message(receipt: dict, public_url: str) -> str:
     valor = receipt.get("valor_formatado") or formatar_valor(
         receipt.get("amount_value"), receipt.get("currency"))
@@ -651,8 +700,12 @@ def compose_receipt_message(receipt: dict, public_url: str) -> str:
         *([f"🏢 Razão social: {receipt['passenger_company']}"]
           if receipt.get("passenger_company") else []),
         f"📅 Data: {receipt.get('trip_date_display') or '-'}",
+        # Saida, chegada e km: o que a empresa do passageiro olha para aprovar
+        # a despesa. So entram quando existem.
+        *([f"🕐 Horário: {horario_da_corrida(receipt)}"] if horario_da_corrida(receipt) else []),
         f"📍 Origem: {receipt.get('origin') or '-'}",
         f"🏁 Destino: {receipt.get('destination') or '-'}",
+        *([f"📏 Distância: {receipt['km_display']}"] if receipt.get("km_display") else []),
         f"💰 Valor: {valor}",
         f"💳 Pagamento: {receipt.get('payment_method') or '-'}",
         "",
@@ -939,7 +992,7 @@ class PostgresStore:
     _RECEIPT_COLS = """
         rid, rid as _id, driver_id, is_guest, passenger, passenger_email,
         passenger_whatsapp, passenger_document, passenger_company,
-        trip_date, trip_time,
+        trip_date, trip_time, trip_end_time, distance_km,
         origin, destination, amount, currency, payment_method, notes, driver_snapshot,
         created_at
     """
@@ -990,6 +1043,10 @@ class PostgresStore:
             out["amount_value"] = str(amount)
             out["amount_display"] = formatar_numero(amount, dados_da_moeda(out.get("currency"))[2])
             out["valor_formatado"] = formatar_valor(amount, out.get("currency"))
+        km = out.get("distance_km")
+        out["distance_km"] = str(km) if km is not None else ""
+        out["km_display"] = formatar_km(km)
+        out["trip_end_time"] = out.get("trip_end_time") or ""
         trip_date = out.get("trip_date")
         out["trip_date"] = trip_date.isoformat() if trip_date else ""
         out["trip_date_display"] = format_date_br(out["trip_date"])
@@ -1092,6 +1149,10 @@ class PostgresStore:
         dados.pop("_id", None)
         dados["driver_snapshot"] = Json(dados.get("driver_snapshot") or {})
         dados["trip_time"] = dados.get("trip_time") or ""
+        # Versoes antigas do app nao mandam chegada nem km (migracao 0013).
+        dados["trip_end_time"] = dados.get("trip_end_time") or ""
+        dados["distance_km"] = dados.get("distance_km") or None
+        dados.pop("km_display", None)
         # Campo novo: as versoes do app ja instaladas no aparelho do motorista
         # nao enviam documento. Sem o default, cada recibo dessas versoes
         # quebraria no insert em vez de gravar sem o campo opcional.
@@ -1127,14 +1188,15 @@ class PostgresStore:
                 f"""insert into public.receipts
                     (rid, driver_id, is_guest, passenger, passenger_email,
                      passenger_whatsapp, passenger_document, passenger_company,
-                     trip_date, trip_time,
+                     trip_date, trip_time, trip_end_time, distance_km,
                      origin, destination, amount, currency, payment_method, notes,
                      driver_snapshot{col_extra})
                     values (%(rid)s, %(driver_id)s, %(is_guest)s, %(passenger)s,
                             %(passenger_email)s, %(passenger_whatsapp)s,
                             %(passenger_document)s, %(passenger_company)s,
                             %(trip_date)s,
-                            %(trip_time)s, %(origin)s, %(destination)s, %(amount)s,
+                            %(trip_time)s, %(trip_end_time)s, %(distance_km)s,
+                            %(origin)s, %(destination)s, %(amount)s,
                             %(currency)s, %(payment_method)s, %(notes)s,
                             %(driver_snapshot)s{val_extra})
                     returning {self._RECEIPT_COLS}""",
@@ -2239,6 +2301,7 @@ def recibo_criar():
     moeda = g.user.get("currency") or MOEDA_PADRAO
     try:
         amount_value, amount_display = normalize_money(request.form.get("valor", ""), moeda)
+        distance_km = normalize_km(request.form.get("km", ""))
     except ValueError as exc:
         flash(str(exc), "danger")
         return redirect(url_for("dashboard"))
@@ -2258,7 +2321,9 @@ def recibo_criar():
             request.form.get("razao_social", "")),
         "trip_date": trip_date,
         "trip_date_display": format_date_br(trip_date),
-        "trip_time": request.form.get("hora", "").strip(),
+        "trip_time": hora_valida(request.form.get("hora", "")),
+        "trip_end_time": hora_valida(request.form.get("hora_fim", "")),
+        "distance_km": distance_km,
         "origin": origin,
         "destination": destination,
         "amount_value": amount_value,
@@ -3226,6 +3291,8 @@ def api_criar_recibo():
         "documento_passageiro": dados.get("documento_passageiro", ""),
         "razao_social": dados.get("razao_social", ""),
         "hora": dados.get("hora", ""),
+        "hora_fim": dados.get("hora_fim", ""),
+        "km": dados.get("km", ""),
     }
     for nome, (rotulo, maximo) in RECEIPT_FIELD_LIMITS.items():
         if len(str(campos.get(nome, "") or "")) > maximo:
@@ -3244,6 +3311,10 @@ def api_criar_recibo():
         amount_value, amount_display = normalize_money(str(campos["valor"]), moeda)
     except ValueError as exc:
         return jsonify({"erro": "valor_invalido", "mensagem": str(exc)}), 400
+    try:
+        distance_km = normalize_km(campos["km"])
+    except ValueError as exc:
+        return jsonify({"erro": "km_invalido", "mensagem": str(exc)}), 400
 
     receipt = {
         "_id": rid,
@@ -3258,7 +3329,9 @@ def api_criar_recibo():
         "passenger_company": razao_social_de(
             str(campos["documento_passageiro"]), str(campos["razao_social"])),
         "trip_date": str(campos["data"]).strip(),
-        "trip_time": str(campos["hora"]).strip(),
+        "trip_time": hora_valida(str(campos["hora"])),
+        "trip_end_time": hora_valida(str(campos["hora_fim"])),
+        "distance_km": distance_km,
         "origin": str(campos["origem"]).strip(),
         "destination": str(campos["destino"]).strip(),
         "amount_value": amount_value,
@@ -4416,6 +4489,7 @@ def recibo_view(rid: str):
     context["is_guest"] = receipt.get("is_guest", False)
     context["just_created"] = request.args.get("created") == "1"
     context["rotulo_documento"] = rotulo_documento(pais_do_recibo(receipt))
+    context["horario"] = horario_da_corrida(receipt)
 
     return render_template("recibo_view.html", dados=context)
 

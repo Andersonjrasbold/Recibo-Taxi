@@ -343,10 +343,25 @@
         <input type="date" id="data" required>
       </div>
       <div>
-        <label for="hora">Hora</label>
+        <label for="hora">Saída</label>
         <input type="time" id="hora">
       </div>
     </div>
+
+    <!-- Chegada e km: o que a empresa do passageiro olha para aprovar a
+         despesa (pedido de motorista, 2026-10). Opcionais; a corrida do app
+         preenche os dois sozinha. -->
+    <div class="linha">
+      <div>
+        <label for="hora-fim">Chegada</label>
+        <input type="time" id="hora-fim">
+      </div>
+      <div>
+        <label for="km">Km rodado</label>
+        <input type="text" id="km" inputmode="decimal" maxlength="8" placeholder="12,4">
+      </div>
+    </div>
+    <p id="erro-recibo" class="erro" hidden></p>
 
     <label for="origem">Origem *</label>
     <input type="text" id="origem" maxlength="200" required

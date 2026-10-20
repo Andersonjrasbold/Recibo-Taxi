@@ -96,8 +96,17 @@
                 value="{{ today }}" required>
             </div>
             <div class="col-6">
-              <label class="form-label-db" for="hora">Hora</label>
+              <label class="form-label-db" for="hora">Saída</label>
               <input type="time" id="hora" name="hora" class="form-control form-control-db">
+            </div>
+            <div class="col-6">
+              <label class="form-label-db" for="hora_fim">Chegada</label>
+              <input type="time" id="hora_fim" name="hora_fim" class="form-control form-control-db">
+            </div>
+            <div class="col-6">
+              <label class="form-label-db" for="km">Km rodado</label>
+              <input type="text" id="km" name="km" class="form-control form-control-db"
+                placeholder="12,4" inputmode="decimal">
             </div>
             <div class="col-12">
               <label class="form-label-db" for="origem">Origem <span class="required-star">*</span></label>

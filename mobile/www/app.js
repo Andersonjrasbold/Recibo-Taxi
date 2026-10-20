@@ -365,9 +365,11 @@ function montarRecibo(recibo) {
       <dt>Passageiro</dt><dd>${d.passageiro}</dd>
       ${d.documento_passageiro ? `<dt>CPF/CNPJ</dt><dd>${d.documento_passageiro}</dd>` : ''}
       ${d.razao_social ? `<dt>Razão social</dt><dd>${d.razao_social}</dd>` : ''}
-      <dt>Data</dt><dd>${formatarBR(d.data)}${d.hora ? ' às ' + d.hora : ''}</dd>
+      <dt>Data</dt><dd>${formatarBR(d.data)}</dd>
+      ${horarioDe(d) ? `<dt>Horário</dt><dd>${horarioDe(d)}</dd>` : ''}
       <dt>Origem</dt><dd>${d.origem}</dd>
       <dt>Destino</dt><dd>${d.destino}</dd>
+      ${d.km ? `<dt>Distância</dt><dd>${kmTexto(d.km)}</dd>` : ''}
       <dt>Pagamento</dt><dd>${d.forma_pagamento}</dd>
       <dt>Motorista</dt><dd>${m.full_name || ''}</dd>
       <dt>Placa</dt><dd>${m.plate || ''}</dd>
@@ -451,8 +453,10 @@ function textoParaCompartilhar(recibo) {
     ...(d.documento_passageiro ? [`🧾 CPF/CNPJ: ${d.documento_passageiro}`] : []),
     ...(d.razao_social ? [`🏢 Razão social: ${d.razao_social}`] : []),
     `📅 Data: ${formatarBR(d.data)}`,
+    ...(horarioDe(d) ? [`🕐 Horário: ${horarioDe(d)}`] : []),
     `📍 Origem: ${d.origem}`,
     `🏁 Destino: ${d.destino}`,
+    ...(d.km ? [`📏 Distância: ${kmTexto(d.km)}`] : []),
     `💰 Valor: R$ ${d.valor_exibido}`,
     `💳 Pagamento: ${d.forma_pagamento}`,
   ];
@@ -703,8 +707,34 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
   }
 });
 
+// Km rodado como o motorista digita ("12,4", "12.4", "12"); vazio e permitido.
+// Um km que nao e numero para aqui, nao no servidor: o recibo ja estaria
+// guardado e marcado como recusado, sem o motorista entender por que.
+function kmNormalizado(valor) {
+  const bruto = String(valor || '').trim().toLowerCase().replace(/\s|km/g, '');
+  if (!bruto) return '';
+  if (!/^\d{1,4}([.,]\d{1,2})?$/.test(bruto) || Number(bruto.replace(',', '.')) <= 0) return null;
+  return Number(bruto.replace(',', '.')).toFixed(1).replace('.', ',');
+}
+const kmTexto = (km) => (km ? `${km} km` : '');
+function horarioDe(d) {
+  if (d.hora && d.hora_fim) return `${d.hora} às ${d.hora_fim}`;
+  if (d.hora) return `saída ${d.hora}`;
+  if (d.hora_fim) return `chegada ${d.hora_fim}`;
+  return '';
+}
+
 $('form-recibo').addEventListener('submit', async (ev) => {
   ev.preventDefault();
+  const erroRecibo = $('erro-recibo');
+  erroRecibo.hidden = true;
+  const km = kmNormalizado($('km').value);
+  if (km === null) {
+    erroRecibo.textContent = 'Km rodado: só o número, ex.: 12,4. Ou deixe em branco.';
+    erroRecibo.hidden = false;
+    $('km').focus();
+    return;
+  }
   const valor = $('valor').value.trim();
   const rid = novoRid();
   const recibo = {
@@ -717,6 +747,8 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       passageiro: $('passageiro').value.trim(),
       data: $('data').value,
       hora: $('hora').value,
+      hora_fim: $('hora-fim').value,
+      km,
       origem: $('origem').value.trim(),
       destino: $('destino').value.trim(),
       valor,
@@ -1200,6 +1232,10 @@ function preencherComCorrida(c) {
   const saida = agoraLocal(new Date(c.inicio));
   $('data').value = saida.data;
   $('hora').value = saida.hora;
+  // Chegada e km vem da propria corrida: a hora em que encerrou e a rota que
+  // o Google estimou (o motorista corrige se o caminho foi outro).
+  $('hora-fim').value = c.fim ? agoraLocal(new Date(c.fim)).hora : '';
+  $('km').value = c.estimativa && typeof c.estimativa.km === 'number' ? kmNormalizado(String(c.estimativa.km)) || '' : '';
   $('origem').value = c.origem || '';
   $('destino').value = c.destino || '';
   $('valor').value = '';
@@ -1214,7 +1250,7 @@ function preencherComCorrida(c) {
 }
 
 function limparCorridaDoFormulario() {
-  ['origem', 'destino', 'valor'].forEach((id) => { $(id).value = ''; });
+  ['origem', 'destino', 'valor', 'hora-fim', 'km'].forEach((id) => { $(id).value = ''; });
   $('valor').placeholder = '45,00';
   $('dica-estimativa').hidden = true;
   $('titulo-emitir').textContent = 'Novo recibo';

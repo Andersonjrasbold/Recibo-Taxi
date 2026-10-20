@@ -63,9 +63,13 @@ function pdfDoRecibo(recibo) {
     // Sem a razao social, o CNPJ nao fecha a despesa na contabilidade.
     ...(d.razao_social ? [['Razão social', d.razao_social]] : []),
     ['Data', d.data_exibida || d.data],
-    ['Hora', d.hora || '-'],
+    // Saida e chegada juntas; km quando existe. Sao o que a empresa do
+    // passageiro olha para aprovar a despesa.
+    ['Horário', d.hora && d.hora_fim ? `${d.hora} às ${d.hora_fim}`
+      : d.hora ? `saída ${d.hora}` : d.hora_fim ? `chegada ${d.hora_fim}` : '-'],
     ['Origem', d.origem],
     ['Destino', d.destino],
+    ...(d.km ? [['Distância', `${d.km} km`]] : []),
     ['Pagamento', d.forma_pagamento],
   ];
   if (d.observacoes) campos.push(['Observações', d.observacoes]);

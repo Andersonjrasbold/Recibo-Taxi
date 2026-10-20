@@ -2146,6 +2146,7 @@ check("perfil sem os campos nao volta para o Brasil",
       store.get_user_by_email("moeda-cr@teste.invalid")["currency"] == "CRC")
 _ses = _cm.get("/api/sessao").get_json() or {}
 check("/api/sessao traz a moeda", (_ses.get("moeda"), _ses.get("moeda_simbolo")) == ("CRC", "₡"), str(_ses.get("moeda")))
+check("/api/sessao traz o codigo de discagem do pais", _ses.get("ddi") == "506", str(_ses.get("ddi")))
 _rid_app = os.urandom(7).hex().upper()
 r = _cm.post("/api/recibos", json={"rid": _rid_app, "passageiro": "Maria Jose", "data": "2026-10-11",
                                    "origem": "Alajuela", "destino": "Heredia", "valor": "12.500"})
@@ -2625,6 +2626,21 @@ check("app antigo, sem os campos, continua emitindo", r.status_code == 201)
 check("o app tem chegada e km no formulario e no PDF",
       'id="hora-fim"' in _html_app and 'id="km"' in _html_app and "hora_fim:" in _appjs
       and "Distância" in io.open("mobile/www/pdf.js", encoding="utf-8").read())
+
+# -- Pais e moeda no app ----------------------------------------------------
+# O app guarda moeda, simbolo, casas, pais e DDI da sessao; cada recibo leva a
+# moeda de quando saiu; nenhum "R$" fixo sobra na tela, no PDF ou no WhatsApp.
+print("\n-- Pais e moeda no app --")
+_pdfjs = io.open("mobile/www/pdf.js", encoding="utf-8").read()
+check("o cadastro do app tem pais e moeda, carregados de /api/paises",
+      'id="c-pais"' in _html_app and 'id="c-moeda"' in _html_app and "/api/paises" in _appjs and "pais: $('c-pais')" in _appjs)
+check("o app guarda moeda, simbolo, casas, pais e DDI da sessao",
+      all(f"'{k}'" in _appjs for k in ("moeda", "moeda_simbolo", "moeda_casas", "pais", "ddi")))
+check("o recibo leva a moeda e o simbolo de quando saiu", "moeda: moedaAtual().codigo" in _appjs and "moeda_simbolo" in _pdfjs)
+check("nenhum R$ fixo no valor do recibo, do historico, do WhatsApp ou do PDF",
+      "R$ ${" not in _pdfjs and _appjs.count("R$ ${") <= 1)   # sobra so o fallback do preco da loja
+check("o valor digitado segue a mesma regra do servidor (1.500 e milhar)", "separadoresDoValor" in _appjs)
+check("iPhone e Android na 1.3", _ver_ios == {"1.3"} and _ver_and and _ver_and.group(1) == "1.3")
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

@@ -233,11 +233,23 @@ function voltarParaBase() {
 // A classificacao e por tamanho, nao por prefixo: o DDD 55 existe (Santa
 // Maria/RS), entao "5598765432", de 10 digitos, e DDD + fixo e vira
 // "555598765432", nao um numero ja internacional.
-function foneE164(valor, ddi = '55') {
-  let d = String(valor || '').replace(/\D/g, '');
+//
+// Fora do Brasil vale o codigo do pais do motorista (vem com a sessao): o
+// passageiro de uma corrida na Costa Rica dita um numero de la. Com + na
+// frente, o numero ja e internacional em qualquer pais. Mesma regra do servidor.
+function foneE164(valor, pais = paisAtual(), ddi = ddiAtual()) {
+  const bruto = String(valor || '').trim();
+  let d = bruto.replace(/\D/g, '');
+  if (bruto.startsWith('+')) return d.length >= 8 && d.length <= 15 ? d : '';
+  if (pais !== 'BR') {
+    if (d.startsWith('00')) d = d.slice(2);
+    else if (!ddi) return '';
+    else if (!(d.startsWith(ddi) && d.length >= ddi.length + 7)) d = ddi + d.replace(/^0+/, '');
+    return d.length >= 8 && d.length <= 15 ? d : '';
+  }
   if (d.startsWith('00')) d = d.slice(2);
   d = d.replace(/^0+/, '');
-  if (d.length === 10 || d.length === 11) return ddi + d;
+  if (d.length === 10 || d.length === 11) return '55' + d;
   if (d.length === 12 || d.length === 13) return d;
   return '';
 }
@@ -251,6 +263,7 @@ function motivoFoneInvalido(valor) {
   const d = String(valor || '').replace(/\D/g, '');
   if (!d) return '';                       // vazio e escolha, nao erro
   if (foneE164(valor)) return '';
+  if (paisAtual() !== 'BR') return 'Número incompleto. Digite com o código da cidade, ou com + e o código do país.';
   if (d.length < 10) return 'Faltam dígitos. Use DDD + número: 45 99999-9999.';
   return 'Número muito longo. Use DDD + número: 45 99999-9999.';
 }
@@ -278,7 +291,9 @@ $('email-passageiro').addEventListener('input', revisarEmail);
 // Pontua CPF e CNPJ. Nao valida digito verificador de proposito: o campo e
 // opcional, e recusar um documento ditado errado trocaria um recibo util por
 // um erro na tela, com o passageiro esperando dentro do carro.
+// Fora do Brasil, 11 digitos nao sao CPF: o documento fica como veio.
 function documentoBR(valor) {
+  if (paisAtual() !== 'BR') return String(valor || '').trim();
   const d = String(valor || '').replace(/\D/g, '');
   if (d.length === 11) return `${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
   if (d.length === 14) return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;
@@ -290,7 +305,7 @@ function documentoBR(valor) {
 // Some junto quando o motorista troca para CPF, e o valor vai junto — senao um
 // nome de empresa ficaria pendurado num recibo de pessoa fisica.
 function ehCNPJ(documento) {
-  return String(documento || '').replace(/\D/g, '').length === 14;
+  return paisAtual() === 'BR' && String(documento || '').replace(/\D/g, '').length === 14;
 }
 
 function atualizarCampoRazaoSocial() {
@@ -300,6 +315,83 @@ function atualizarCampoRazaoSocial() {
 }
 
 $('documento').addEventListener('input', atualizarCampoRazaoSocial);
+
+// ── Pais e moeda ───────────────────────────────────────────────────────────
+//
+// O app esta a venda em 175 paises e ja tem motorista fora do Brasil. Pais,
+// moeda, simbolo, casas decimais e codigo de discagem vem com a sessao e ficam
+// guardados: o recibo sai certo sem sinal. Cada recibo leva a moeda de quando
+// foi emitido, como no servidor — trocar de moeda depois nao muda recibo feito.
+const moedaAtual = () => ({
+  codigo: Guardado.get('moeda') || 'BRL',
+  simbolo: Guardado.get('moeda_simbolo') || 'R$',
+  casas: Number.isInteger(Guardado.get('moeda_casas')) ? Guardado.get('moeda_casas') : 2,
+});
+const paisAtual = () => Guardado.get('pais') || 'BR';
+const ddiAtual = () => Guardado.get('ddi') || '55';
+const simboloDe = (d) => (d && d.moeda_simbolo) || 'R$';
+const rotuloDocumentoDe = (d) => (d && d.pais && d.pais !== 'BR' ? 'Documento' : 'CPF/CNPJ');
+
+// Mesma regra do servidor (_separadores_do_valor): com ponto e virgula, o
+// ultimo separa os centavos; um separador repetido e de milhar; um separador
+// so, seguido de exatamente 3 digitos ("1.500", "15,000"), e de milhar.
+function separadoresDoValor(bruto) {
+  if (bruto.includes(',') && bruto.includes('.')) {
+    const dec = bruto.lastIndexOf(',') > bruto.lastIndexOf('.') ? ',' : '.';
+    const mil = dec === ',' ? '.' : ',';
+    return bruto.split(mil).join('').replace(dec, '.');
+  }
+  for (const sep of [',', '.']) {
+    if (!bruto.includes(sep)) continue;
+    const partes = bruto.split(sep);
+    const inteiro = partes[0].replace(/^-/, '');
+    const deMilhar = partes.slice(1).every((p) => /^\d{3}$/.test(p))
+      && /^\d{1,3}$/.test(inteiro) && inteiro !== '0';
+    if (partes.length > 2 || deMilhar) return deMilhar ? bruto.split(sep).join('') : bruto;
+    return bruto.replace(sep, '.');
+  }
+  return bruto;
+}
+
+// "1500" ou "1.500" → "1.500,00"; "15000" em guarani (0 casas) → "15.000".
+function valorExibido(texto, casas = moedaAtual().casas) {
+  const bruto = String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
+  const n = Number(separadoresDoValor(bruto));
+  if (!Number.isFinite(n)) return String(texto || '').replace('.', ',');
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
+}
+
+function aplicarMoedaNaTela() {
+  const m = moedaAtual();
+  document.querySelectorAll('.simbolo-moeda').forEach((el) => { el.textContent = m.simbolo; });
+  $('valor').placeholder = (45).toLocaleString('pt-BR', { minimumFractionDigits: m.casas, maximumFractionDigits: m.casas });
+  $('rotulo-documento').textContent = paisAtual() === 'BR'
+    ? 'CPF ou CNPJ do passageiro (opcional)' : 'Documento do passageiro (opcional)';
+}
+
+// Lista de paises e moedas para o cadastro: do servidor, com a ultima copia
+// guardada para quando a rede falhar; sem nenhuma das duas fica so o Brasil.
+async function carregarPaises() {
+  let lista = null;
+  try {
+    const r = await api('/api/paises');
+    if (r.ok) { lista = await r.json(); Guardado.set('paises', lista); }
+  } catch { /* sem rede: usa a copia */ }
+  lista = lista || Guardado.get('paises');
+  if (!lista) return;
+  $('c-pais').innerHTML = lista.paises
+    .map((p) => `<option value="${p.codigo}" data-moeda="${p.moeda}">${p.nome}</option>`).join('');
+  $('c-moeda').innerHTML = lista.moedas
+    .map((m) => `<option value="${m.codigo}">${m.nome} (${m.simbolo})</option>`).join('');
+  $('c-pais').value = 'BR';
+  $('c-moeda').value = 'BRL';
+}
+
+$('c-pais').addEventListener('change', () => {
+  const opcao = $('c-pais').selectedOptions[0];
+  if (opcao && opcao.dataset.moeda) $('c-moeda').value = opcao.dataset.moeda;
+  $('rotulo-c-cpf').textContent = $('c-pais').value === 'BR' ? 'CPF *' : 'Documento de identidade *';
+});
 
 // O servidor confere de novo; aqui e so tirar o obvio: espaco que o teclado
 // do celular acrescenta sozinho e maiuscula do corretor.
@@ -360,10 +452,10 @@ function montarRecibo(recibo) {
         <span class="recibo-id">#${recibo.rid}</span>
       </div>
     </div>
-    <div class="recibo-valor">R$ ${d.valor_exibido}</div>
+    <div class="recibo-valor">${simboloDe(d)} ${d.valor_exibido}</div>
     <dl class="recibo-dados">
       <dt>Passageiro</dt><dd>${d.passageiro}</dd>
-      ${d.documento_passageiro ? `<dt>CPF/CNPJ</dt><dd>${d.documento_passageiro}</dd>` : ''}
+      ${d.documento_passageiro ? `<dt>${rotuloDocumentoDe(d)}</dt><dd>${d.documento_passageiro}</dd>` : ''}
       ${d.razao_social ? `<dt>Razão social</dt><dd>${d.razao_social}</dd>` : ''}
       <dt>Data</dt><dd>${formatarBR(d.data)}</dd>
       ${horarioDe(d) ? `<dt>Horário</dt><dd>${horarioDe(d)}</dd>` : ''}
@@ -450,14 +542,14 @@ function textoParaCompartilhar(recibo) {
   const linhas = [
     `✅ Recibo #${recibo.rid}`,
     `👤 Passageiro: ${d.passageiro}`,
-    ...(d.documento_passageiro ? [`🧾 CPF/CNPJ: ${d.documento_passageiro}`] : []),
+    ...(d.documento_passageiro ? [`🧾 ${rotuloDocumentoDe(d)}: ${d.documento_passageiro}`] : []),
     ...(d.razao_social ? [`🏢 Razão social: ${d.razao_social}`] : []),
     `📅 Data: ${formatarBR(d.data)}`,
     ...(horarioDe(d) ? [`🕐 Horário: ${horarioDe(d)}`] : []),
     `📍 Origem: ${d.origem}`,
     `🏁 Destino: ${d.destino}`,
     ...(d.km ? [`📏 Distância: ${kmTexto(d.km)}`] : []),
-    `💰 Valor: R$ ${d.valor_exibido}`,
+    `💰 Valor: ${simboloDe(d)} ${d.valor_exibido}`,
     `💳 Pagamento: ${d.forma_pagamento}`,
   ];
   linhas.push('', '🔗 Recibo completo, para ver, imprimir ou salvar em PDF:',
@@ -610,7 +702,7 @@ $('form-login').addEventListener('submit', async (ev) => {
   }
 });
 
-$('btn-ir-cadastro').addEventListener('click', () => mostrar('tela-cadastro'));
+$('btn-ir-cadastro').addEventListener('click', () => { mostrar('tela-cadastro'); carregarPaises(); });
 $('btn-ir-login').addEventListener('click', () => mostrar('tela-login'));
 
 // ── Recuperar senha ────────────────────────────────────────────────────────
@@ -673,10 +765,13 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
     placa: $('c-placa').value.trim(),
     modelo_veiculo: $('c-modelo').value.trim(),
     indicacao: $('c-indicacao').value.trim().toUpperCase(),
+    pais: $('c-pais').value,
+    moeda: $('c-moeda').value,
   };
 
   const mensagens = {
     email_em_uso: 'Já existe uma conta com este e-mail.',
+    pais_ou_moeda_invalido: 'Escolha o país e a moeda na lista.',
     codigo_indicacao_invalido: 'Código de indicação não encontrado. Confira com quem te indicou ou deixe em branco.',
     senha_curta: 'A senha precisa ter pelo menos 8 caracteres.',
     campos_obrigatorios: 'Preencha todos os campos marcados com *.',
@@ -752,7 +847,12 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       origem: $('origem').value.trim(),
       destino: $('destino').value.trim(),
       valor,
-      valor_exibido: valor.replace('.', ','),
+      valor_exibido: valorExibido(valor),
+      // Moeda e pais de quando o recibo foi emitido: o servidor grava a moeda,
+      // e a tela, o PDF e o WhatsApp mostram o simbolo certo mesmo sem sinal.
+      moeda: moedaAtual().codigo,
+      moeda_simbolo: moedaAtual().simbolo,
+      pais: paisAtual(),
       data_exibida: formatarBR($('data').value),
       observacoes: '',
       forma_pagamento: $('forma').value,
@@ -1158,6 +1258,8 @@ function encerrarSessao() {
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
   Guardado.del('codigo_indicacao'); Guardado.del('link_indicacao'); Guardado.del('pro_until');
   Guardado.del('cupom_indicacao');
+  ['moeda', 'moeda_simbolo', 'moeda_casas', 'pais', 'ddi'].forEach((k) => Guardado.del(k));
+  aplicarMoedaNaTela();
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -1201,6 +1303,14 @@ async function atualizarSessao() {
     Guardado.set('link_indicacao', s.link_indicacao || '');
     Guardado.set('pro_until', s.pro_until || '');
     Guardado.set('cupom_indicacao', s.cupom_indicacao || null);
+    if (s.moeda) {
+      Guardado.set('moeda', s.moeda);
+      Guardado.set('moeda_simbolo', s.moeda_simbolo || 'R$');
+      Guardado.set('moeda_casas', Number.isInteger(s.moeda_casas) ? s.moeda_casas : 2);
+      Guardado.set('pais', s.pais || 'BR');
+      Guardado.set('ddi', s.ddi || '');
+      aplicarMoedaNaTela();
+    }
     atualizarCabecalho();
     await reabrirRecusadosPorCota(s);
     return s;
@@ -1377,7 +1487,7 @@ async function mostrarHistorico() {
             <small>${formatarBR(r.dados.data)} · ${r.dados.origem} → ${r.dados.destino}</small>
           </div>
           <div class="item-direita">
-            <span class="item-valor">R$ ${r.dados.valor_exibido}</span>
+            <span class="item-valor">${simboloDe(r.dados)} ${r.dados.valor_exibido}</span>
             <small>${r.pendente ? '⏳ na fila' : r.recusado ? '⚠ ' + motivoRecusa(r.recusado) : '✓ enviado'}</small>
           </div>
           <span class="item-seta" aria-hidden="true">›</span>
@@ -1885,7 +1995,7 @@ function faixaDoValor(rota, t, b) {
 const faixaDaCorrida = (c) => (c && c.estimativa && tarifa()
   ? faixaDoValor(c.estimativa, tarifa(), c.bandeira || 1) : null);
 
-const emReaisInteiros = (n) => `R$ ${n.toLocaleString('pt-BR')}`;
+const emReaisInteiros = (n) => `${moedaAtual().simbolo} ${n.toLocaleString('pt-BR')}`;
 const textoDaFaixa = (f) => (f.de >= f.ate
   ? emReaisInteiros(f.ate) : `${emReaisInteiros(f.de)} a ${emReaisInteiros(f.ate)}`);
 const kmBR = (km) => km.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
@@ -2069,6 +2179,7 @@ function preencherDataEHora() {
 async function iniciar() {
   preencherDataEHora();
   atualizarCabecalho();
+  aplicarMoedaNaTela();   // com o que ficou guardado; a sessao atualiza se houver rede
   if (!token()) { mostrar('tela-login'); return; }
   irParaInicio();
   await atualizarSessao();

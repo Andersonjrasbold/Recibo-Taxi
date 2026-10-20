@@ -53,13 +53,14 @@ function pdfDoRecibo(recibo) {
   texto(`#${recibo.rid}`, { tam: 9, dy: 16 });
   regua();
 
-  texto(`R$ ${d.valor_exibido}`, { fonte: 'F2', tam: 26, dy: 34 });
+  // Simbolo da moeda de quando o recibo saiu; recibo antigo nao tem e e real.
+  texto(`${d.moeda_simbolo || 'R$'} ${d.valor_exibido}`, { fonte: 'F2', tam: 26, dy: 34 });
   regua();
 
   const campos = [
     ['Passageiro', d.passageiro],
     // Opcional: quem viaja a trabalho precisa do documento para prestar contas.
-    ...(d.documento_passageiro ? [['CPF/CNPJ', d.documento_passageiro]] : []),
+    ...(d.documento_passageiro ? [[d.pais && d.pais !== 'BR' ? 'Documento' : 'CPF/CNPJ', d.documento_passageiro]] : []),
     // Sem a razao social, o CNPJ nao fecha a despesa na contabilidade.
     ...(d.razao_social ? [['Razão social', d.razao_social]] : []),
     ['Data', d.data_exibida || d.data],

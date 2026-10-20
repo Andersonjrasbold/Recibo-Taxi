@@ -1447,7 +1447,7 @@ function abrirIndicacao() {
 // ── Desconto de indicacao nas lojas ────────────────────────────────────────
 //
 // Quem indicou um colega ativo ganha 70% por 12 meses no Pro mensal, dentro
-// do app, pela loja. Na Apple e um codigo de oferta (COLEGA70) resgatado na
+// do app, pela loja. Na Apple e um codigo de oferta (INDICA70) resgatado na
 // folha da App Store; no Google e uma oferta do plano base, que o app compra
 // direto quando o servidor diz que o motorista tem direito.
 

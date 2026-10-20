@@ -306,9 +306,17 @@ próxima versão), tabela `referrals`; o primeiro recibo do indicado ativa a
 recompensa (`UPDATE ... where activated_at is null`): 1 mês de Pro por colega
 ativo (até 3; assinante não recebe, cupom fica guardado) e o cupom
 `INDICACAO70` (70% por 12 meses, criado na Stripe sob demanda), aplicado no
-checkout do Pro mensal e marcado como usado pelo webhook. Pré-pago vigente
-segura o Pro quando a loja ou a Stripe encerram a assinatura. Regras em
-`/indicar` e nos Termos (6.7 e 6.8).
+checkout do Pro mensal e marcado como usado pelo webhook. O mesmo desconto
+existe dentro do app, pelas lojas: na Apple, código de oferta `INDICA70` do
+Pro mensal (R$ 5,90 por 12 meses, 175 territórios, resgatado pela folha da
+App Store); no Google, oferta `indicacao70` do plano base `mensal` (70% por
+12 meses, elegibilidade "determinada pelo desenvolvedor", tag `indicacao70`),
+que o app compra como `subscriptionOption`. `/api/sessao` devolve
+`cupom_indicacao.disponivel`; o webhook do RevenueCat marca o cupom usado
+quando a compra traz `offer_code`, a oferta no `product_id` ou `discount_*`.
+O app nunca aponta para o site nem para a Stripe (Apple 3.1.1). Pré-pago
+vigente segura o Pro quando a loja ou a Stripe encerram a assinatura. Regras
+em `/indicar` e nos Termos (6.7 e 6.8).
 
 **Eventos de cobrança** (`billing_events`, migração 0011): os dois webhooks
 gravam cada evento como chegou e o que o servidor fez (`outcome`: `pro`,

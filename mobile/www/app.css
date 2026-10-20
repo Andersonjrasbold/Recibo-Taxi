@@ -234,6 +234,9 @@ button:disabled { opacity:.5; }
   font-variant-numeric:tabular-nums;
 }
 .link-indicacao { color:var(--muted); font-size:.82rem; overflow-wrap:anywhere; }
+.cupom-pro { display:grid; gap:.6rem; text-align:center; }
+.cupom-pro .codigo-indicacao:empty { display:none; }
+.cupom-pro .secundario { margin:0; }
 
 .corrida-aberta {
   display:grid; gap:.15rem; width:100%; text-align:left; margin-bottom:1rem;

@@ -981,6 +981,7 @@ function abrirAssinatura(motivo) {
 
   const jaAssina = assinaPeloServidor();
   $('pro-ativo').hidden = !jaAssina;
+  mostrarCupomDeIndicacao(jaAssina);
   // Pro pre-pago (anual ou mes de indicacao) tem data de fim; assinatura, nao.
   const fimPro = Guardado.get('pro_until');
   $('pro-ativo-texto').textContent = jaAssina && fimPro
@@ -1074,7 +1075,12 @@ $('btn-assinar').addEventListener('click', async () => {
     // marcado na tela. Sem ele, nao compra outra coisa no lugar.
     const pacote = pacotesPro[planoEscolhido];
     if (!pacote) throw new Error('sem oferta configurada');
-    const r = await Purchases.purchasePackage({ aPackage: pacote });
+    // Android com o desconto de indicacao: compra a opcao da oferta
+    // `indicacao70` (70% por 12 meses) em vez do plano base. So o mensal tem.
+    const opcaoComDesconto = planoEscolhido === MENSAL ? opcaoGoogleComDesconto(pacote) : null;
+    const r = opcaoComDesconto
+      ? await Purchases.purchaseSubscriptionOption({ subscriptionOption: opcaoComDesconto })
+      : await Purchases.purchasePackage({ aPackage: pacote });
     const virou = !!r?.customerInfo?.entitlements?.active?.pro;
     if (virou) {
       vibrar('HEAVY');
@@ -1119,6 +1125,7 @@ function encerrarSessao() {
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
   Guardado.del('codigo_indicacao'); Guardado.del('link_indicacao'); Guardado.del('pro_until');
+  Guardado.del('cupom_indicacao');
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -1161,6 +1168,7 @@ async function atualizarSessao() {
     Guardado.set('codigo_indicacao', s.codigo_indicacao || '');
     Guardado.set('link_indicacao', s.link_indicacao || '');
     Guardado.set('pro_until', s.pro_until || '');
+    Guardado.set('cupom_indicacao', s.cupom_indicacao || null);
     atualizarCabecalho();
     await reabrirRecusadosPorCota(s);
     return s;
@@ -1435,6 +1443,53 @@ function abrirIndicacao() {
   // Sessao de antes do codigo existir: busca agora e redesenha uma vez.
   if (!codigo) atualizarSessao().then((s) => { if (s && s.codigo_indicacao) abrirIndicacao(); });
 }
+
+// ── Desconto de indicacao nas lojas ────────────────────────────────────────
+//
+// Quem indicou um colega ativo ganha 70% por 12 meses no Pro mensal, dentro
+// do app, pela loja. Na Apple e um codigo de oferta (INDICA70) resgatado na
+// folha da App Store; no Google e uma oferta do plano base, que o app compra
+// direto quando o servidor diz que o motorista tem direito.
+
+const cupomDeIndicacao = () => {
+  const c = Guardado.get('cupom_indicacao');
+  return c && c.disponivel ? c : null;
+};
+
+function opcaoGoogleComDesconto(pacote) {
+  const cupom = cupomDeIndicacao();
+  if (!cupom || plataforma() !== 'android') return null;
+  const opcoes = pacote?.product?.subscriptionOptions || [];
+  return opcoes.find((o) => (o.tags || []).includes(cupom.tag_google)) || null;
+}
+
+function mostrarCupomDeIndicacao(jaAssina) {
+  const cupom = cupomDeIndicacao();
+  const bloco = $('cupom-pro');
+  bloco.hidden = !cupom || jaAssina;
+  if (bloco.hidden) return;
+  const ios = plataforma() === 'ios';
+  $('cupom-pro-texto').textContent = ios
+    ? `Você indicou um colega: o Pro mensal sai por ${cupom.preco_apple}/mês durante ${cupom.meses} meses `
+      + `(${cupom.pct}% de desconto). Resgate o código na App Store e depois toque em "Restaurar compra".`
+    : `Você indicou um colega: ${cupom.pct}% de desconto por ${cupom.meses} meses no Pro mensal. `
+      + 'O desconto entra sozinho ao assinar o plano mensal.';
+  $('cupom-pro-codigo').textContent = ios ? cupom.codigo_apple : '';
+  $('btn-resgatar-cupom').hidden = !ios;
+}
+
+$('btn-resgatar-cupom').addEventListener('click', async () => {
+  const { Purchases } = P();
+  const cupom = cupomDeIndicacao();
+  if (!cupom) return;
+  vibrar('LIGHT');
+  try {
+    if (Purchases?.presentCodeRedemptionSheet) await Purchases.presentCodeRedemptionSheet();
+    else window.open(`https://apps.apple.com/redeem?ctx=offercodes&id=6811583712&code=${cupom.codigo_apple}`, '_blank');
+  } catch (e) {
+    mostrarErroDeCompra($('erro-pro'), e);
+  }
+});
 
 $('btn-indicar').addEventListener('click', () => { vibrar('LIGHT'); abrirIndicacao(); });
 $('btn-ir-indicar').addEventListener('click', () => { vibrar('LIGHT'); abrirIndicacao(); });

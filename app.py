@@ -295,6 +295,14 @@ INDICACAO_MAX_MESES = 3
 INDICACAO_CUPOM_PCT = 70
 INDICACAO_CUPOM_MESES = 12
 INDICACAO_CUPOM_ID = "INDICACAO70"   # id do cupom na Stripe; criado sob demanda
+# O mesmo desconto dentro do app, pelas lojas (criados em 2026-10-19 pela API):
+# na Apple, código de oferta do Pro mensal a R$ 5,90 por 12 meses, resgatado
+# pela folha da App Store; no Google, oferta `indicacao70` (70% por 12 meses)
+# de elegibilidade "determinada pelo desenvolvedor" — o app só a mostra a
+# quem o servidor diz que ganhou.
+INDICACAO_CODIGO_APPLE = "INDICA70"   # escolha do Anderson (2026-10-19); COLEGA70 ficou desativado
+INDICACAO_TAG_GOOGLE = "indicacao70"
+INDICACAO_PRECO_APPLE = "R$ 5,90"
 INDICACAO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # sem 0/O, 1/I
 INDICACAO_TAMANHO = 6
 # Pro que não é assinatura: vive em drivers.pro_until e o cron rebaixa.
@@ -3141,6 +3149,14 @@ def api_sessao():
             "pro_until": g.user.get("pro_until") or None,
             "codigo_indicacao": codigo_de_indicacao(g.user),
             "link_indicacao": link_de_indicacao(codigo_de_indicacao(g.user)),
+            # Desconto de indicação nas lojas: o app mostra o código da Apple ou
+            # compra a oferta do Google só quando `disponivel` é verdadeiro.
+            "cupom_indicacao": {
+                "disponivel": tem_cupom_de_indicacao(g.user),
+                "pct": INDICACAO_CUPOM_PCT, "meses": INDICACAO_CUPOM_MESES,
+                "codigo_apple": INDICACAO_CODIGO_APPLE, "preco_apple": INDICACAO_PRECO_APPLE,
+                "tag_google": INDICACAO_TAG_GOOGLE,
+            },
             "moeda_simbolo": simbolo,
             "moeda_casas": casas,
             "limite_mensal": None if plano in PAID_PLANS else FREE_MONTHLY_LIMIT,
@@ -3628,6 +3644,19 @@ def motorista_do_evento_rc(evento: dict) -> tuple[dict | None, str]:
     return None, ""
 
 
+def compra_com_desconto_de_indicacao(evento: dict) -> bool:
+    """O evento do RevenueCat diz que a compra usou o desconto de indicação.
+
+    Apple: `offer_code` traz o código resgatado. Google: a oferta aparece no
+    identificador do produto (`sub:plano:oferta`), em `offer_code` ou nos
+    campos `discount_*`, conforme a versão do RevenueCat — por isso os três.
+    """
+    textos = " ".join(str(evento.get(k) or "") for k in ("offer_code", "product_id", "discount_identifier")).lower()
+    if INDICACAO_CODIGO_APPLE.lower() in textos or INDICACAO_TAG_GOOGLE in textos:
+        return True
+    return bool(evento.get("discount_percentage") or evento.get("discount_amount"))
+
+
 def pro_vem_da_stripe(usuario: dict) -> bool:
     """Assinatura ativa na Stripe. Evento da loja nao mexe nela: sao
     assinaturas independentes (Guideline 3.1.3b).
@@ -3757,6 +3786,11 @@ def webhook_revenuecat():
     elif tipo in RC_EVENTOS_ATIVA:
         ativar_pro_pela_loja(user_id)
         resultado = "pro"
+        # Compra com o desconto de indicação (código da Apple ou oferta do
+        # Google): o cupom vale uma vez, e a loja cuida dos 12 meses.
+        if tem_cupom_de_indicacao(usuario) and compra_com_desconto_de_indicacao(evento):
+            store.update_user(user_id, {"referral_coupon_used_at": now_iso()})
+            resultado += " (cupom de indicação)"
         if tipo == "INITIAL_PURCHASE":
             loja = str(evento.get("store") or "")
             avisar_nova_assinatura(

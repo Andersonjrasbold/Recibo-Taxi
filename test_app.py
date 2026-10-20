@@ -2507,7 +2507,7 @@ try:
     r = A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
                                  json={"event": {"type": "INITIAL_PURCHASE", "id": f"teste-suite-{_suf_in}-cupom",
                                                  "app_user_id": _ind["_id"], "store": "APP_STORE", "environment": "PRODUCTION",
-                                                 "product_id": "br.com.recibotaxi.app.pro.mensal", "offer_code": "COLEGA70",
+                                                 "product_id": "br.com.recibotaxi.app.pro.mensal", "offer_code": A.INDICACAO_CODIGO_APPLE,
                                                  "price_in_purchased_currency": 5.9, "currency": "BRL"}})
     _ind4 = store.get_user_by_id(_ind["_id"])
     check("compra com o codigo da Apple marca o cupom como usado",

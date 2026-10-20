@@ -307,7 +307,7 @@ recompensa (`UPDATE ... where activated_at is null`): 1 mês de Pro por colega
 ativo (até 3; assinante não recebe, cupom fica guardado) e o cupom
 `INDICACAO70` (70% por 12 meses, criado na Stripe sob demanda), aplicado no
 checkout do Pro mensal e marcado como usado pelo webhook. O mesmo desconto
-existe dentro do app, pelas lojas: na Apple, código de oferta `COLEGA70` do
+existe dentro do app, pelas lojas: na Apple, código de oferta `INDICA70` do
 Pro mensal (R$ 5,90 por 12 meses, 175 territórios, resgatado pela folha da
 App Store); no Google, oferta `indicacao70` do plano base `mensal` (70% por
 12 meses, elegibilidade "determinada pelo desenvolvedor", tag `indicacao70`),

@@ -300,7 +300,7 @@ INDICACAO_CUPOM_ID = "INDICACAO70"   # id do cupom na Stripe; criado sob demanda
 # pela folha da App Store; no Google, oferta `indicacao70` (70% por 12 meses)
 # de elegibilidade "determinada pelo desenvolvedor" — o app só a mostra a
 # quem o servidor diz que ganhou.
-INDICACAO_CODIGO_APPLE = "COLEGA70"
+INDICACAO_CODIGO_APPLE = "INDICA70"   # escolha do Anderson (2026-10-19); COLEGA70 ficou desativado
 INDICACAO_TAG_GOOGLE = "indicacao70"
 INDICACAO_PRECO_APPLE = "R$ 5,90"
 INDICACAO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # sem 0/O, 1/I

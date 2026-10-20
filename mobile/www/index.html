@@ -409,6 +409,14 @@
     <a id="link-gerenciar" href="#" class="ligacao" hidden>Gerenciar assinatura</a>
   </div>
 
+  <!-- Desconto de indicacao, pela loja: codigo de oferta na Apple, oferta do
+       plano no Google. So aparece para quem o servidor diz que ganhou. -->
+  <div id="cupom-pro" class="aviso cupom-pro" hidden>
+    <span id="cupom-pro-texto"></span>
+    <strong id="cupom-pro-codigo" class="codigo-indicacao"></strong>
+    <button type="button" id="btn-resgatar-cupom" class="secundario" hidden>Resgatar o código na App Store</button>
+  </div>
+
   <!-- O preco de cada opcao vem da loja quando a tela abre. O anual so aparece
        se a loja o devolveu; o mensal tem o valor de sempre como reserva. -->
   <div id="planos-pro" class="planos-pro" role="radiogroup" aria-label="Escolha o plano">
@@ -459,7 +467,8 @@
   </div>
   <p class="ajuda">
     Cada colega que cria a conta com o seu código e emite o primeiro recibo
-    rende <strong>1 mês de Pro grátis</strong> para você, até 3 meses.
+    rende <strong>1 mês de Pro grátis</strong> para você (até 3 meses) e libera
+    <strong>70% de desconto por 12 meses</strong> no Pro mensal.
   </p>
 
   <div class="cartao-pro cartao-indicacao">
@@ -477,7 +486,8 @@
       <li>O colega informa o código ao criar a conta.</li>
       <li>A recompensa libera no primeiro recibo dele, não no cadastro.</li>
       <li>Os meses somam: quem já tem Pro de indicação ganha mais 30 dias no fim do prazo.</li>
-      <li>Quem já assina o Pro não recebe o mês grátis.</li>
+      <li>O desconto aparece na tela do Pro, para assinar o plano mensal. Vale uma vez.</li>
+      <li>Quem já assina o Pro não recebe o mês grátis; o desconto fica guardado.</li>
     </ul>
   </div>
 </section>

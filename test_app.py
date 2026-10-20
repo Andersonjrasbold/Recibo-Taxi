@@ -1115,19 +1115,25 @@ check("o RevenueCat e configurado ja com o id do motorista",
 check("o app nunca faz logOut no RevenueCat", "Purchases.logOut" not in _appjs)
 
 # -- Indicacao no app -----------------------------------------------------
-# A tela do app so fala do mes de Pro. O cupom de 70% existe no SITE, e falar
-# dele dentro do app seria levar o motorista a comprar fora da loja — o que a
-# Apple recusa (3.1.1) e, no Brasil, passou a comissionar.
+# O desconto de 70% dentro do app e da LOJA (codigo de oferta na Apple, oferta
+# do plano no Google). O app nunca aponta para o site nem para o cupom da
+# Stripe: seria levar o motorista a comprar fora da loja — o que a Apple
+# recusa (3.1.1) e, no Brasil, passou a comissionar.
 print("\n-- Indicacao no app --")
 _tela_ind = _html_app.split('id="tela-indicar"', 1)[1].split("</section>", 1)[0] if 'id="tela-indicar"' in _html_app else ""
+_tela_pro2 = _html_app.split('id="tela-assinatura"', 1)[1].split("</section>", 1)[0]
 check("o app tem a tela de indicacao, com o codigo e o WhatsApp",
       'id="codigo-indicacao"' in _tela_ind and 'id="btn-indicar-whats"' in _tela_ind)
 check("o cadastro do app manda o codigo de indicacao",
       'id="c-indicacao"' in _html_app and "indicacao:" in _appjs and "codigo_indicacao_invalido" in _appjs)
-check("a tela de indicacao nao fala de desconto nem do site (3.1.1)",
-      _tela_ind and "desconto" not in _tela_ind.lower() and "70%" not in _tela_ind and "recibotaxi.com.br/indicar" not in _tela_ind)
-check("o app guarda o codigo e o pro_until da sessao",
-      "'codigo_indicacao'" in _appjs and "'pro_until'" in _appjs)
+check("nenhuma tela do app aponta para o site para comprar (3.1.1)",
+      _tela_ind and "recibotaxi.com.br/indicar" not in _tela_ind and "no site" not in _tela_ind.lower()
+      and "stripe" not in (_tela_ind + _tela_pro2).lower())
+check("o desconto no app vem da loja: codigo da Apple e oferta do Google",
+      'id="cupom-pro"' in _tela_pro2 and "presentCodeRedemptionSheet" in _appjs
+      and "purchaseSubscriptionOption" in _appjs and "tag_google" in _appjs)
+check("o app guarda o codigo, o pro_until e o cupom da sessao",
+      "'codigo_indicacao'" in _appjs and "'pro_until'" in _appjs and "'cupom_indicacao'" in _appjs)
 check("nenhum preco do anual escrito no app",
       not _re.search(r"119[,.]\d", _html_app + _appjs))
 check("o preco do anual vem da loja", "anual.priceString" in _appjs)
@@ -2490,6 +2496,25 @@ try:
     check("EXPIRATION da loja nao derruba quem tem pre-pago vigente",
           r.status_code == 200 and (r.get_json() or {}).get("resultado") == "mantido_prepago"
           and store.get_user_by_id(_i1["_id"])["plan"] == "pro", str(r.get_json()))
+    # O desconto nas lojas: a sessao informa o cupom, e a compra com o codigo
+    # da Apple (ou a oferta do Google) marca o cupom como usado.
+    _sess_ind = _ci.get("/api/sessao").get_json() or {}
+    _cup = _sess_ind.get("cupom_indicacao") or {}
+    check("/api/sessao informa o cupom das lojas a quem ganhou",
+          _cup.get("disponivel") is True and _cup.get("codigo_apple") == A.INDICACAO_CODIGO_APPLE
+          and _cup.get("tag_google") == A.INDICACAO_TAG_GOOGLE and _cup.get("pct") == 70, str(_cup))
+    check("quem nao ganhou nao ve o cupom", (_sess.get("cupom_indicacao") or {}).get("disponivel") is False)
+    r = A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                                 json={"event": {"type": "INITIAL_PURCHASE", "id": f"teste-suite-{_suf_in}-cupom",
+                                                 "app_user_id": _ind["_id"], "store": "APP_STORE", "environment": "PRODUCTION",
+                                                 "product_id": "br.com.recibotaxi.app.pro.mensal", "offer_code": "COLEGA70",
+                                                 "price_in_purchased_currency": 5.9, "currency": "BRL"}})
+    _ind4 = store.get_user_by_id(_ind["_id"])
+    check("compra com o codigo da Apple marca o cupom como usado",
+          r.status_code == 200 and "cupom" in (r.get_json() or {}).get("resultado", "")
+          and bool(_ind4["referral_coupon_used_at"]) and _ind4["plan"] == "pro", str(r.get_json()))
+    check("depois disso a sessao nao oferece o cupom de novo",
+          ((_ci.get("/api/sessao").get_json() or {}).get("cupom_indicacao") or {}).get("disponivel") is False)
 
     # Cron: vencido volta ao Gratis; assinante com data velha guardada fica; lembrete 15 dias antes.
     _email_ven, _email_lem, _email_loja = (f"{n}-{_suf_in}@teste.invalid" for n in ("vencido", "lembrete", "loja"))

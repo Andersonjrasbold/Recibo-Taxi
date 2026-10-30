@@ -7,12 +7,22 @@
  * Helvetica usa WinAnsiEncoding, que cobre o português (á, ç, ã, õ).
  */
 
+// Acima do Latin-1 o WinAnsi ainda tem alguns caracteres: o €, de quem cobra em
+// euro, e a pontuacao que o teclado do iPhone troca sozinho (’ “ ” –).
+const WIN_ANSI_EXTRA = {
+  '€': '\x80', '‚': '\x82', 'ƒ': '\x83', '„': '\x84', '…': '\x85', '†': '\x86', '‡': '\x87',
+  'ˆ': '\x88', '‰': '\x89', 'Š': '\x8a', '‹': '\x8b', 'Œ': '\x8c', 'Ž': '\x8e', '‘': '\x91',
+  '’': '\x92', '“': '\x93', '”': '\x94', '•': '\x95', '–': '\x96', '—': '\x97', '˜': '\x98',
+  '™': '\x99', 'š': '\x9a', '›': '\x9b', 'œ': '\x9c', 'ž': '\x9e', 'Ÿ': '\x9f',
+};
+
+const temWinAnsi = (ch) => ch.codePointAt(0) <= 0xff || ch in WIN_ANSI_EXTRA;
+
 function paraWinAnsi(texto) {
   // Fora do WinAnsi vira '?' — melhor um caractere trocado que um PDF quebrado.
   let saida = '';
   for (const ch of String(texto)) {
-    const c = ch.codePointAt(0);
-    saida += c <= 0xff ? ch : '?';
+    saida += ch.codePointAt(0) <= 0xff ? ch : (WIN_ANSI_EXTRA[ch] || '?');
   }
   return saida;
 }
@@ -27,8 +37,12 @@ function bytesLatin1(str) {
   return out;
 }
 
-/** Monta o PDF de um recibo e devolve base64. */
-function pdfDoRecibo(recibo) {
+/** Monta o PDF de um recibo e devolve base64.
+ *
+ * `qr` sao as linhas da matriz do QR ('1' = modulo escuro), que o app.js
+ * monta a partir de `link`. Sem elas o PDF sai sem o QR, como antes.
+ */
+function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   const d = recibo.dados, m = recibo.motorista || {};
   const L = 56;              // margem esquerda
   let y = 780;               // A4 tem 842 de altura
@@ -54,11 +68,16 @@ function pdfDoRecibo(recibo) {
   regua();
 
   // Simbolo da moeda de quando o recibo saiu; recibo antigo nao tem e e real.
-  texto(`${d.moeda_simbolo || 'R$'} ${d.valor_exibido}`, { fonte: 'F2', tam: 26, dy: 34 });
+  // Simbolo que a fonte do PDF nao tem (₡ do colon, ₲ do guarani) sai como o
+  // codigo da moeda: "CRC 15.000" em vez de "? 15.000".
+  const simbolo = d.moeda_simbolo || 'R$';
+  const simboloNoPdf = [...simbolo].every(temWinAnsi) ? simbolo : (d.moeda || simbolo);
+  texto(`${simboloNoPdf} ${d.valor_exibido}`, { fonte: 'F2', tam: 26, dy: 34 });
   regua();
 
   const campos = [
-    ['Passageiro', d.passageiro],
+    // Opcional: sem nome, o recibo nao ganha uma linha "Passageiro: -".
+    ...(d.passageiro ? [['Passageiro', d.passageiro]] : []),
     // Opcional: quem viaja a trabalho precisa do documento para prestar contas.
     ...(d.documento_passageiro ? [[d.pais && d.pais !== 'BR' ? 'Documento' : 'CPF/CNPJ', d.documento_passageiro]] : []),
     // Sem a razao social, o CNPJ nao fecha a despesa na contabilidade.
@@ -93,6 +112,31 @@ function pdfDoRecibo(recibo) {
     regua();
     texto('Precisou de corrida? Me chame no WhatsApp:', { fonte: 'F2', tam: 10, dy: 22 });
     texto(m.whatsapp, { fonte: 'F2', tam: 14, dy: 17 });
+  }
+
+  // QR do recibo online no canto de baixo, com a legenda ao lado. Cada modulo
+  // e um quadrado de 3 pt (cerca de 1 mm impresso): numero inteiro, para as
+  // linhas encostarem sem fresta no leitor de PDF. A margem branca do padrao
+  // (4 modulos) sobra no papel em volta: o conteudo de cima termina mais alto.
+  if (qr && qr.length) {
+    const n = qr.length, passo = 3;
+    const x0 = 539 - n * passo, y0 = 92;
+    const quadrados = [];
+    qr.forEach((linha, l) => {
+      for (let c = 0; c < n;) {
+        if (linha[c] !== '1') { c++; continue; }
+        let fim = c;
+        while (fim < n && linha[fim] === '1') fim++;
+        // No PDF o y cresce para cima: a primeira linha da matriz fica no topo.
+        quadrados.push(`${x0 + c * passo} ${y0 + (n - 1 - l) * passo} ${(fim - c) * passo} ${passo} re`);
+        c = fim;
+      }
+    });
+    linhas.push(`q 0 g ${quadrados.join(' ')} f Q`);
+    y = 164;
+    texto('Aponte a câmera do celular', { fonte: 'F2', tam: 10, dy: 14 });
+    texto('para abrir este recibo online:', { tam: 10, dy: 14 });
+    if (link) texto(link, { tam: 8, dy: 14 });
   }
 
   y = 70;

@@ -118,7 +118,8 @@ if (modo === 'fotos') {
   const casos = [
     ['passo=0', '0-inicio'], ['passo=1', '1-corrida-nova'], ['passo=2', '2-tarifa'],
     ['passo=3', '3-estimativa'], ['passo=4', '4-em-andamento'], ['passo=5', '5-inicio-com-corrida'],
-    ['passo=6', '6-encerrada'], ['passo=7', '7-recibo-preenchido'], ['c=negado&passo=1', '8-sem-permissao'],
+    ['passo=6', '6-encerrada'], ['passo=7', '7-recibo-preenchido'], ['passo=8', '8-recibo-com-qr'],
+    ['c=negado&passo=1', '9-sem-permissao'],
   ];
   for (const [hash, nome] of casos) {
     await abrir(hash);
@@ -134,13 +135,21 @@ if (modo === 'fotos') {
   await encerrar(0);
 }
 
-await abrir('c=asserts');
-let resultado;
-for (let i = 0; i < 120 && !resultado; i++) {
-  await espera(500);
-  resultado = await avaliar("document.getElementById('resultado-teste')?.textContent");
+// Dois modos, nesta ordem: o fluxo (sem sessao, nada sobe) e depois o envio
+// com o servidor simulado. O IndexedDB e o mesmo nos dois; o modo rede limpa
+// os recibos antes de comecar.
+const partes = [];
+for (const [hash, nome] of [['c=asserts', 'fluxo'], ['c=rede', 'rede simulada']]) {
+  await abrir(hash);
+  let parte;
+  for (let i = 0; i < 120 && !parte; i++) {
+    await espera(500);
+    parte = await avaliar("document.getElementById('resultado-teste')?.textContent");
+  }
+  if (!parte) { console.log(`A sonda nao terminou (${nome}): sem resultado.`); await encerrar(1); }
+  partes.push(parte);
 }
-if (!resultado) { console.log('A sonda nao terminou: sem resultado.'); await encerrar(1); }
+const resultado = partes.join('\n');
 console.log(resultado);
 const falhas = resultado.split('\n').filter((l) => !l.startsWith('OK'));
 console.log(`\n${falhas.length ? `FALHAS: ${falhas.length}` : 'Tudo certo.'}`);

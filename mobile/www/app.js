@@ -156,6 +156,10 @@ async function api(caminho, opcoes = {}) {
   return resp;
 }
 
+// A tela de assinatura aberta pela recusa por limite fecha de volta no recibo
+// (ver btn-fechar-pro).
+let voltarDaAssinaturaParaRecibo = false;
+
 async function sincronizar() {
   if (!(await temRede()) || !token()) {
     return { enviados: 0, restantes: (await pendentes()).length };
@@ -181,9 +185,12 @@ async function sincronizar() {
         // Cota do mês acabou: para de tentar, senão fica em laço.
         await salvarRecibo({ ...recibo, pendente: false, recusado: 'limite_mensal' });
         const limite = Guardado.get('limite');
+        // Vindo da tela do recibo, "Agora não" volta para ela: e la que esta o
+        // aviso de que este recibo ficou sem QR.
+        if (!$('tela-recibo').hidden) voltarDaAssinaturaParaRecibo = true;
         abrirAssinatura(
-          `Você usou os ${limite ?? ''} recibos deste mês do plano Grátis. ` +
-          'O Pro libera recibos ilimitados.');
+          `Você usou os ${limite ?? ''} recibos deste mês do plano Grátis: o recibo novo ` +
+          'ficou sem link e sem QR para o passageiro. O Pro libera recibos ilimitados.');
       } else if (resp.status === 400 || resp.status === 409) {
         await salvarRecibo({ ...recibo, pendente: false, recusado: (await resp.json()).erro });
       } else if (resp.status === 401) {
@@ -418,6 +425,13 @@ function motivoRecusa(codigo) {
   return {
     limite_mensal: 'limite de recibos do mês',
     rid_de_outro_motorista: 'código já usado',
+    // Servidor anterior ao nome opcional recusando recibo sem nome.
+    campos_obrigatorios: 'faltou um campo obrigatório',
+    // Os demais 400 de /api/recibos. Aparecem no aviso de recibo sem QR.
+    valor_invalido: 'valor inválido',
+    km_invalido: 'km inválido',
+    campo_longo: 'um campo passou do tamanho',
+    rid_invalido: 'código inválido',
   }[codigo] || codigo;
 }
 
@@ -453,8 +467,9 @@ function montarRecibo(recibo) {
       </div>
     </div>
     <div class="recibo-valor">${simboloDe(d)} ${d.valor_exibido}</div>
+    ${blocoQr(recibo)}
     <dl class="recibo-dados">
-      <dt>Passageiro</dt><dd>${d.passageiro}</dd>
+      ${d.passageiro ? `<dt>Passageiro</dt><dd>${d.passageiro}</dd>` : ''}
       ${d.documento_passageiro ? `<dt>${rotuloDocumentoDe(d)}</dt><dd>${d.documento_passageiro}</dd>` : ''}
       ${d.razao_social ? `<dt>Razão social</dt><dd>${d.razao_social}</dd>` : ''}
       <dt>Data</dt><dd>${formatarBR(d.data)}</dd>
@@ -477,7 +492,14 @@ function montarRecibo(recibo) {
 // Eram duas coisas separadas e elas saiam de sincronia: o corpo era redesenhado
 // depois do envio, o link nao, e o passageiro recebia mensagem sem o endereco.
 function mostrarRecibo(recibo) {
-  $('recibo').innerHTML = montarRecibo(recibo);
+  const caixa = $('recibo');
+  // Redesenhar o MESMO recibo (o sinal voltou) nao fecha o QR que o
+  // motorista abriu para mostrar ao passageiro.
+  const qrAberto = caixa.dataset.rid === recibo.rid && !!caixa.querySelector('details.recibo-qr[open]');
+  caixa.innerHTML = montarRecibo(recibo);
+  caixa.dataset.rid = recibo.rid;
+  caixa.dataset.estado = estadoDoRecibo(recibo);
+  if (qrAberto) caixa.querySelector('details.recibo-qr')?.setAttribute('open', '');
   const fone = foneE164(recibo.dados.whatsapp_passageiro);
   $('btn-whats').hidden = !fone;
   $('btn-compartilhar').className = fone ? 'secundario' : 'primario';
@@ -518,7 +540,11 @@ function abrirRecibo(recibo, { doHistorico = false } = {}) {
 async function esperarSubir(rid) {
   const subiu = sincronizar().then(async () => {
     const atual = (await listarRecibos()).find((r) => r.rid === rid);
-    if (atual) mostrarRecibo(atual);
+    // So redesenha se a tela ainda mostra ESTE recibo. Com sinal fraco, o
+    // envio lento do recibo anterior terminava depois de o motorista emitir
+    // o seguinte e trocava a tela de volta: o passageiro novo lia o QR do
+    // anterior e recebia o recibo de outra pessoa.
+    if (atual && $('btn-compartilhar').dataset.rid === rid) mostrarRecibo(atual);
     return atual;
   });
   if (!(await temRede())) return;
@@ -537,11 +563,97 @@ function linkDoRecibo(recibo) {
   return recibo.url || `${API || location.origin}/recibo/${recibo.rid}`;
 }
 
+// O QR leva ao recibo online. E o caminho de quem nao deu telefone nem
+// e-mail: o motorista mostra a tela e o passageiro aponta a camera do
+// proprio celular. O codigo e desenhado aqui, sem rede, como o resto do
+// recibo. Devolve as linhas da matriz ('1' = modulo escuro), para a tela e o
+// PDF desenharem o mesmo codigo; null se a biblioteca nao carregou.
+function matrizQr(texto) {
+  if (typeof qrcode !== 'function' || !texto) return null;
+  try {
+    const qr = qrcode(0, 'M');
+    qr.addData(texto);
+    qr.make();
+    const n = qr.getModuleCount();
+    return Array.from({ length: n }, (_, l) =>
+      Array.from({ length: n }, (_, c) => (qr.isDark(l, c) ? '1' : '0')).join(''));
+  } catch {
+    return null;
+  }
+}
+
+// Cada sequencia de modulos escuros de uma linha vira um retangulo so. A
+// margem branca de 4 modulos faz parte do padrao: sem ela a camera nao acha
+// as bordas do codigo.
+function svgDoQr(linhas) {
+  const n = linhas.length, borda = 4, lado = n + 2 * borda;
+  let caminho = '';
+  linhas.forEach((linha, l) => {
+    for (let c = 0; c < n;) {
+      if (linha[c] !== '1') { c++; continue; }
+      let fim = c;
+      while (fim < n && linha[fim] === '1') fim++;
+      caminho += `M${c + borda} ${l + borda}h${fim - c}v1h-${fim - c}z`;
+      c = fim;
+    }
+  });
+  return `<svg class="qr" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${lado} ${lado}"` +
+    ' role="img" aria-label="QR Code do recibo"' +
+    ` shape-rendering="crispEdges"><rect width="${lado}" height="${lado}" fill="#fff"/>` +
+    `<path d="${caminho}" fill="#000"/></svg>`;
+}
+
+// QR do recibo que vai para o PDF; null quando o recibo nao vai ao ar.
+function qrDoRecibo(recibo) {
+  return recibo.recusado ? null : matrizQr(linkDoRecibo(recibo));
+}
+
+// Fica logo abaixo do valor, para caber na tela sem rolar quando o motorista
+// vira o celular para o passageiro.
+function blocoQr(recibo) {
+  if (recibo.recusado) {
+    // Recibo recusado nao vai ao ar: o QR abriria uma pagina vazia. No lugar
+    // dele, o motivo e o que fazer, para o motorista nao procurar o QR.
+    const pro = recibo.recusado === 'limite_mensal'
+      ? ' Assinando o Pro, ele é publicado e o QR aparece.' : '';
+    return `
+      <div class="recibo-qr recibo-qr-sem">
+        <p class="recibo-qr-titulo">Sem QR neste recibo</p>
+        <p class="recibo-qr-legenda">Ele não foi publicado (${motivoRecusa(recibo.recusado)}),
+          então o link não abre. Envie o PDF ao passageiro ou deixe que ele fotografe esta tela.${pro}</p>
+      </div>`;
+  }
+  const linhas = qrDoRecibo(recibo);
+  if (!linhas) return '';
+  // Na fila, o QR ja serve: a pagina do outro lado espera o recibo chegar.
+  // Mas so chega com sinal e com o app aberto, e isso o motorista precisa ler.
+  const legenda = recibo.pendente
+    ? 'Ainda não enviado. O passageiro já pode ler o QR: o recibo aparece para ele quando este celular tiver sinal, com o app aberto.'
+    : 'O recibo abre no navegador, sem instalar aplicativo.';
+  const miolo = `${svgDoQr(linhas)}<p class="recibo-qr-legenda">${legenda}</p>`;
+  // Sem WhatsApp nem e-mail do passageiro, o QR e o caminho do recibo: fica
+  // aberto. Com contato, os botoes resolvem, e o QR recolhido nao empurra o
+  // "Enviar no WhatsApp" para baixo da tela.
+  const temContato = !!foneE164(recibo.dados.whatsapp_passageiro) || !!recibo.dados.email_passageiro;
+  if (temContato) {
+    return `
+      <details class="recibo-qr">
+        <summary class="recibo-qr-titulo">Mostrar QR Code ao passageiro</summary>
+        ${miolo}
+      </details>`;
+  }
+  return `
+    <div class="recibo-qr">
+      <p class="recibo-qr-titulo">Aponte a câmera do celular</p>
+      ${miolo}
+    </div>`;
+}
+
 function textoParaCompartilhar(recibo) {
   const d = recibo.dados;
   const linhas = [
     `✅ Recibo #${recibo.rid}`,
-    `👤 Passageiro: ${d.passageiro}`,
+    ...(d.passageiro ? [`👤 Passageiro: ${d.passageiro}`] : []),
     ...(d.documento_passageiro ? [`🧾 ${rotuloDocumentoDe(d)}: ${d.documento_passageiro}`] : []),
     ...(d.razao_social ? [`🏢 Razão social: ${d.razao_social}`] : []),
     `📅 Data: ${formatarBR(d.data)}`,
@@ -552,8 +664,12 @@ function textoParaCompartilhar(recibo) {
     `💰 Valor: ${simboloDe(d)} ${d.valor_exibido}`,
     `💳 Pagamento: ${d.forma_pagamento}`,
   ];
-  linhas.push('', '🔗 Recibo completo, para ver, imprimir ou salvar em PDF:',
-              linkDoRecibo(recibo));
+  // Recibo recusado nao vai ao ar: o link levaria a uma pagina de espera sem
+  // fim. Mesmo criterio do QR.
+  if (!recibo.recusado) {
+    linhas.push('', '🔗 Recibo completo, para ver, imprimir ou salvar em PDF:',
+                linkDoRecibo(recibo));
+  }
   const chamada = chamadaDoMotorista(recibo.motorista);
   if (chamada) linhas.push('', `🚕 ${chamada}`);
   return linhas.join('\n');
@@ -970,7 +1086,7 @@ $('btn-compartilhar').addEventListener('click', async () => {
       const nomeArquivo = `recibo-${rid}.pdf`;
       const escrito = await Filesystem.writeFile({
         path: nomeArquivo,
-        data: pdfDoRecibo(recibo),
+        data: pdfDoRecibo(recibo, { link: linkDoRecibo(recibo), qr: qrDoRecibo(recibo) }),
         directory: 'CACHE',
       });
       await Share.share({
@@ -1139,7 +1255,14 @@ $('plano-mensal').addEventListener('click', () => { escolhidoNaTela = true; esco
 // tem como chegar na compra, e assinante nenhum tem como restaurar.
 $('btn-pro').addEventListener('click', () => abrirAssinatura(''));
 
-$('btn-fechar-pro').addEventListener('click', voltarParaBase);
+// A recusa por limite abre esta tela por cima do recibo recem-emitido. Voltar
+// ao formulario escondia o aviso de que o recibo ficou sem QR.
+$('btn-fechar-pro').addEventListener('click', () => {
+  const paraRecibo = voltarDaAssinaturaParaRecibo;
+  voltarDaAssinaturaParaRecibo = false;
+  if (paraRecibo) { mostrar('tela-recibo'); return; }
+  voltarParaBase();
+});
 
 // "Nao foi possivel concluir a compra" era tudo que aparecia, para qualquer
 // causa: produto que a loja nao devolveu, contrato pendente, aparelho sem conta
@@ -1286,6 +1409,20 @@ async function reabrirRecusadosPorCota(sessao) {
   return recusados.length;
 }
 
+// Recibo sem nome recusado por um servidor anterior ao nome opcional (build
+// novo antes do deploy, ou deploy desfeito). Volta para a fila so quando o
+// servidor diz que aceita: sem o sinal, seria recusado de novo.
+async function reabrirRecusadosSemNome(sessao) {
+  if (sessao.passageiro_opcional !== true) return 0;
+  const recusados = (await listarRecibos()).filter((r) => r.recusado === 'campos_obrigatorios'
+    && !r.dados.passageiro && r.dados.data && r.dados.origem && r.dados.destino);
+  for (const r of recusados) {
+    const { recusado, ...resto } = r;
+    await salvarRecibo({ ...resto, pendente: true });
+  }
+  return recusados.length;
+}
+
 async function atualizarSessao() {
   try {
     const r = await api('/api/sessao');
@@ -1313,6 +1450,7 @@ async function atualizarSessao() {
     }
     atualizarCabecalho();
     await reabrirRecusadosPorCota(s);
+    await reabrirRecusadosSemNome(s);
     return s;
   } catch { return null; }
 }
@@ -1477,14 +1615,17 @@ $('form-excluir').addEventListener('submit', async (ev) => {
 });
 $('btn-sair').addEventListener('click', encerrarSessao);
 
+// Sem nome do passageiro, a rota vira o titulo do item: e o que distingue um
+// recibo do outro.
 async function mostrarHistorico() {
   const lista = await listarRecibos();
   $('lista-historico').innerHTML = lista.length
     ? lista.map((r) => `
         <div class="item" role="button" data-rid="${r.rid}">
           <div>
-            <strong>${r.dados.passageiro}</strong>
-            <small>${formatarBR(r.dados.data)} · ${r.dados.origem} → ${r.dados.destino}</small>
+            <strong>${r.dados.passageiro || `${r.dados.origem} → ${r.dados.destino}`}</strong>
+            <small>${formatarBR(r.dados.data)} · ${r.dados.passageiro
+              ? `${r.dados.origem} → ${r.dados.destino}` : 'sem nome do passageiro'}</small>
           </div>
           <div class="item-direita">
             <span class="item-valor">${simboloDe(r.dados)} ${r.dados.valor_exibido}</span>
@@ -1514,7 +1655,21 @@ $('lista-historico').addEventListener('click', async (ev) => {
   if (recibo.pendente || recibo.recusado) await esperarSubir(recibo.rid);
 });
 
-window.addEventListener('online', async () => { await sincronizar(); atualizarAvisoFila(); });
+// O sinal voltou com o recibo aberto na tela: redesenha, para o estado e a
+// legenda do QR dizerem que ele ja esta no ar. So quando o estado mudou de
+// verdade: redesenhar apaga o aviso do e-mail que o motorista pode estar lendo.
+async function redesenharReciboAberto() {
+  if ($('tela-recibo').hidden) return;
+  const rid = $('btn-compartilhar').dataset.rid;
+  const atual = (await listarRecibos()).find((r) => r.rid === rid);
+  // Confere de novo depois do await: o motorista pode ter aberto outro recibo.
+  if (atual && $('btn-compartilhar').dataset.rid === rid
+      && estadoDoRecibo(atual) !== $('recibo').dataset.estado) mostrarRecibo(atual);
+}
+
+window.addEventListener('online', async () => {
+  await sincronizar(); atualizarAvisoFila(); redesenharReciboAberto();
+});
 window.addEventListener('offline', atualizarAvisoFila);
 
 // No aparelho o evento do plugin é mais confiável que o do navegador.
@@ -1522,6 +1677,7 @@ if (P().Network) {
   P().Network.addListener('networkStatusChange', async (st) => {
     if (st.connected) await sincronizar();
     atualizarAvisoFila();
+    redesenharReciboAberto();
   });
 }
 

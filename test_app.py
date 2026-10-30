@@ -822,36 +822,53 @@ check("nenhum template com o limite escrito a mao", not _fixos, ", ".join(_fixos
 # confere cada deslocamento.
 print("\n-- PDF do aparelho --")
 import subprocess as _sp
+# O QR e montado como no app.js (matrizQr), com a biblioteca embutida no app.
 _js = r"""
 global.window = global;
 require(process.cwd() + '/mobile/www/marca.js');
+const qrcode = require(process.cwd() + '/mobile/www/qrcode.js');
 const { pdfDoRecibo } = require(process.cwd() + '/mobile/www/pdf.js');
-process.stdout.write(pdfDoRecibo({
+const recibo = {
   rid: 'ABCDEF01234567',
   motorista: { full_name: 'M', plate: 'ABC1D23', whatsapp: '45999990000' },
   dados: { passageiro: 'P', data: '2026-09-14', data_exibida: '14/09/2026', hora: '10:00',
            origem: 'A', destino: 'B', valor_exibido: '10,00', forma_pagamento: 'Pix', observacoes: '' },
-}));
+};
+const link = 'https://recibo-taxi.vercel.app/recibo/ABCDEF01234567';
+const q = qrcode(0, 'M'); q.addData(link); q.make();
+const n = q.getModuleCount();
+const qr = Array.from({ length: n }, (_, l) =>
+  Array.from({ length: n }, (_, c) => (q.isDark(l, c) ? '1' : '0')).join(''));
+process.stdout.write(JSON.stringify({ sem: pdfDoRecibo(recibo), com: pdfDoRecibo(recibo, { link, qr }) }));
 """
 _saida = None
 try:
     _saida = _sp.run(["node", "-e", _js], capture_output=True, text=True, timeout=60,
                      cwd=os.path.dirname(os.path.abspath(__file__)))
-    _pdf = base64.b64decode(_saida.stdout) if _saida.returncode == 0 else b""
+    _pdfs = json.loads(_saida.stdout) if _saida.returncode == 0 else {}
+    _pdf = base64.b64decode(_pdfs.get("sem", ""))
+    _pdf_qr = base64.b64decode(_pdfs.get("com", ""))
 except Exception:
-    _pdf = b""
-check("node gera o PDF", bool(_pdf), (_saida.stderr[:200] if _saida else "node ausente"))
-if _pdf:
-    _ini = int(_re.search(rb"startxref\s+(\d+)", _pdf).group(1))
-    _tab = _pdf[_ini:].split(b"\n")
+    _pdf = _pdf_qr = b""
+check("node gera o PDF", bool(_pdf) and bool(_pdf_qr), (_saida.stderr[:200] if _saida else "node ausente"))
+for _nome, _doc in (("sem QR", _pdf), ("com QR", _pdf_qr)):
+    if not _doc:
+        continue
+    _ini = int(_re.search(rb"startxref\s+(\d+)", _doc).group(1))
+    _tab = _doc[_ini:].split(b"\n")
     _n = int(_tab[1].split()[1])
     _ruins = [i for i in range(1, _n)
-              if not _pdf[int(_tab[2 + i].split()[0]):].startswith(f"{i} 0 obj".encode())]
-    check("todos os deslocamentos do xref batem", not _ruins, str(_ruins))
+              if not _doc[int(_tab[2 + i].split()[0]):].startswith(f"{i} 0 obj".encode())]
+    check(f"todos os deslocamentos do xref batem ({_nome})", not _ruins, str(_ruins))
+if _pdf:
     check("a marca esta embutida como JPEG", b"/Filter/DCTDecode" in _pdf and b"/Im1 Do" in _pdf)
     _m = _re.search(rb"/Subtype/Image[^>]*?/Length (\d+)>>\nstream\n", _pdf)
     _fim = _m.end() + int(_m.group(1))
     check("o tamanho declarado da imagem confere", _pdf[_fim:_fim + 10] == b"\nendstream")
+    check("sem a matriz, o PDF sai sem QR, como antes", b" re f Q" not in _pdf)
+if _pdf_qr:
+    check("com a matriz, o PDF desenha o QR e escreve o link",
+          b" re f Q" in _pdf_qr and b"recibo-taxi.vercel.app/recibo/ABCDEF01234567" in _pdf_qr)
 
 # -- Razao social do passageiro ------------------------------------------
 # CNPJ sozinho nao serve: a contabilidade da empresa precisa do nome da pessoa
@@ -917,6 +934,106 @@ if A.get_store().kind == "postgres":
     check("razao social gigante e recusada", _r.status_code == 400, str(_r.status_code))
 else:
     print("  (pulado: precisa do Postgres)")
+
+# -- Passageiro opcional e QR --------------------------------------------
+# Desde 2026-10 o nome do passageiro e opcional: o motorista mostra o QR e o
+# passageiro, que muitas vezes nem diz o nome, abre o recibo com a camera. O
+# QR pode ser lido antes de o recibo subir: codigo valido que ainda nao existe
+# vira uma pagina que se recarrega sozinha, e nao um 404 seco.
+print("\n-- Passageiro opcional e QR --")
+_base_msg = {"rid": "AB" * 7, "origin": "A", "destination": "B", "valor_formatado": "R$ 10,00",
+             "payment_method": "Pix", "trip_date_display": "30/10/2026"}
+_msg = A.compose_receipt_message({**_base_msg, "passenger": ""}, "https://x.invalid/recibo/AB")
+check("mensagem sem nome nao tem a linha do passageiro", "Passageiro" not in _msg, _msg[:80])
+_msg = A.compose_receipt_message({**_base_msg, "passenger": "Maria"}, "https://x.invalid/recibo/AB")
+check("com nome, a linha do passageiro continua", "👤 Passageiro: Maria" in _msg, _msg[:80])
+
+_cso = novo_cliente("semnome@teste.invalid")
+r = _cso.post("/recibo", data={"passageiro": "", "data": "2026-10-30", "origem": "A",
+                               "destino": "B", "valor": "10"})
+_loc = r.headers.get("Location", "")
+check("site: recibo sem nome do passageiro e aceito", "/recibo/" in _loc, _loc)
+if "/recibo/" in _loc:
+    _rid_sem_nome = _loc.split("/recibo/")[1].split("?")[0]
+    _html = A.app.test_client().get(f"/recibo/{_rid_sem_nome}").get_data(as_text=True)
+    check("pagina sem nome nao mostra a linha Passageiro", ">Passageiro<" not in _html)
+    check("a pagina leva o QR tambem para a impressao", 'id="qrcode-doc"' in _html)
+    # Quem digita o codigo do papel em minusculas chega ao mesmo recibo.
+    r = A.app.test_client().get(f"/recibo/{_rid_sem_nome.lower()}")
+    check("codigo em minusculas abre o mesmo recibo", r.status_code == 200, r.status_code)
+r = _cso.post("/recibo", data={"passageiro": "Maria Teste", "data": "2026-10-30", "origem": "A",
+                               "destino": "B", "valor": "10"})
+_loc = r.headers.get("Location", "")
+if "/recibo/" in _loc:
+    _html = A.app.test_client().get(f"/recibo/{_loc.split('/recibo/')[1].split('?')[0]}").get_data(as_text=True)
+    check("com nome, a pagina mostra a linha Passageiro", ">Passageiro<" in _html and "Maria Teste" in _html)
+else:
+    check("com nome, a pagina mostra a linha Passageiro", False, _loc)
+r = _cso.post("/recibo", data={"passageiro": "Maria", "data": "2026-10-30", "origem": "",
+                               "destino": "B", "valor": "10"})
+check("site: sem origem continua recusado", "/recibo/" not in r.headers.get("Location", ""))
+
+if A.get_store().kind == "postgres":
+    _cqr = A.app.test_client()
+    _r = _cqr.post("/api/cadastro", json={
+        "nome_completo": "Sem Nome Teste", "email": "semnome-app@teste.invalid", "senha": "senha12345",
+        "whatsapp": "45998238621", "cpf": "12345678901", "cidade": "Cascavel", "placa": "QRS1234"})
+    _tkq = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+    _cabq = {"Authorization": f"Bearer {_tkq}"}
+
+    def _emitir_qr(rid, **campos):
+        return _cqr.post("/api/recibos", headers=_cabq, json={
+            "rid": rid, "data": "2026-10-30", "origem": "A", "destino": "B", "valor": "10",
+            "forma_pagamento": "Pix", **campos})
+
+    _r = _emitir_qr("FA" + "0" * 12, passageiro="")
+    check("app: recibo sem nome do passageiro e aceito", _r.status_code == 201,
+          f"{_r.status_code} {str(_r.get_json())[:90]}")
+    _r = _emitir_qr("FB" + "0" * 12)
+    check("app: sem o campo passageiro tambem", _r.status_code == 201, str(_r.status_code))
+    _r = _emitir_qr("FC" + "0" * 12, passageiro="Maria", origem="")
+    check("app: sem origem continua recusado",
+          _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "campos_obrigatorios",
+          str(_r.status_code))
+    # null nao vira o texto "None" no recibo.
+    _r = _emitir_qr("FD" + "0" * 12, passageiro=None)
+    check("app: passageiro null grava vazio, nao 'None'",
+          _r.status_code == 201 and (A.get_store().get_receipt("FD" + "0" * 12) or {}).get("passenger") == "",
+          str(_r.status_code))
+    _s = _cqr.get("/api/sessao", headers=_cabq).get_json() or {}
+    check("a sessao avisa o app que o nome e opcional", _s.get("passageiro_opcional") is True, str(_s)[:80])
+else:
+    print("  (app pulado: precisa do Postgres)")
+
+# Codigo valido que nao existe. Aleatorio de proposito: a propria suite cria
+# recibos com codigos repetidos ('E' * 14 ja existe la em cima).
+_rid_espera = os.urandom(7).hex().upper()
+_ce = A.app.test_client()
+r = _ce.get(f"/recibo/{_rid_espera}")
+_html = r.get_data(as_text=True)
+check("codigo valido que nao existe: 404 com a pagina de espera",
+      r.status_code == 404 and "Aguardando o recibo" in _html, r.status_code)
+check("a pagina de espera nao afirma que o recibo foi emitido",
+      "acabou de emitir o recibo" not in _html and "está a caminho" not in _html)
+check("ela pergunta ao servidor sem recarregar a pagina (e sem JS, recarrega)",
+      "location.replace" in _html and "method: 'HEAD'" in _html
+      and '<noscript><meta http-equiv="refresh"' in _html and "t=1" in _html)
+check("a pagina de espera nao fica em cache", r.headers.get("Cache-Control") == "no-store",
+      r.headers.get("Cache-Control"))
+check("a pagina de espera nao vai para busca", "noindex" in _html)
+r = _ce.head(f"/recibo/{_rid_espera}")
+check("HEAD de codigo que nao existe responde 404 (e o que a pagina pergunta)", r.status_code == 404,
+      r.status_code)
+r = _ce.get(f"/recibo/{_rid_espera}?t={A.RECIBO_ESPERA_TENTATIVAS}")
+_html = r.get_data(as_text=True)
+check("depois de 10 minutos ela para e diz que nao encontrou",
+      "location.replace" not in _html and "http-equiv" not in _html
+      and "Recibo não encontrado" in _html and "Tentar de novo" in _html)
+r = _ce.get("/recibo/nao-e-codigo")
+check("codigo malformado continua 404 seco",
+      r.status_code == 404 and "Aguardando" not in r.get_data(as_text=True))
+r = _ce.get("/recibo/%00")
+check("codigo com NUL nao derruba a rota", r.status_code == 404, r.status_code)
 
 # -- Recibo por e-mail ----------------------------------------------------
 # O campo de e-mail do passageiro existia no site e nao servia para nada: era
@@ -1150,9 +1267,13 @@ check("iPhone e Android com o mesmo numero de versao",
       len(_ver_ios) == 1 and _ver_and and _ver_ios == {_ver_and.group(1)},
       f"ios={_ver_ios} android={_ver_and.group(1) if _ver_and else None}")
 
-# A pagina publica do recibo nao pode ser indexada: mostra nome e CPF.
-_html_rec = A.app.test_client().get("/recibo/E9CB5C97A3C444").get_data(as_text=True)
-check("a pagina do recibo pede noindex", 'content="noindex, nofollow"' in _html_rec)
+# A pagina publica do recibo nao pode ser indexada: mostra nome e CPF. O 200
+# importa: sem ele, se este recibo sumir, a pagina de espera (que tambem tem
+# noindex) passaria no lugar da pagina do recibo.
+_r_rec = A.app.test_client().get("/recibo/E9CB5C97A3C444")
+_html_rec = _r_rec.get_data(as_text=True)
+check("a pagina do recibo pede noindex",
+      _r_rec.status_code == 200 and 'content="noindex, nofollow"' in _html_rec, _r_rec.status_code)
 check("a home continua indexavel",
       "noindex" not in A.app.test_client().get("/").get_data(as_text=True))
 
@@ -2640,7 +2761,7 @@ check("o recibo leva a moeda e o simbolo de quando saiu", "moeda: moedaAtual().c
 check("nenhum R$ fixo no valor do recibo, do historico, do WhatsApp ou do PDF",
       "R$ ${" not in _pdfjs and _appjs.count("R$ ${") <= 1)   # sobra so o fallback do preco da loja
 check("o valor digitado segue a mesma regra do servidor (1.500 e milhar)", "separadoresDoValor" in _appjs)
-check("iPhone e Android na 1.3", _ver_ios == {"1.3"} and _ver_and and _ver_and.group(1) == "1.3")
+check("iPhone e Android na 1.4", _ver_ios == {"1.4"} and _ver_and and _ver_and.group(1) == "1.4")
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

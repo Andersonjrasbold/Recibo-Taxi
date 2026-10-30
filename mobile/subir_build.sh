@@ -44,6 +44,18 @@ if [ "$SONDAS" != "0" ] || [ "$DUPES" != "0" ]; then
   exit 1
 fi
 
+# Script que o index.html carrega e que nao veio no pacote (arquivo novo que
+# ficou fora do commit, como o qrcode.js) nao da erro em lugar nenhum: o app
+# sobe e a funcao some calada. Aqui ele trava.
+FALTANDO=""
+for S in $(grep -o '<script src="[^"]*"' "$PUB/index.html" | sed -e 's/^<script src="//' -e 's/"$//'); do
+  [ -f "$PUB/$S" ] || FALTANDO="$FALTANDO $S"
+done
+if [ -n "$FALTANDO" ]; then
+  echo "ABORTADO: o index.html carrega$FALTANDO, que nao esta no pacote. NAO enviado."
+  exit 1
+fi
+
 echo "== upload $(date '+%H:%M:%S')"
 xcodebuild -exportArchive -archivePath "$SAIDA/ReciboTaxi.xcarchive" \
   -exportOptionsPlist "$RAIZ/mobile/ios/ExportOptions.plist" -exportPath "$SAIDA/upload" \

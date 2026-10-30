@@ -325,8 +325,11 @@
     <!-- Os tres campos do passageiro vem primeiro: e o que o motorista pergunta
          com o passageiro ainda no carro. Data e hora ja nascem preenchidas, e
          origem, destino e valor ele sabe de cor. -->
-    <label for="passageiro">Passageiro *</label>
-    <input type="text" id="passageiro" maxlength="120" required>
+    <!-- Opcional desde 2026-10: o passageiro que so le o QR muitas vezes nem
+         diz o nome. Sem nome, o recibo sai sem a linha "Passageiro". -->
+    <label for="passageiro">Nome do passageiro (opcional)</label>
+    <input type="text" id="passageiro" maxlength="120" aria-describedby="dica-passageiro">
+    <p id="dica-passageiro" class="dica dica-neutra">Se o passageiro for pedir reembolso, preencha o nome.</p>
 
     <label for="documento" id="rotulo-documento">CPF ou CNPJ do passageiro (opcional)</label>
     <input type="text" id="documento" inputmode="numeric" maxlength="18"
@@ -340,7 +343,7 @@
              placeholder="Nome da empresa no CNPJ">
     </div>
 
-    <label for="whats">WhatsApp do passageiro</label>
+    <label for="whats">WhatsApp do passageiro (opcional)</label>
     <input type="tel" id="whats" inputmode="numeric" maxlength="20">
     <p id="dica-whats" class="dica" hidden></p>
 
@@ -349,6 +352,7 @@
            autocomplete="off" autocapitalize="none" spellcheck="false"
            placeholder="nome@exemplo.com">
     <p id="dica-email" class="dica" hidden></p>
+    <p class="dica dica-neutra">Sem WhatsApp nem e-mail? O passageiro recebe pelo QR do recibo.</p>
 
     <div class="linha">
       <div>
@@ -562,6 +566,10 @@
 
 <script src="config.js"></script>
 <script src="marca.js"></script>
+<!-- qrcode-generator 1.4.4 (MIT), copia sem alteracao do pacote do npm, a
+     mesma versao que a pagina publica do site usa. Vem no pacote do app, e
+     nao de CDN, porque o QR do recibo tem de sair sem sinal. -->
+<script src="qrcode.js"></script>
 <script src="pdf.js"></script>
 <script src="app.js"></script>
 </body>

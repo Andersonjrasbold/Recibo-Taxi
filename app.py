@@ -24,6 +24,7 @@ from flask import (
     g,
     has_request_context,
     jsonify,
+    make_response,
     redirect,
     render_template,
     request,
@@ -155,6 +156,11 @@ PAIS_PADRAO = "BR"
 # 14 dígitos hex = 2^56. Com 10 (2^40) a chance de colisão passava de 36% em
 # 1 milhão de recibos, e uma colisão derruba a emissão com erro 500.
 RID_LENGTH = 14
+
+# Recibo que ainda nao chegou: a pagina publica pergunta de novo a cada 10 s,
+# por ate 10 minutos. E o caso do QR lido enquanto o app ainda esta sem sinal.
+RECIBO_ESPERA_SEGUNDOS = 10
+RECIBO_ESPERA_TENTATIVAS = 60
 
 # Origens do WebView do Capacitor. Só a /api/* responde a elas, e só com
 # Bearer token — nunca com cookie, para não abrir caminho de CSRF.
@@ -691,7 +697,8 @@ def compose_receipt_message(receipt: dict, public_url: str) -> str:
         receipt.get("amount_value"), receipt.get("currency"))
     lines = [
         f"✅ Recibo #{receipt['rid']}",
-        f"👤 Passageiro: {receipt.get('passenger') or '-'}",
+        # O nome e opcional: sem ele, nada de "Passageiro: -".
+        *([f"👤 Passageiro: {receipt['passenger']}"] if receipt.get("passenger") else []),
         # Documento e razao social so entram quando existem: sao o que faz o
         # recibo valer para a empresa lancar a despesa. O app ja mandava no
         # WhatsApp; sem isto, o mesmo recibo por e-mail saia sem eles.
@@ -2294,7 +2301,9 @@ def recibo_criar():
     destination = request.form.get("destino", "").strip()
     payment_method = request.form.get("forma_pagamento", "").strip() or "Pix"
 
-    if not all([passenger, trip_date, origin, destination]):
+    # O nome do passageiro e opcional: quem recebe pelo QR muitas vezes nem o
+    # diz. Data, origem e destino continuam obrigatorios.
+    if not all([trip_date, origin, destination]):
         flash("Preencha os dados principais da corrida.", "danger")
         return redirect(url_for("dashboard"))
 
@@ -3226,6 +3235,10 @@ def api_sessao():
             },
             "moeda_simbolo": simbolo,
             "moeda_casas": casas,
+            # Este servidor aceita recibo sem nome do passageiro. O app 1.4 so
+            # devolve a fila o recibo sem nome recusado por um servidor antigo
+            # quando ve este sinal; sem ele, o reenvio seria recusado de novo.
+            "passageiro_opcional": True,
             "limite_mensal": None if plano in PAID_PLANS else FREE_MONTHLY_LIMIT,
             # O app precisa saber a origem: quem assinou pela Stripe no site
             # gerencia lá; quem assinou pelo app gerencia na loja.
@@ -3280,8 +3293,11 @@ def api_criar_recibo():
     if not re.fullmatch(r"[0-9A-F]{%d}" % RID_LENGTH, rid):
         return jsonify({"erro": "rid_invalido"}), 400
 
+    passageiro = dados.get("passageiro")
     campos = {
-        "passageiro": dados.get("passageiro", ""),
+        # Opcional desde 2026-10. Antes, null, false ou 0 caiam na checagem de
+        # obrigatorios; agora virariam o texto "None" no recibo.
+        "passageiro": passageiro if isinstance(passageiro, str) else "",
         "data": dados.get("data", ""),
         "origem": dados.get("origem", ""),
         "destino": dados.get("destino", ""),
@@ -3300,7 +3316,8 @@ def api_criar_recibo():
         if len(str(campos.get(nome, "") or "")) > maximo:
             return jsonify({"erro": "campo_longo", "campo": nome, "maximo": maximo}), 400
 
-    if not all([campos["passageiro"], campos["data"], campos["origem"], campos["destino"]]):
+    # Sem o nome do passageiro desde 2026-10 (o app 1.4 deixa em branco).
+    if not all([campos["data"], campos["origem"], campos["destino"]]):
         return jsonify({"erro": "campos_obrigatorios"}), 400
 
     # A versao do app que ja sabe a moeda manda a que imprimiu no PDF — o
@@ -4473,9 +4490,31 @@ def pagina_excluir_conta():
 
 @app.get("/recibo/<rid>")
 def recibo_view(rid: str):
+    # O formato primeiro: codigo malformado nem chega ao banco (um NUL no
+    # caminho derrubava a consulta com 500). Minusculas valem: quem digita o
+    # codigo a partir do papel nem sempre respeita a caixa.
+    rid = rid.upper()
+    if not re.fullmatch(r"[0-9A-F]{%d}" % RID_LENGTH, rid):
+        abort(404, description="Recibo não encontrado.")
     receipt = get_store().get_receipt(rid)
     if not receipt:
-        abort(404, description="Recibo não encontrado.")
+        # Codigo bem formado que nao existe. O servidor nao sabe por que: pode
+        # ser o recibo que o motorista acabou de emitir sem sinal e mostrou no
+        # QR, um link antigo ou um codigo inventado. A pagina nao afirma nada
+        # disso; so tenta de novo por uns minutos e abre o recibo se ele chegar.
+        tentativa = min(max(request.args.get("t", 0, type=int), 0), RECIBO_ESPERA_TENTATIVAS)
+        proxima = (url_for("recibo_view", rid=rid, t=tentativa + 1)
+                   if tentativa < RECIBO_ESPERA_TENTATIVAS else None)
+        resposta = make_response(render_template(
+            "recibo_aguardando.html", rid=rid, proxima=proxima,
+            url_recibo=url_for("recibo_view", rid=rid),
+            url_fim=url_for("recibo_view", rid=rid, t=RECIBO_ESPERA_TENTATIVAS),
+            restantes=RECIBO_ESPERA_TENTATIVAS - tentativa,
+            segundos=RECIBO_ESPERA_SEGUNDOS,
+            minutos=RECIBO_ESPERA_SEGUNDOS * RECIBO_ESPERA_TENTATIVAS // 60), 404)
+        # O "ainda nao chegou" nao pode ficar guardado em cache nenhum.
+        resposta.headers["Cache-Control"] = "no-store"
+        return resposta
 
     share_url = public_receipt_url(rid)
     is_owner = bool(g.user and g.user["_id"] == receipt.get("driver_id"))

@@ -3,6 +3,7 @@
 // em pasta temporaria — nunca no www/ nem no public/ do iOS, que vao para as
 // lojas. Plugins nativos e rede simulados: nada sai para a producao.
 //   #c=asserts             fluxo inteiro conferido, resultado em #resultado-teste
+//   #c=rede                envio de recibos com servidor simulado (lento, antigo, sem cota)
 //   #passo=N               para no passo N (fotos)
 //   #c=negado&passo=1      localizacao negada
 localStorage.clear();
@@ -10,6 +11,12 @@ localStorage.setItem('motorista', JSON.stringify({ full_name: 'Teste Navegador',
 localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
 const H = new URLSearchParams(location.hash.slice(1));
 const NEGADO = H.get('c') === 'negado';
+// Modo rede: com sessao, o app envia os recibos, e a sonda faz o papel do
+// servidor. __regra(corpo) diz como responder a cada POST /api/recibos.
+const REDE = H.get('c') === 'rede';
+if (REDE) localStorage.setItem('access_token', JSON.stringify('token-falso'));
+window.__regra = () => ({});
+window.__sessao = null;                 // corpo do GET /api/sessao; null = 503
 window.__pedidos = [];
 window.Capacitor = {
   isNativePlatform: () => true,
@@ -42,6 +49,19 @@ window.fetch = async (url, op) => {
     return new Response(JSON.stringify({ km: 14.2, minutos: 31, minutos_sem_transito: 22 }),
       { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
+  const json = (corpo, status) => new Response(JSON.stringify(corpo),
+    { status, headers: { 'Content-Type': 'application/json' } });
+  if (REDE && String(url).endsWith('/api/recibos') && op && op.method === 'POST') {
+    const corpo = JSON.parse(op.body);
+    const regra = window.__regra(corpo) || {};
+    await new Promise((ok) => setTimeout(ok, regra.atraso || 0));
+    if (regra.falhar) throw new TypeError('sonda: a conexao caiu');
+    return json(regra.corpo || { rid: corpo.rid, url: 'https://exemplo.invalid/recibo/' + corpo.rid, criado_agora: true },
+                regra.status || 201);
+  }
+  if (REDE && String(url).endsWith('/api/sessao')) {
+    return window.__sessao ? json(window.__sessao, 200) : json({}, 503);
+  }
   throw new TypeError('sonda: sem rede');
 };
 // O <a> do Waze e do Maps navegaria a pagina para fora. O ouvinte do app roda
@@ -55,6 +75,95 @@ window.addEventListener('load', async () => {
   const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
   const digitar = (id, v) => { q(id).value = v; q(id).dispatchEvent(new Event('input')); };
   const clicar = (id) => q(id).dispatchEvent(new MouseEvent('click', { cancelable: true, bubbles: true }));
+  // Le o QR da tela com o leitor do proprio Chrome, como a camera do
+  // passageiro leria. null quando este Chrome nao tem o leitor.
+  const lerQr = async (svg) => {
+    if (!('BarcodeDetector' in window)) return null;
+    const img = new Image();
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.outerHTML);
+    await img.decode();
+    const tela = document.createElement('canvas');
+    tela.width = tela.height = 400;
+    tela.getContext('2d').drawImage(img, 0, 0, 400, 400);
+    const achados = await new BarcodeDetector({ formats: ['qr_code'] }).detect(tela);
+    return achados.length ? achados[0].rawValue : '';
+  };
+  const terminar = (linhas) => {
+    const pre = document.createElement('pre');
+    pre.id = 'resultado-teste';
+    pre.textContent = linhas.join('\n');
+    document.body.appendChild(pre);
+  };
+
+  if (REDE) {
+    const r = [];
+    const ok = (nome, cond, extra = '') => r.push(`${cond ? 'OK   ' : 'FALHA'} rede: ${nome}${cond ? '' : ' :: ' + extra}`);
+    const achar = async (origem) => (await listarRecibos()).find((x) => x.dados.origem === origem);
+    const emitir = async (origem, valor, contato = {}) => {
+      await irParaEmitir(); await espera(100);
+      q('passageiro').value = ''; q('origem').value = origem; q('destino').value = 'Centro'; q('valor').value = valor;
+      q('whats').value = contato.whats || ''; q('email-passageiro').value = contato.email || '';
+      q('form-recibo').requestSubmit();
+    };
+    try {
+      await espera(500); await limparRecibosLocais();
+
+      // Sinal fraco: o envio do 1o recibo demora; o motorista emite o 2o nesse
+      // meio-tempo, e o 2o sobe antes. Quando o envio lento termina, a tela
+      // tem de continuar no 2o: o passageiro novo le o QR que esta ali.
+      let lentos = 0;
+      window.__regra = (c) => (c.origem === 'Origem lenta' && lentos++ === 0 ? { atraso: 2500 } : {});
+      await emitir('Origem lenta', '30');
+      await espera(500);
+      await emitir('Origem rapida', '40');
+      await espera(3500);
+      const segundo = await achar('Origem rapida');
+      const noCartao = (q('recibo').querySelector('.recibo-id') || {}).textContent;
+      ok('envio lento do recibo anterior nao troca a tela', segundo && noCartao === '#' + segundo.rid, `${noCartao} x ${segundo && segundo.rid}`);
+      const lido = await lerQr(q('recibo').querySelector('svg.qr'));
+      ok('o QR da tela e o do recibo aberto', segundo && (lido === null || lido === linkDoRecibo(segundo)), lido);
+
+      // Servidor anterior ao nome opcional: recusa o recibo sem nome.
+      window.__regra = (c) => (!c.passageiro ? { status: 400, corpo: { erro: 'campos_obrigatorios' } } : {});
+      await emitir('Servidor antigo', '25');
+      await espera(1200);
+      let antigo = await achar('Servidor antigo');
+      ok('servidor antigo: o recibo sem nome fica recusado', antigo && antigo.recusado === 'campos_obrigatorios', JSON.stringify(antigo && antigo.recusado));
+      ok('a tela explica, sem QR', !q('recibo').querySelector('svg.qr')
+         && q('recibo').textContent.includes('Sem QR neste recibo') && q('recibo').textContent.includes('faltou um campo obrigatório'));
+      window.__regra = () => ({});
+      window.__sessao = { id: 'web-motorista', plano: 'free', limite_mensal: 6, usados_no_mes: 1,
+                          motorista: { full_name: 'Teste Navegador', plate: 'WEB1A23' } };
+      await atualizarSessao(); await sincronizar();
+      antigo = await achar('Servidor antigo');
+      ok('sem o sinal do servidor novo, ele nao volta para a fila', antigo && antigo.recusado === 'campos_obrigatorios');
+      window.__sessao = { ...window.__sessao, passageiro_opcional: true };
+      await atualizarSessao(); await sincronizar();
+      antigo = await achar('Servidor antigo');
+      ok('com o sinal, ele volta para a fila e sobe', antigo && !antigo.recusado && !antigo.pendente && !!antigo.url, JSON.stringify(antigo && { r: antigo.recusado, p: antigo.pendente }));
+
+      // Limite do plano Gratis: a tela do Pro diz que o recibo ficou sem QR,
+      // e "Agora nao" volta para o recibo, onde esta o aviso.
+      window.__regra = () => ({ status: 402, corpo: { erro: 'limite_mensal', limite: 6 } });
+      await emitir('Sem cota', '20');
+      await espera(1500);
+      ok('limite: a tela do Pro avisa que o recibo ficou sem QR',
+         !q('tela-assinatura').hidden && q('motivo-pro').textContent.includes('sem link e sem QR'), q('motivo-pro').textContent);
+      clicar('btn-fechar-pro');
+      ok('"Agora não" volta para o recibo, com o aviso do Pro',
+         !q('tela-recibo').hidden && q('recibo').textContent.includes('Assinando o Pro'));
+      const semCota = await achar('Sem cota');
+      ok('o WhatsApp do recibo recusado sai sem o link', semCota && !textoParaCompartilhar(semCota).includes('/recibo/'));
+      // A tela do Pro aberta pelo menu, depois, volta para a tela de base.
+      clicar('btn-pro'); await espera(100);
+      clicar('btn-fechar-pro');
+      ok('aberta pelo menu, "Agora não" segue para a tela de base', q('tela-recibo').hidden && q('tela-assinatura').hidden);
+    } catch (e) {
+      r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
+    }
+    terminar(r);
+    return;
+  }
 
   if (H.get('c') !== 'asserts') {
     // Fotos: roda os passos ate o pedido e para ali.
@@ -68,6 +177,7 @@ window.addEventListener('load', async () => {
       async () => irParaInicio(),
       async () => { await abrirCorrida(); clicar('btn-encerrar'); await espera(100); },
       async () => { clicar('btn-gerar-recibo'); await espera(400); },
+      async () => { q('valor').value = '61,40'; q('form-recibo').requestSubmit(); await espera(900); },
     ];
     const ate = Number(H.get('passo') ?? passos.length - 1);
     for (let i = 0; i <= ate; i++) await passos[i]();
@@ -203,6 +313,59 @@ window.addEventListener('load', async () => {
     recibos = await listarRecibos();
     const avulso = recibos.find((x) => x.dados.passageiro === 'Avulso');
     ok('recibo avulso sai sem a marca', recibos.length === 2 && avulso && avulso.dados.via_corrida === undefined, JSON.stringify(avulso && avulso.dados));
+
+    // Sem nome, sem telefone e sem e-mail (2026-10): o recibo chega ao
+    // passageiro pelo QR, lido com a camera do celular dele.
+    clicar('btn-ir-emitir'); await espera(200);
+    ok('o nome do passageiro e opcional', !q('passageiro').required);
+    q('passageiro').value = ''; q('origem').value = 'Praça da Sé'; q('destino').value = 'Paulista'; q('valor').value = '23,50';
+    q('form-recibo').requestSubmit(); await espera(900);
+    const semNome = (await listarRecibos()).find((x) => x.dados.origem === 'Praça da Sé');
+    ok('recibo sem nome do passageiro e emitido', !!semNome && semNome.dados.passageiro === '', JSON.stringify(semNome && semNome.dados));
+    ok('sem nome, o recibo nao tem a linha Passageiro',
+       ![...q('recibo').querySelectorAll('dt')].some((dt) => dt.textContent === 'Passageiro'));
+    const svgQr = q('recibo').querySelector('svg.qr');
+    ok('o recibo mostra o QR', !!svgQr);
+    ok('sem contato do passageiro, o QR vem aberto, antes dos dados', svgQr && !svgQr.closest('details')
+       && !!(q('recibo').querySelector('.recibo-qr').compareDocumentPosition(q('recibo').querySelector('dl')) & Node.DOCUMENT_POSITION_FOLLOWING));
+    ok('e cabe na tela sem rolar (390 x 844)', svgQr && svgQr.getBoundingClientRect().bottom <= window.innerHeight,
+       svgQr && `${Math.round(svgQr.getBoundingClientRect().bottom)} > ${window.innerHeight}`);
+    ok('na fila, a legenda diz que ainda nao foi enviado e quando aparece',
+       (q('recibo').querySelector('.recibo-qr-legenda') || {}).textContent?.includes('Ainda não enviado'));
+    const lido = svgQr ? await lerQr(svgQr) : '';
+    if (lido === null) r.push('OK    (QR nao lido: este Chrome nao tem o BarcodeDetector)');
+    else ok('o QR da tela leva ao link do recibo', semNome && lido === linkDoRecibo(semNome), `lido "${lido}"`);
+    ok('o texto do WhatsApp sai sem a linha do passageiro', semNome && !textoParaCompartilhar(semNome).includes('Passageiro'));
+    const pdfQr = semNome ? atob(pdfDoRecibo(semNome, { link: linkDoRecibo(semNome), qr: qrDoRecibo(semNome) })) : '';
+    ok('o PDF leva o QR e o link, sem a linha do passageiro',
+       pdfQr.includes(' re f Q') && pdfQr.includes(linkDoRecibo(semNome)) && !pdfQr.includes('PASSAGEIRO'));
+    mostrarRecibo({ ...semNome, pendente: false, recusado: 'limite_mensal' });
+    ok('recibo recusado: sem QR, com o motivo e o caminho', !q('recibo').querySelector('svg.qr')
+       && q('recibo').textContent.includes('Sem QR neste recibo') && q('recibo').textContent.includes('Assinando o Pro'));
+    ok('recibo recusado: o WhatsApp sai sem o link', !textoParaCompartilhar({ ...semNome, recusado: 'limite_mensal' }).includes('/recibo/'));
+    mostrarRecibo({ ...semNome, pendente: false });
+    ok('no ar, a legenda diz que abre no navegador',
+       (q('recibo').querySelector('.recibo-qr-legenda') || {}).textContent?.includes('abre no navegador'));
+    // Com WhatsApp do passageiro, o QR vem recolhido e nao empurra os botoes.
+    const comContato = { ...semNome, pendente: false, dados: { ...semNome.dados, whatsapp_passageiro: '11987654321' } };
+    mostrarRecibo(comContato);
+    const recolhido = q('recibo').querySelector('details.recibo-qr');
+    ok('com contato, o QR vem recolhido', !!recolhido && !recolhido.open);
+    if (recolhido) recolhido.open = true;
+    mostrarRecibo(comContato);
+    ok('redesenhar o mesmo recibo nao fecha o QR aberto', !!q('recibo').querySelector('details.recibo-qr[open]'));
+    mostrarRecibo({ ...comContato, rid: 'OUTRO000000000' });
+    ok('outro recibo abre com o QR recolhido de novo', !q('recibo').querySelector('details.recibo-qr[open]'));
+    abrirRecibo(semNome);
+    ok('o PDF de quem cobra em colon sai com CRC, nao com ?',
+       atob(pdfDoRecibo({ ...semNome, dados: { ...semNome.dados, moeda: 'CRC', moeda_simbolo: '₡' } })).includes('(CRC 23,50)'));
+    ok('o € e a pontuacao do iPhone saem certos no PDF', (() => {
+      const p = atob(pdfDoRecibo({ ...semNome, dados: { ...semNome.dados, moeda: 'EUR', moeda_simbolo: '€', origem: 'D’Ávila – “Centro”' } }));
+      return p.includes('(\x80 23,50)') && p.includes('(D\x92Ávila \x96 \x93Centro\x94)');
+    })());
+    clicar('btn-historico'); await espera(200);
+    ok('no historico, sem nome, a rota vira o titulo',
+       q('lista-historico').textContent.includes('Praça da Sé → Paulista') && q('lista-historico').textContent.includes('sem nome do passageiro'));
 
     irParaInicio(); clicar('btn-tarifa');
     ok('a tarifa pelo menu abre preenchida', !q('tela-tarifa').hidden && q('t-km2').value === '4,55', q('t-km2').value);

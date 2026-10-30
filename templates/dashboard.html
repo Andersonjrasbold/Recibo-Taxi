@@ -86,9 +86,10 @@
         <form action="{{ url_for('recibo_criar') }}" method="post" novalidate>
           <div class="row g-3">
             <div class="col-12">
-              <label class="form-label-db" for="passageiro">Passageiro <span class="required-star">*</span></label>
+              <label class="form-label-db" for="passageiro">Nome do passageiro (opcional)</label>
               <input type="text" id="passageiro" name="passageiro" class="form-control form-control-db"
-                placeholder="Nome do passageiro" required>
+                placeholder="Nome do passageiro" aria-describedby="dica-passageiro">
+              <div id="dica-passageiro" class="form-text">Se o passageiro for pedir reembolso, preencha o nome.</div>
             </div>
             <div class="col-6">
               <label class="form-label-db" for="data">Data <span class="required-star">*</span></label>
@@ -253,7 +254,7 @@
           {% for r in receipts %}
           <div class="receipt-row">
             <div class="receipt-row-left">
-              <div class="receipt-row-passenger">{{ r.passenger }}</div>
+              <div class="receipt-row-passenger">{{ r.passenger or 'Passageiro não informado' }}</div>
               <div class="receipt-row-route">
                 <i class="bi bi-geo-alt-fill me-1"></i>{{ r.origin }}
                 <i class="bi bi-arrow-right mx-1"></i>{{ r.destination }}

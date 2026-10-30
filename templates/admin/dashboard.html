@@ -189,7 +189,7 @@
         <tbody>{% for r in d.ultimos_recibos %}
         <tr><td>{{ r.created_at | data_br }}</td>
             <td>{% if r.driver_id %}<a href="{{ url_for('admin_motorista', driver_id=r.driver_id) }}" class="adm-link">{{ r.motorista }}</a>{% else %}{{ r.motorista }} <small class="adm-suave">(sem login)</small>{% endif %}</td>
-            <td>{{ r.cidade }}</td><td>{{ r.passenger }}</td><td class="adm-num">{{ r.amount | valor(r.currency) }}</td><td>{{ r.payment_method }}</td>
+            <td>{{ r.cidade }}</td><td>{{ r.passenger or '—' }}</td><td class="adm-num">{{ r.amount | valor(r.currency) }}</td><td>{{ r.payment_method }}</td>
             <td><a href="{{ url_for('recibo_view', rid=r.rid) }}" class="adm-link" target="_blank" rel="noopener">{{ r.rid }}</a></td></tr>
         {% endfor %}</tbody></table></div>
       {% endif %}

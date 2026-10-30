@@ -100,7 +100,7 @@
         <tbody>{% for r in recibos %}
         <tr><td>{{ r.trip_date_display or r.trip_date }} {{ r.trip_time }}</td>
             <td>{{ r.origin }} → {{ r.destination }}</td>
-            <td>{{ r.passenger }}{% if r.passenger_company %}<br><small class="adm-suave">{{ r.passenger_company }}</small>{% endif %}</td>
+            <td>{{ r.passenger or '—' }}{% if r.passenger_company %}<br><small class="adm-suave">{{ r.passenger_company }}</small>{% endif %}</td>
             <td>{{ r.passenger_document | mascarar_cpf }}</td>
             <td>{{ r.passenger_email | mascarar_email }} {{ r.passenger_whatsapp | mascarar_fone }}</td>
             <td class="adm-num">{{ r.valor_formatado }}</td><td>{{ r.payment_method }}</td>

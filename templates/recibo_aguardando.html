@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Aguardando recibo{% endblock %}
+
+{% block head %}
+{# Como a pagina do recibo: link de recibo nao vira resultado de busca. #}
+<meta name="robots" content="noindex, nofollow">
+{# Sem JavaScript, recarrega a pagina inteira. Com ele (no fim), pergunta ao
+   servidor sem recarregar: a tela nao pisca, o leitor de tela nao recomeca do
+   topo e o historico do navegador nao enche de entradas. #}
+{% if proxima %}<noscript><meta http-equiv="refresh" content="{{ segundos }};url={{ proxima }}"></noscript>{% endif %}
+{% endblock %}
+
+{% block content %}
+<section class="legal-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-7 col-xl-6">
+
+        <div class="legal-header">
+          <span class="legal-eyebrow"><i class="bi bi-hourglass-split me-1"></i>Recibo #{{ rid }}</span>
+          <h1 class="legal-title">{% if proxima %}Aguardando o recibo{% else %}Recibo não encontrado{% endif %}</h1>
+        </div>
+
+        {# O servidor nao sabe se este recibo existe: pode estar na fila do app,
+           ter sido removido ou nunca ter existido. Nada aqui afirma que ele foi
+           emitido, para a pagina nao servir de atestado de um recibo inventado. #}
+        <div class="legal-card text-center">
+          {% if proxima %}
+          <p>
+            Ainda não há recibo publicado com este código. Se ele acabou de ser emitido
+            sem sinal, aparece aqui quando o celular do motorista se conectar.
+          </p>
+          <p role="status">
+            <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+            Esta página tenta de novo sozinha por até {{ minutos }} minutos.
+          </p>
+          {% else %}
+          <p>
+            Ainda não há recibo com este código. Se ele foi emitido sem sinal, vai aparecer
+            neste mesmo link quando o celular do motorista se conectar. Guarde o link e abra
+            de novo mais tarde.
+          </p>
+          <p><a href="{{ url_recibo }}">Tentar de novo</a></p>
+          <p class="legal-note mb-0">Se o link é antigo, o recibo pode ter sido removido.</p>
+          {% endif %}
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if proxima %}
+<script nonce="{{ csp_nonce }}">
+  // Pergunta se o recibo ja chegou, sem recarregar a pagina. Quando chega,
+  // troca esta pagina pela do recibo; replace, para o botao voltar nao cair
+  // aqui de novo. Acabou o tempo: mostra a versao final, com "Tentar de novo".
+  (function () {
+    var url = {{ url_recibo|tojson }};
+    var fim = {{ url_fim|tojson }};
+    var restantes = {{ restantes }};
+    var intervalo = {{ segundos }} * 1000;
+    function tentar() {
+      restantes -= 1;
+      fetch(url, { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' })
+        .then(function (r) {
+          if (r.ok) location.replace(url);
+          else if (restantes > 0) setTimeout(tentar, intervalo);
+          else location.replace(fim);
+        })
+        .catch(function () {
+          if (restantes > 0) setTimeout(tentar, intervalo); else location.replace(fim);
+        });
+    }
+    setTimeout(tentar, intervalo);
+  })();
+</script>
+{% endif %}
+{% endblock %}

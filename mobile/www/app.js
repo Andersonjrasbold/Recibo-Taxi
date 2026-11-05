@@ -1095,18 +1095,83 @@ $('btn-compartilhar').addEventListener('click', async () => {
         files: [escrito.uri],
         dialogTitle: 'Enviar recibo',
       });
+      depoisDeEntregar();
       return;
     } catch (e) {
       // PDF falhou: cai para texto puro em vez de deixar o motorista na mão.
     }
   }
 
-  if (Share) { await Share.share({ title: `Recibo #${rid}`, text: texto }); return; }
+  if (Share) { await Share.share({ title: `Recibo #${rid}`, text: texto }); depoisDeEntregar(); return; }
   if (navigator.share) { await navigator.share({ title: `Recibo #${rid}`, text: texto }); return; }
 
   const fone = foneE164(recibo.dados.whatsapp_passageiro);
   window.open(`https://wa.me/${fone}?text=${encodeURIComponent(texto)}`, '_blank');
 });
+
+// ── Pedido de avaliação ────────────────────────────────────────────────────
+//
+// Ficha sem nota perde instalação na busca das lojas. O pedido é o da própria
+// loja (In-App Review do Google, StoreKit da Apple): é ela que decide se a
+// janela aparece, e cada uma tem a sua cota. A Apple mostra no máximo 3 vezes
+// por ano e nunca no TestFlight. O app só escolhe a hora:
+//   - logo depois de o recibo ser entregue, pelo WhatsApp ou pelo PDF: o
+//     trabalho acabou, e não é a tela em que o passageiro está lendo o QR;
+//   - no 3º, no 10º e no 25º recibo aceito pelo servidor, uma vez cada;
+//   - nunca com corrida aberta, e no máximo uma vez a cada 30 dias.
+// Nada em troca da nota: as duas lojas proíbem avaliação incentivada.
+const MARCOS_DA_AVALIACAO = [3, 10, 25];
+const INTERVALO_DA_AVALIACAO = 30 * 864e5;
+// Voltar ao app muito depois de entregar já é outro trabalho, talvez com outro
+// passageiro no carro: aí não pede.
+const JANELA_DEPOIS_DE_ENTREGAR = 10 * 60e3;
+let entregueEm = 0;
+let pedindoAvaliacao = false;
+
+async function talvezPedirAvaliacao() {
+  const loja = P().InAppReview;
+  if (!nativo() || !loja || pedindoAvaliacao || corridaAtual()) return;
+  pedindoAvaliacao = true;
+  try {
+    const aceitos = (await listarRecibos()).filter((r) => !r.pendente && !r.recusado).length;
+    // pop(), e nao at(-1): o app roda desde o iOS 15.0, e o at() e do 15.4.
+    const marco = MARCOS_DA_AVALIACAO.filter((m) => m <= aceitos).pop() || 0;
+    if (marco <= (Guardado.get('avaliacao_marco') || 0)) return;
+    if (Date.now() - (Guardado.get('avaliacao_pedida_em') || 0) < INTERVALO_DA_AVALIACAO) return;
+    // Um instante para a tela voltar. Se o motorista já saiu do recibo, fica
+    // para a próxima entrega.
+    await new Promise((ok) => setTimeout(ok, 1000));
+    if ($('tela-recibo').hidden || document.visibilityState !== 'visible') return;
+    Guardado.set('avaliacao_marco', marco);
+    Guardado.set('avaliacao_pedida_em', Date.now());
+    await loja.requestReview();
+  } catch {
+    // Sem a avaliação não se perde nada: o recibo já foi entregue.
+  } finally {
+    pedindoAvaliacao = false;
+  }
+}
+
+// No iPhone a folha de compartilhar abre por cima do app, sem sair dele. No
+// Android o app escolhido pode estar na frente quando a promessa resolve, e
+// aí o pedido espera a volta.
+function depoisDeEntregar() {
+  if (document.visibilityState === 'visible') talvezPedirAvaliacao();
+  else entregueEm = Date.now();
+}
+
+// O WhatsApp sempre tira o motorista do app: o pedido fica para a volta.
+$('btn-whats').addEventListener('click', () => {
+  if ($('btn-whats').getAttribute('href')) entregueEm = Date.now();
+});
+
+if (P().App) {
+  P().App.addListener('resume', () => {
+    const recente = Date.now() - entregueEm < JANELA_DEPOIS_DE_ENTREGAR;
+    entregueEm = 0;
+    if (recente) talvezPedirAvaliacao();
+  });
+}
 
 // ── Assinatura ─────────────────────────────────────────────────────────────
 //

@@ -18,6 +18,8 @@ if (REDE) localStorage.setItem('access_token', JSON.stringify('token-falso'));
 window.__regra = () => ({});
 window.__sessao = null;                 // corpo do GET /api/sessao; null = 503
 window.__pedidos = [];
+window.__avaliacoes = 0;                // quantas vezes o app pediu avaliacao a loja
+window.__ouvintes = {};                 // eventos do plugin App ('resume', 'backButton')
 window.Capacitor = {
   isNativePlatform: () => true,
   getPlatform: () => 'ios',
@@ -35,7 +37,8 @@ window.Capacitor = {
         subLocality: 'Bela Vista', locality: 'São Paulo' }] }),
     },
     Network: { getStatus: async () => ({ connected: true }), addListener: () => {} },
-    App: { addListener: () => {} },
+    App: { addListener: (ev, fn) => { (window.__ouvintes[ev] ||= []).push(fn); } },
+    InAppReview: { requestReview: async () => { window.__avaliacoes++; } },
   },
 };
 window.fetch = async (url, op) => {
@@ -158,6 +161,36 @@ window.addEventListener('load', async () => {
       clicar('btn-pro'); await espera(100);
       clicar('btn-fechar-pro');
       ok('aberta pelo menu, "Agora não" segue para a tela de base', q('tela-recibo').hidden && q('tela-assinatura').hidden);
+
+      // Pedido de avaliacao: so na volta de uma entrega, a partir do 3o recibo
+      // aceito (aqui ja sao 3; o "Sem cota" foi recusado e nao conta).
+      const voltarAoApp = () => (window.__ouvintes.resume || []).forEach((f) => f());
+      const entregarEVoltar = async () => { clicar('btn-whats'); voltarAoApp(); await espera(1300); };
+      window.__regra = () => ({});
+      voltarAoApp(); await espera(1300);
+      ok('avaliacao: voltar ao app sem entregar nao pede', __avaliacoes === 0, String(__avaliacoes));
+      guardarCorrida({ motorista: 'web-motorista', destino: 'Centro', inicio: new Date().toISOString() });
+      await emitir('Com WhatsApp', '35', { whats: '11987654321' });
+      await espera(1200);
+      await entregarEVoltar();
+      ok('avaliacao: com corrida aberta nao pede', __avaliacoes === 0, String(__avaliacoes));
+      apagarCorrida();
+      entregueEm = 0; clicar('btn-whats'); entregueEm -= 11 * 60e3; voltarAoApp(); await espera(1300);
+      ok('avaliacao: voltar mais de 10 min depois da entrega nao pede', __avaliacoes === 0, String(__avaliacoes));
+      await entregarEVoltar();
+      ok('avaliacao: entregou pelo WhatsApp e voltou, pede', __avaliacoes === 1, String(__avaliacoes));
+      await entregarEVoltar();
+      ok('avaliacao: o mesmo marco nao pede de novo', __avaliacoes === 1, String(__avaliacoes));
+      Guardado.set('avaliacao_marco', 0);
+      await entregarEVoltar();
+      ok('avaliacao: menos de 30 dias depois do ultimo pedido nao pede', __avaliacoes === 1, String(__avaliacoes));
+      Guardado.set('avaliacao_pedida_em', Date.now() - 31 * 864e5);
+      clicar('btn-novo'); await espera(100);
+      depoisDeEntregar(); await espera(1300);
+      ok('avaliacao: fora da tela do recibo nao pede', __avaliacoes === 1, String(__avaliacoes));
+      abrirRecibo(await achar('Com WhatsApp'));
+      depoisDeEntregar(); await espera(1300);
+      ok('avaliacao: depois de compartilhar o PDF, pede', __avaliacoes === 2, String(__avaliacoes));
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
     }

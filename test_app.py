@@ -89,6 +89,12 @@ def limpar_contas_de_teste():
                     conn.execute("delete from public.billing_events where event_id like 'teste-suite-%%'")
             except A.psycopg.errors.UndefinedTable:
                 pass  # migracao 0011 ainda nao aplicada
+            # Cliques no /baixar com canal da suite.
+            try:
+                with conn.transaction():
+                    conn.execute("delete from public.download_clicks where channel like 'teste-suite-%%'")
+            except A.psycopg.errors.UndefinedTable:
+                pass  # migracao 0014 ainda nao aplicada
     return removidas
 
 
@@ -1277,6 +1283,29 @@ check("a pagina do recibo pede noindex",
 check("a home continua indexavel",
       "noindex" not in A.app.test_client().get("/").get_data(as_text=True))
 
+# -- Cabecalhos para busca e previa de link (plano de divulgacao de 2026-11-09) --
+_html_home = A.app.test_client().get("/").get_data(as_text=True)
+check("home tem canonical no dominio proprio", f'<link rel="canonical" href="{A.SITE_URL}/">' in _html_home)
+check("home tem previa de link com imagem", 'property="og:image"' in _html_home and "og-recibo-taxi.png" in _html_home)
+check("home tem banner do app para o Safari", f'content="app-id={A.APP_STORE_ID}"' in _html_home)
+check("home tem dados estruturados de app", '"@type": "MobileApplication"' in _html_home)
+check("home nao mostra o selo tecnico 'Ao vivo'", "Ao vivo" not in _html_home)
+check("botoes das lojas no site levam o canal 'site'", "utm_source%3Dsite" in _html_home)
+check("pagina do passageiro nao tem banner do app", "apple-itunes-app" not in _html_rec)
+check("pagina do passageiro tem previa neutra", 'content="Recibo de corrida"' in _html_rec)
+check("planos tem descricao propria",
+      'content="Planos do Recibo Táxi' in A.app.test_client().get("/planos").get_data(as_text=True))
+r = A.app.test_client().get("/robots.txt"); _robots = r.get_data(as_text=True)
+check("robots.txt aponta o sitemap e fecha o painel",
+      r.status_code == 200 and f"Sitemap: {A.SITE_URL}/sitemap.xml" in _robots and "Disallow: /admin" in _robots, r.status_code)
+r = A.app.test_client().get("/sitemap.xml"); _mapa = r.get_data(as_text=True)
+check("sitemap.xml lista as paginas publicas e nao o login",
+      r.status_code == 200 and f"<loc>{A.SITE_URL}/planos</loc>" in _mapa and "/login" not in _mapa, r.status_code)
+check("/app/ sai com noindex", A.app.test_client().get("/app/").headers.get("X-Robots-Tag", "").startswith("noindex"))
+check("imagem de previa existe", A.app.test_client().get("/static/img/og-recibo-taxi.png").status_code == 200)
+check("/indicar nao promete 'proxima versao'",
+      "próxima versão" not in A.app.test_client().get("/indicar").get_data(as_text=True))
+
 # -- Lixo dentro do pacote do app ----------------------------------------
 # O iCloud duplica arquivo dentro da pasta sincronizada: "index.html" vira
 # tambem "index 2.html". O `cap sync` so sobrescreve os arquivos que conhece,
@@ -1639,6 +1668,34 @@ check("/baixar no iPhone vai a App Store", _cli_em.get("/baixar", headers={
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"}).headers.get("Location") == A.APP_STORE_URL)
 check("/baixar no Android vai ao Google Play", _cli_em.get("/baixar", headers={
     "User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location") == A.PLAY_STORE_URL)
+# Canal de divulgacao: segue para a loja e e contado por dia, canal e loja.
+_ua_and = {"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}
+_ua_iph = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"}
+_canal_t = f"teste-suite-{_suf_em}"
+check("/baixar?c= no Android leva o canal no referrer do Play",
+      _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_and).headers.get("Location")
+      == f"{A.PLAY_STORE_URL}&referrer=utm_source%3D{_canal_t}%26utm_medium%3Dlink%26utm_campaign%3D{_canal_t}")
+check("/baixar?c= no iPhone sem token da Apple vai a ficha pura",
+      _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_iph).headers.get("Location") == A.APP_STORE_URL)
+_tok_ap = A.APPLE_PROVIDER_TOKEN
+A.APPLE_PROVIDER_TOKEN = "123456"
+check("/baixar?c= no iPhone com token leva pt e ct",
+      _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_iph).headers.get("Location")
+      == f"{A.APP_STORE_URL}?pt=123456&ct={_canal_t}&mt=8")
+A.APPLE_PROVIDER_TOKEN = _tok_ap
+check("canal fora do padrao e ignorado",
+      _cli_em.get("/baixar?c=Ponto%20T%C3%A1xi!", headers=_ua_and).headers.get("Location") == A.PLAY_STORE_URL)
+check("canal longo demais e ignorado",
+      _cli_em.get("/baixar?c=" + "a" * 31, headers=_ua_and).headers.get("Location") == A.PLAY_STORE_URL)
+check("e-mail manda ao /baixar com o canal 'email'", "/baixar?c=email" in _msg_em["html"])
+try:
+    with _st_em.pool.connection() as _conn:
+        _cl = {(l["store"], l["clicks"]) for l in _conn.execute(
+            "select store, clicks from public.download_clicks where channel = %s and day = %s",
+            (_canal_t, A.today_br())).fetchall()}
+    check("cliques contados por canal e loja", _cl == {("play", 1), ("appstore", 2)}, str(_cl))
+except A.psycopg.errors.UndefinedTable:
+    check("cliques contados por canal e loja (migracao 0014 nao aplicada; nada a conferir)", True)
 
 # Painel: so leitura e um modelo criado e apagado (desligado).
 _adm_em = _st_em.upsert_admin(f"admin-em-{_suf_em}@teste.invalid", _gph("senha-da-suite-123"))
@@ -1680,6 +1737,22 @@ check("modelo com historico nao e excluido", _resta == 1)
 r = _ce.get(f"/admin/motoristas/{_d_em['fabi']}")
 check("ficha mostra a situacao na automacao",
       r.status_code == 200 and "descadastrado em" in r.get_data(as_text=True), r.status_code)
+r = _ce.post(f"/admin/motoristas/{_d_em['fabi']}/pro-cortesia", data={"csrf": _csrf_em, "dias": "90"})
+_fabi = _st_em.get_user_by_id(_d_em["fabi"])
+_fim_fabi = A._instante(_fabi.get("pro_until"))
+check("painel libera Pro de cortesia por 90 dias",
+      r.status_code == 302 and _fabi.get("plan") == "pro" and _fabi.get("subscription_status") == "cortesia"
+      and _fim_fabi is not None and 89 <= (_fim_fabi - _dt_em.now(A.BR_TZ)).days <= 90,
+      f"{r.status_code} {_fabi.get('plan')} {_fabi.get('subscription_status')} {_fabi.get('pro_until')}")
+r = _ce.post(f"/admin/motoristas/{_d_em['fabi']}/pro-cortesia", data={"csrf": _csrf_em, "dias": "9999"})
+check("prazo fora da lista nao muda nada",
+      r.status_code == 302 and A._instante(_st_em.get_user_by_id(_d_em["fabi"]).get("pro_until")) == _fim_fabi)
+check("pro-cortesia sem csrf da 400",
+      _ce.post(f"/admin/motoristas/{_d_em['fabi']}/pro-cortesia", data={"dias": "30"}).status_code == 400)
+check("ficha mostra o Pro de cortesia", "Pro pré-pago até" in _ce.get(f"/admin/motoristas/{_d_em['fabi']}").get_data(as_text=True))
+check("Pro de cortesia vencido e rebaixado pelo cron", (lambda: (
+    _st_em.update_user(_d_em["fabi"], {"pro_until": A.to_utc_iso(_agora_em - _td_em(days=1))}),
+    A.expirar_pro_prepago(), _st_em.get_user_by_id(_d_em["fabi"]))[-1].get("plan") == "free")())
 
 _st_em.delete_admin(_adm_em["_id"])
 with _st_em.pool.connection() as _conn:

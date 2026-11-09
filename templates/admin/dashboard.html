@@ -89,6 +89,9 @@
       {{ ui.barras(d.novos_por_mes, 'mes', 'n', 'Cadastros por mês') }}
     </div>
   </div>
+  <h3 class="adm-h3 mt-4">Cliques no link de download por canal (30 dias)</h3>
+  <p class="adm-suave">Cada clique em <code>recibotaxi.com.br/baixar?c=CANAL</code>, por canal e aparelho. <code>direto</code> é o link sem canal. Só contagem: ninguém é identificado.</p>
+  {% if d.cliques_canal is none %}{{ ui.indisponivel() }}{% else %}{{ ui.linhas_h(d.cliques_canal, 'canal', 'n') }}{% endif %}
   {% set a = d.ativacao or {} %}
   <div class="db-stats adm-kpis mt-4">
     {{ ui.kpi(d.ativacao_pct ~ '%', 'Ativação total (emitiram ≥ 1 recibo)', 'check2-circle', 'green', ' ' ~ a.ativados ~ ' de ' ~ a.total) }}

@@ -1,5 +1,27 @@
 {% extends "base.html" %}
-{% block title %}Recibos digitais para taxistas{% endblock %}
+{% block title %}Recibo Táxi{% endblock %}
+{% block title_completo %}Recibo de Táxi e de Corrida pelo Celular | Recibo Táxi{% endblock %}
+{% block og_title %}Recibo Táxi: recibo de corrida pelo celular{% endblock %}
+
+{% block head %}
+{# Dados estruturados para o Google entender que é um app, com lojas e preço de entrada. #}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "MobileApplication",
+  "name": "Recibo Táxi",
+  "operatingSystem": "Android, iOS",
+  "applicationCategory": "BusinessApplication",
+  "inLanguage": "pt-BR",
+  "url": "{{ site_url }}/",
+  "image": "{{ og_image_url }}",
+  "description": "Recibo de táxi e de corrida particular em segundos, no WhatsApp ou em PDF, para taxista e motorista de aplicativo. Funciona sem internet.",
+  "installUrl": ["{{ play_store_url }}", "{{ app_store_url }}"],
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "BRL"},
+  "author": {"@type": "Organization", "name": "AJR Serviços de Apoio Administrativo Ltda", "url": "{{ site_url }}/"}
+}
+</script>
+{% endblock %}
 
 {% block content %}
 <!-- ── Hero ────────────────────────────────────────────────────────────── -->
@@ -8,15 +30,15 @@
     <div class="row align-items-center g-5">
       <div class="col-lg-6">
         <div class="hero-eyebrow">
-          <i class="bi bi-taxi-front-fill me-2"></i>Para motoristas de táxi
+          <i class="bi bi-taxi-front-fill me-2"></i>Para taxista e motorista de aplicativo
         </div>
         <h1 class="hero-title">
-          Emita recibos<br>
-          <span class="hero-title-accent">profissionais</span><br>
-          em segundos.
+          Recibo de táxi<br>
+          <span class="hero-title-accent">e de corrida</span><br>
+          no celular, em segundos.
         </h1>
         <p class="hero-lead">
-          Gere, compartilhe por WhatsApp ou e-mail e salve o histórico de todas as suas corridas. Sem papel, sem complicação.
+          Preencha o passageiro, a origem, o destino e o valor. O recibo sai na hora e vai pelo WhatsApp, por e-mail ou em PDF. No app, funciona até sem internet.
         </p>
         <div class="hero-actions">
           <a href="{{ url_for('cadastro') }}" class="btn btn-hero-primary">
@@ -30,15 +52,15 @@
         <div class="hero-trust">
           <span><i class="bi bi-check-circle-fill me-1"></i>100% gratuito para começar</span>
           <span><i class="bi bi-check-circle-fill me-1"></i>Sem cartão de crédito</span>
-          <span><i class="bi bi-check-circle-fill me-1"></i>Recibo em 30 segundos</span>
+          <span><i class="bi bi-check-circle-fill me-1"></i>No app, funciona sem internet</span>
         </div>
         <div class="hero-store">
           <span class="hero-store-label">Baixe o app</span>
-          <a href="{{ app_store_url }}" class="btn-store" target="_blank" rel="noopener">
+          <a href="{{ app_store_url_site }}" class="btn-store" target="_blank" rel="noopener">
             <i class="bi bi-apple"></i>
             <span class="btn-store-text"><small>Baixar na</small>App Store</span>
           </a>
-          <a href="{{ play_store_url }}" class="btn-store" target="_blank" rel="noopener">
+          <a href="{{ play_store_url_site }}" class="btn-store" target="_blank" rel="noopener">
             <i class="bi bi-google-play"></i>
             <span class="btn-store-text"><small>Disponível no</small>Google Play</span>
           </a>
@@ -136,11 +158,11 @@
         <p class="app-cta-text">No app para iPhone e Android você emite recibos até sem internet e sincroniza tudo com a sua conta.</p>
       </div>
       <div class="app-cta-actions">
-        <a href="{{ app_store_url }}" class="btn-store" target="_blank" rel="noopener">
+        <a href="{{ app_store_url_site }}" class="btn-store" target="_blank" rel="noopener">
           <i class="bi bi-apple"></i>
           <span class="btn-store-text"><small>Baixar na</small>App Store</span>
         </a>
-        <a href="{{ play_store_url }}" class="btn-store" target="_blank" rel="noopener">
+        <a href="{{ play_store_url_site }}" class="btn-store" target="_blank" rel="noopener">
           <i class="bi bi-google-play"></i>
           <span class="btn-store-text"><small>Disponível no</small>Google Play</span>
         </a>
@@ -259,7 +281,7 @@
   <div class="container">
     <div class="final-cta-card">
       <h2 class="final-cta-title">Pronto para começar?</h2>
-      <p class="final-cta-text">Não precisa de cartão de crédito. Seu primeiro recibo em 30 segundos.</p>
+      <p class="final-cta-text">Não precisa de cartão de crédito. Seu primeiro recibo sai hoje.</p>
       <div class="d-flex gap-3 justify-content-center flex-wrap">
         <a href="{{ url_for('cadastro') }}" class="btn btn-cta-primary">
           <i class="bi bi-lightning-fill me-2"></i>Criar conta grátis

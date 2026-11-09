@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Indique um colega{% endblock %}
+{% block description %}Indique um colega taxista ou motorista de aplicativo para o Recibo Táxi e ganhe {{ indicacao.meses_por_indicado }} mês de Pro por colega ativo, até {{ indicacao.max_meses }} meses.{% endblock %}
 
 {% block content %}
 <div class="container py-4">
@@ -104,7 +105,7 @@
 
         <h2 class="db-card-title mt-4 mb-2"><i class="bi bi-list-check me-2"></i>Como funciona</h2>
         <ul class="legal-list">
-          <li>O colega cria a conta com o seu código (no site, no campo "Código de indicação"; no app, na próxima versão).</li>
+          <li>O colega cria a conta com o seu código, no campo "Código de indicação" do cadastro, no app ou no site.</li>
           <li>A recompensa libera quando ele <strong>emite o primeiro recibo</strong>, não no cadastro.</li>
           <li>Você ganha {{ indicacao.meses_por_indicado }} mês de Pro por colega ativo, até {{ indicacao.max_meses }} meses. Os meses somam: quem já tem Pro de indicação ganha mais 30 dias no fim do prazo.</li>
           <li>Quem já assina o Pro (pelo site ou pelo app) não recebe o mês grátis, porque já tem tudo; o desconto fica guardado para quando a assinatura acabar.</li>

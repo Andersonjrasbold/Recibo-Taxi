@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from flask import (
     Flask,
+    Response,
     abort,
     flash,
     g,
@@ -91,6 +92,36 @@ PAID_PLANS = ("pro", "business")
 APP_STORE_URL = "https://apps.apple.com/br/app/id6811583712"
 # Publicado em produção no Google Play em 2026-09-29.
 PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=br.com.recibotaxi.app"
+APP_STORE_ID = "6811583712"
+
+# Endereço público do site, para canonical, sitemap e prévia de link. É fixo
+# (e não APP_BASE_URL) porque o mesmo site responde em recibo-taxi.vercel.app,
+# endereço que o app usa para a API e que nunca pode ser redirecionado: para
+# o Google, o dono do conteúdo tem de ser sempre o domínio próprio.
+SITE_URL = "https://www.recibotaxi.com.br"
+
+# Canal de divulgação no link /baixar?c=CANAL (plano de 2026-11-09). Vai ao
+# Play dentro do `referrer` (utm_source) e à App Store em `ct`, e é somado na
+# tabela download_clicks. Minúsculas, dígitos, hífen e sublinhado, até 30
+# caracteres: é o teto do `ct` da Apple.
+CANAL_DOWNLOAD_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,29}$")
+# Token do provedor da conta da AJR no App Store Connect (Analytics →
+# Acquisition → Campaigns → "+", o número depois de `pt=`). Sem ele a Apple
+# ignora o `ct`, então o iPhone vai à loja sem campanha.
+APPLE_PROVIDER_TOKEN = os.environ.get("APPLE_PROVIDER_TOKEN", "").strip()
+
+
+def link_play_com_canal(canal: str) -> str:
+    """Ficha do Play com o canal no `referrer` (o Console mostra como Origem do UTM)."""
+    referrer = quote(f"utm_source={canal}&utm_medium=link&utm_campaign={canal}", safe="")
+    return f"{PLAY_STORE_URL}&referrer={referrer}"
+
+
+def link_appstore_com_canal(canal: str) -> str:
+    """Ficha da App Store com o canal em `ct`; sem o token da conta, a ficha pura."""
+    if not APPLE_PROVIDER_TOKEN:
+        return APP_STORE_URL
+    return f"{APP_STORE_URL}?pt={APPLE_PROVIDER_TOKEN}&ct={canal}&mt=8"
 
 MAX_RECEIPT_AMOUNT = Decimal("99999.99")
 # Moedas em que a corrida custa milhares de unidades: 150.000 guaranis é uma
@@ -314,7 +345,9 @@ INDICACAO_PRECO_APPLE = "R$ 5,90"
 INDICACAO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # sem 0/O, 1/I
 INDICACAO_TAMANHO = 6
 # Pro que não é assinatura: vive em drivers.pro_until e o cron rebaixa.
-STATUS_PREPAGO = ("prepago", "indicacao")
+# "cortesia" é o Pro liberado pelo painel /admin (parceria com cooperativa,
+# teste com um criador): mesma mecânica do pré-pago, sem pagamento nem indicação.
+STATUS_PREPAGO = ("prepago", "indicacao", "cortesia")
 # Vai depois do botão, em todo e-mail automático: no texto ela ficaria antes dele.
 EMAIL_ASSINATURA = "Equipe Recibo Táxi"
 
@@ -1328,6 +1361,28 @@ class PostgresStore:
         with self.pool.connection() as conn:
             conn.execute("delete from public.rate_limits where key = %s", (key,))
 
+    def bump_download_click(self, day: str, channel: str, store: str) -> None:
+        """Soma um clique no /baixar por dia, canal e loja (migração 0014).
+
+        Só contagem: nem IP, nem agente, nem quem clicou. Com o volume de hoje
+        as lojas escondem campanha pequena em "Outros"; este é o número que
+        sempre existe.
+        """
+        with self.pool.connection() as conn:
+            conn.execute(
+                """insert into public.download_clicks (day, channel, store, clicks)
+                   values (%s, %s, %s, 1)
+                   on conflict (day, channel, store)
+                   do update set clicks = public.download_clicks.clicks + 1""",
+                (day, channel, store))
+
+    def download_clicks_since(self, day: str) -> list[dict]:
+        with self.pool.connection() as conn:
+            return [dict(r) for r in conn.execute(
+                """select channel, store, sum(clicks) as n from public.download_clicks
+                    where day >= %s group by channel, store order by n desc, channel, store""",
+                (day,)).fetchall()]
+
     def purge_guest_receipts_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
         with self.pool.connection() as conn:
             apagados = conn.execute(
@@ -1874,6 +1929,15 @@ def inject_globals() -> dict:
         "free_monthly_limit": FREE_MONTHLY_LIMIT,
         "app_store_url": APP_STORE_URL,
         "play_store_url": PLAY_STORE_URL,
+        "app_store_id": APP_STORE_ID,
+        # Botões das lojas no site: o clique conta como canal "site" nos
+        # consoles das lojas (o link direto não passa pelo /baixar).
+        "app_store_url_site": link_appstore_com_canal("site"),
+        "play_store_url_site": link_play_com_canal("site"),
+        "site_url": SITE_URL,
+        # Canonical sem a query: ?plano=pro e ?indicacao=X são a mesma página.
+        "canonical_url": SITE_URL + (request.path if has_request_context() else "/"),
+        "og_image_url": SITE_URL + "/static/img/og-recibo-taxi.png",
         "paises": PAISES,
         "moedas": MOEDAS,
         "preco_pro_anual_pix": PRECO_PRO_ANUAL_PIX,
@@ -1903,7 +1967,42 @@ def app_offline(filename: str = "index.html"):
     caminho existe só para desenvolvimento.
     """
     pasta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mobile", "www")
-    return send_from_directory(pasta, filename)
+    resposta = send_from_directory(pasta, filename)
+    # Responde em produção também; não é página para aparecer na busca.
+    resposta.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return resposta
+
+
+@app.get("/robots.txt")
+def robots_txt():
+    corpo = "\n".join([
+        "User-agent: *",
+        "Disallow: /admin",
+        "Disallow: /api/",
+        "Disallow: /app/",
+        "Disallow: /dashboard",
+        "Disallow: /perfil",
+        "Disallow: /recibo/",
+        "Allow: /",
+        f"Sitemap: {SITE_URL}/sitemap.xml",
+        "",
+    ])
+    return Response(corpo, mimetype="text/plain")
+
+
+# Páginas públicas que valem para a busca. Login, cadastro e senha ficam de
+# fora: não são conteúdo. O recibo tem noindex.
+SITEMAP_ROTAS = ("index", "planos", "indicar", "termos", "privacidade")
+
+
+@app.get("/sitemap.xml")
+def sitemap_xml():
+    urls = "".join(
+        f"<url><loc>{SITE_URL}{url_for(rota)}</loc></url>" for rota in SITEMAP_ROTAS)
+    corpo = ('<?xml version="1.0" encoding="UTF-8"?>'
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+             f"{urls}</urlset>")
+    return Response(corpo, mimetype="application/xml")
 
 
 @app.get("/static/<path:filename>")
@@ -1929,13 +2028,31 @@ def baixar_app():
     e o e-mail é quase sempre lido no celular: no iPhone cai na App Store, no
     Android no Google Play — e, com o app instalado, a loja mostra "Abrir". No
     computador vai para a seção do app na página inicial.
+
+    `?c=CANAL` diz de onde veio o clique (cartão no ponto de táxi, cooperativa,
+    anúncio, e-mail). O canal segue para a loja — no Play dentro do `referrer`,
+    que o Play Console mostra como "Origem do UTM"; na App Store em `ct`, que
+    o App Store Connect mostra em Analytics → Campaigns — e é somado aqui por
+    dia, canal e loja. Sem `c`, ou com um valor fora do padrão, o link se
+    comporta exatamente como antes.
     """
     agente = request.headers.get("User-Agent", "")
+    canal = request.args.get("c", "").strip().lower()
+    if not CANAL_DOWNLOAD_RE.match(canal):
+        canal = ""
+
     if re.search(r"iPhone|iPad|iPod", agente):
-        return redirect(APP_STORE_URL)
-    if "Android" in agente:
-        return redirect(PLAY_STORE_URL)
-    return redirect(url_for("index") + "#app")
+        loja, destino = "appstore", (link_appstore_com_canal(canal) if canal else APP_STORE_URL)
+    elif "Android" in agente:
+        loja, destino = "play", (link_play_com_canal(canal) if canal else PLAY_STORE_URL)
+    else:
+        loja, destino = "site", url_for("index") + "#app"
+
+    try:
+        get_store().bump_download_click(today_br(), canal or "direto", loja)
+    except Exception as exc:  # contar nunca pode impedir o redirecionamento
+        app.logger.warning("/baixar: clique não contado (migração 0014 aplicada?): %s", exc)
+    return redirect(destino)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -2434,8 +2551,8 @@ def expirar_pro_prepago() -> int:
         return conn.execute(
             """update public.drivers
                   set plan = 'free', subscription_status = 'expirado', updated_at = now()
-                where plan = 'pro' and subscription_status in ('prepago', 'indicacao')
-                  and pro_until < now()""").rowcount
+                where plan = 'pro' and subscription_status = any(%s)
+                  and pro_until < now()""", (list(STATUS_PREPAGO),)).rowcount
 
 
 def lembrar_vencimento_prepago() -> int:
@@ -4073,7 +4190,7 @@ def valores_do_email(motorista: dict, agora: datetime | None = None) -> dict:
         "limite": FREE_MONTHLY_LIMIT,
         "mes": MESES_PT[agora_br.month - 1],
         "preco": PRECO_PRO_MENSAL,
-        "link_app": absolute_url("baixar_app"),
+        "link_app": absolute_url("baixar_app", c="email"),
         "link_planos": absolute_url("planos"),
         "link_painel": absolute_url("dashboard"),
         "link_iphone": APP_STORE_URL,
@@ -4912,6 +5029,13 @@ _SQL_ADMIN = {
         select payment_method as forma, count(*) as n,
                coalesce(sum(amount) filter (where currency = 'BRL'), 0) as valor
           from public.receipts where created_at >= %(ini_30d)s group by 1 order by n desc limit 6""",
+    # Cliques no /baixar por canal (migração 0014). `direto` é o link sem ?c=.
+    "cliques_canal": """
+        select channel || ' · ' || case store when 'play' then 'Android' when 'appstore' then 'iPhone'
+                                               else 'computador' end as canal,
+               sum(clicks) as n
+          from public.download_clicks where day >= %(dia_30d)s
+         group by channel, store order by n desc, channel limit 20""",
     "cidades_recibos": """
         select coalesce(nullif(initcap(trim(driver_snapshot->>'city')), ''), '(sem cidade)') as cidade,
                count(*) as n, count(distinct driver_id) as motoristas
@@ -5116,6 +5240,8 @@ def _params_dashboard_admin() -> dict:
         "ini_hoje": _inicio_dia_br(0),
         "ini_7d": _inicio_dia_br(6),
         "ini_30d": _inicio_dia_br(29),
+        # download_clicks guarda a data (dia de Brasília), não o instante.
+        "dia_30d": (datetime.now(BR_TZ) - timedelta(days=29)).date().isoformat(),
         "ini_mes": _inicio_mes_br(0),
         "ini_12m": _inicio_mes_br(11),
         "limite": FREE_MONTHLY_LIMIT,
@@ -5156,6 +5282,8 @@ def montar_dashboard_admin() -> dict:
     d["por_hora"] = _com_maximo([{"hora": h, "n": por_hora.get(h, 0)} for h in range(24)], "n")
     for nome in ("pagamentos", "cidades_recibos", "cidades_cadastro"):
         d[nome] = _com_maximo(d.get(nome) or [], "n")
+    if d.get("cliques_canal") is not None:
+        d["cliques_canal"] = _com_maximo(d["cliques_canal"], "n")
     if d.get("ultimos_eventos") is not None:
         d["ultimos_eventos"] = [dict(e, origem=nome_da_loja(e.get("store"), e.get("source")))
                                 for e in d["ultimos_eventos"]]
@@ -5427,6 +5555,41 @@ def admin_excluir_motorista(driver_id):
     app.logger.warning("admin %s excluiu o motorista %s (%s)", g.admin["email"], did, motorista.get("email"))
     flash(f"Cadastro de {motorista.get('full_name') or motorista.get('email')} excluído, com todos os recibos.", "success")
     return redirect(url_for("admin_motoristas"))
+
+
+# Dias de Pro que o painel pode dar de uma vez. Lista fechada: o campo vem do
+# formulário, e um número livre viraria "Pro para sempre" com um zero a mais.
+PRO_CORTESIA_DIAS = (30, 90, 180, 365)
+
+
+@app.post("/admin/motoristas/<uuid:driver_id>/pro-cortesia")
+@admin_required
+def admin_pro_cortesia(driver_id):
+    """Libera Pro sem cobrança pelo painel: cooperativa parceira, criador em teste.
+
+    Usa a mesma mecânica do Pro pré-pago (drivers.pro_until, rebaixado pelo
+    cron quando a data passa). Quem já assina pela Stripe ou pela loja continua
+    assinante e os dias ficam guardados para quando a assinatura acabar.
+    """
+    did = str(driver_id)
+    motorista = get_store().get_user_by_id(did)
+    if not motorista:
+        abort(404)
+    voltar = redirect(url_for("admin_motorista", driver_id=did))
+    try:
+        dias = int(request.form.get("dias", ""))
+    except ValueError:
+        dias = 0
+    if dias not in PRO_CORTESIA_DIAS:
+        flash("Escolha um dos prazos da lista. Nada foi alterado.", "danger")
+        return voltar
+    fim = conceder_pro_prepago(motorista, dias, "cortesia")
+    _ADMIN_CACHE.pop("dashboard", None)
+    app.logger.warning("admin %s deu %s dias de Pro de cortesia a %s (%s); vale até %s",
+                       g.admin["email"], dias, did, motorista.get("email"), fim.date().isoformat())
+    flash(f"{dias} dias de Pro liberados para {motorista.get('full_name') or motorista.get('email')}, "
+          f"até {fim.astimezone(BR_TZ).strftime('%d/%m/%Y')}.", "success")
+    return voltar
 
 
 # ── Painel: automação de e-mails ─────────────────────────────────────────────

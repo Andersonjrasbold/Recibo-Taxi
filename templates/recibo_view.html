@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Recibo #{{ dados.rid }}{% endblock %}
+{% block description %}Recibo emitido pelo motorista com o app Recibo Táxi. Toque para ver, imprimir ou salvar em PDF.{% endblock %}
+{% block og_title %}Recibo de corrida{% endblock %}
+{% block banner_app %}{% endblock %}
 
 {% block head %}
 {# A pagina mostra nome e, as vezes, CPF do passageiro. O endereco tem 56 bits

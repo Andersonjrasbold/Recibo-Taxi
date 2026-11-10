@@ -38,7 +38,7 @@
         {% if m.stripe_customer_id %}<tr><td>Cliente Stripe</td><td><a class="adm-link" href="https://dashboard.stripe.com/customers/{{ m.stripe_customer_id }}" target="_blank" rel="noopener noreferrer">{{ m.stripe_customer_id }}</a></td></tr>{% endif %}
         {% if m.stripe_subscription_id %}<tr><td>Assinatura Stripe</td><td><a class="adm-link" href="https://dashboard.stripe.com/subscriptions/{{ m.stripe_subscription_id }}" target="_blank" rel="noopener noreferrer">{{ m.stripe_subscription_id }}</a></td></tr>{% endif %}
         <tr><td>Última alteração</td><td>{{ m.updated_at | data_br }}</td></tr>
-        {% if m.pro_until %}<tr><td>Pro pré-pago até</td><td>{{ m.pro_until | data_br(false) }}{% if m.subscription_status not in ('prepago', 'indicacao') %} <small class="adm-suave">(guardado; vale quando a assinatura acabar)</small>{% endif %}</td></tr>{% endif %}
+        {% if m.pro_until %}<tr><td>Pro pré-pago até</td><td>{{ m.pro_until | data_br(false) }}{% if m.subscription_status not in ('prepago', 'indicacao', 'cortesia') %} <small class="adm-suave">(guardado; vale quando a assinatura acabar)</small>{% endif %}</td></tr>{% endif %}
         <tr><td>Indicado por</td><td>{% if indicacoes is none %}-{% elif indicacoes.por %}<a href="{{ url_for('admin_motorista', driver_id=indicacoes.por.id) }}" class="adm-link">{{ indicacoes.por.full_name }}</a>{% else %}ninguém{% endif %}</td></tr>
         <tr><td>Indicou</td><td>{% if indicacoes is none %}-{% else %}{{ indicacoes.n }} colega(s), {{ indicacoes.ativas }} com recibo · cupom {% if m.referral_coupon_used_at %}usado{% elif m.referral_coupon_granted_at %}liberado{% else %}não{% endif %}{% if m.referral_code %} · código <code>{{ m.referral_code }}</code>{% endif %}{% endif %}</td></tr>
       </table>
@@ -55,6 +55,23 @@
         {% else %}<tr><td colspan="5" class="adm-suave">Nenhum evento registrado (o registro começou em outubro de 2026).</td></tr>{% endfor %}</tbody>
       </table>
       {% endif %}
+    </section>
+    <section class="adm-painel">
+      <h2 class="adm-h2"><i class="bi bi-gift-fill me-2"></i>Pro de cortesia</h2>
+      <p class="adm-suave">Libera o Pro sem cobrança: parceria com cooperativa, teste com um criador. Os dias somam ao que ele já tiver{% if m.plan != 'free' and m.subscription_status not in ('prepago', 'indicacao', 'cortesia') %}; como ele assina, ficam guardados para quando a assinatura acabar{% endif %}. O cron rebaixa para o Grátis quando a data passar.</p>
+      <form action="{{ url_for('admin_pro_cortesia', driver_id=m['_id']) }}" method="post" class="d-flex gap-2 align-items-end flex-wrap">
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <div>
+          <label for="diasCortesia" class="adm-h3">Prazo</label>
+          <select id="diasCortesia" name="dias" class="form-select form-control-auth">
+            <option value="30">30 dias</option>
+            <option value="90" selected>90 dias (3 meses)</option>
+            <option value="180">180 dias</option>
+            <option value="365">365 dias</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-nav-primary"><i class="bi bi-gift me-1"></i>Liberar Pro</button>
+      </form>
     </section>
     <section class="adm-painel adm-perigo">
       <h2 class="adm-h2 adm-falha"><i class="bi bi-exclamation-octagon-fill me-2"></i>Excluir cadastro</h2>

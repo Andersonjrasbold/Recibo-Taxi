@@ -3,8 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ app_name }}{% endblock %} — Recibos profissionais para taxistas</title>
-  <meta name="description" content="Emita recibos digitais profissionais em segundos. Compartilhe por WhatsApp ou e-mail. Grátis para começar.">
+  {#- Cada página tem título e descrição próprios: o Google mostra os dois no
+      resultado, e página repetida parece página sem conteúdo. A inicial troca
+      o título inteiro; as outras só a primeira parte. -#}
+  {% set descricao_padrao = "Recibo de táxi e de corrida particular em segundos, no WhatsApp ou em PDF. Para taxista e motorista de aplicativo. Comece grátis, até sem internet." %}
+  <title>{% block title_completo %}{% block title %}{{ app_name }}{% endblock %} — Recibo Táxi{% endblock %}</title>
+  <meta name="description" content="{% block description %}{{ descricao_padrao }}{% endblock %}">
+  <link rel="canonical" href="{{ canonical_url }}">
+  {#- Prévia do link no WhatsApp, no Facebook e no Telegram. Sem imagem o link
+      chega como texto seco; com og:image vem com a marca. -#}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Recibo Táxi">
+  <meta property="og:url" content="{{ canonical_url }}">
+  <meta property="og:title" content="{% block og_title %}{{ self.title() }}{% endblock %}">
+  <meta property="og:description" content="{% block og_description %}{{ self.description() }}{% endblock %}">
+  <meta property="og:image" content="{{ og_image_url }}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:locale" content="pt_BR">
+  <meta name="twitter:card" content="summary_large_image">
+  {#- Banner do Safari no iPhone: quem já tem o app abre; quem não tem vai à
+      App Store. Só nas páginas do motorista; a do recibo é do passageiro. -#}
+  {% block banner_app %}<meta name="apple-itunes-app" content="app-id={{ app_store_id }}">{% endblock %}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
@@ -31,25 +51,15 @@
         <div class="nav-center d-none d-lg-flex align-items-center gap-1">
           <a href="{{ url_for('index') }}#como-funciona" class="nav-pill">Como funciona</a>
           <a href="{{ url_for('planos') }}" class="nav-pill">Planos</a>
-          <a href="{{ app_store_url }}" class="nav-pill nav-pill-accent" target="_blank" rel="noopener">
+          <a href="{{ app_store_url_site }}" class="nav-pill nav-pill-accent" target="_blank" rel="noopener">
             <i class="bi bi-apple me-1"></i>App para iPhone
           </a>
-          <a href="{{ play_store_url }}" class="nav-pill nav-pill-accent" target="_blank" rel="noopener">
+          <a href="{{ play_store_url_site }}" class="nav-pill nav-pill-accent" target="_blank" rel="noopener">
             <i class="bi bi-google-play me-1"></i>App para Android
           </a>
         </div>
 
         <div class="nav-actions">
-          {% if storage_mode == "memory" %}
-          <span class="storage-badge storage-local">
-            <i class="bi bi-circle-fill me-1" style="font-size:.5rem"></i>Local
-          </span>
-          {% else %}
-          <span class="storage-badge storage-live">
-            <i class="bi bi-circle-fill me-1" style="font-size:.5rem"></i>Ao vivo
-          </span>
-          {% endif %}
-
           {% if current_user %}
           <span class="nav-username d-none d-md-inline">
             <i class="bi bi-person-circle me-1"></i>{{ current_user.full_name.split()[0] }}
@@ -96,12 +106,12 @@
           <div class="footer-logo">
             <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
           </div>
-          <p class="footer-tagline">Recibos digitais profissionais<br>para motoristas de táxi.</p>
+          <p class="footer-tagline">Recibo de corrida pelo celular<br>para taxista e motorista de aplicativo.</p>
         </div>
         <div class="footer-links-col">
           <strong class="footer-col-title">Produto</strong>
-          <a href="{{ app_store_url }}" class="footer-link" target="_blank" rel="noopener">App para iPhone</a>
-          <a href="{{ play_store_url }}" class="footer-link" target="_blank" rel="noopener">App para Android</a>
+          <a href="{{ app_store_url_site }}" class="footer-link" target="_blank" rel="noopener">App para iPhone</a>
+          <a href="{{ play_store_url_site }}" class="footer-link" target="_blank" rel="noopener">App para Android</a>
           <a href="{{ url_for('planos') }}" class="footer-link">Ver Planos</a>
           <a href="{{ url_for('cadastro') }}" class="footer-link">Criar Conta</a>
         </div>

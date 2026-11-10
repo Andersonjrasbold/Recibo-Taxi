@@ -274,7 +274,7 @@ em "Ligar o motor".
 | Plano | Preço | Limite |
 |---|---|---|
 | Grátis | R$ 0,00 | 6 recibos por mês-calendário (fuso de Brasília) |
-| Pro | R$ 19,90/mês | Ilimitado |
+| Pro | R$ 9,90/mês ou R$ 59,90/ano (preços de 2026-11-10; antes R$ 19,90 e R$ 119,90) | Ilimitado |
 
 O limite é aplicado em `recibo_criar`. O webhook da Stripe rebaixa a conta para
 Grátis quando a assinatura é cancelada ou a cobrança falha em definitivo —
@@ -304,17 +304,16 @@ somar duas vezes; lembrete por e-mail 15 dias antes, uma vez. (2)
 que `/indicar` ou `/api/sessao` o pede), campo no cadastro (site; app na
 próxima versão), tabela `referrals`; o primeiro recibo do indicado ativa a
 recompensa (`UPDATE ... where activated_at is null`): 1 mês de Pro por colega
-ativo (até 3; assinante não recebe, cupom fica guardado) e o cupom
-`INDICACAO70` (70% por 12 meses, criado na Stripe sob demanda), aplicado no
-checkout do Pro mensal e marcado como usado pelo webhook. O mesmo desconto
-existe dentro do app, pelas lojas: na Apple, código de oferta `INDICA70` do
-Pro mensal (R$ 5,90 por 12 meses, 175 territórios, resgatado pela folha da
-App Store); no Google, oferta `indicacao70` do plano base `mensal` (70% por
-12 meses, elegibilidade "determinada pelo desenvolvedor", tag `indicacao70`),
-que o app compra como `subscriptionOption`. `/api/sessao` devolve
-`cupom_indicacao.disponivel`; o webhook do RevenueCat marca o cupom usado
-quando a compra traz `offer_code`, a oferta no `product_id` ou `discount_*`.
-O app nunca aponta para o site nem para a Stripe (Apple 3.1.1). Pré-pago
+ativo (até 3; assinante não recebe). Só quem indica ganha; o indicado não. O
+link do convite é `/i/CÓDIGO` (página com o código e o botão da loja do
+aparelho, via `/baixar?c=indicacao&i=CÓDIGO`). O cupom `INDICACAO70` (70% por
+12 meses no Pro mensal do site) e o desconto equivalente das lojas (`INDICA70`
+na Apple, `indicacao70` no Google) foram ENCERRADOS em 2026-11-10: ninguém
+ganha mais; quem já tinha o cupom continua podendo usá-lo no checkout do
+site (o webhook marca `referral_coupon_used_at`), e uma compra na loja que
+ainda cite o código antigo gasta o mesmo cupom. `/api/sessao` não devolve
+mais `cupom_indicacao` (o app 1.3 esconde o bloco; o app remove o código no
+próximo build). O app nunca aponta para o site nem para a Stripe (Apple 3.1.1). Pré-pago
 vigente segura o Pro quando a loja ou a Stripe encerram a assinatura. Regras
 em `/indicar` e nos Termos (6.7 e 6.8).
 

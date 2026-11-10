@@ -2732,9 +2732,15 @@ try:
                                                  "product_id": "br.com.recibotaxi.app.pro.mensal", "offer_code": "INDICA70",
                                                  "price_in_purchased_currency": 5.9, "currency": "BRL"}})
     _ind4 = store.get_user_by_id(_ind["_id"])
-    check("compra na loja com o codigo antigo ativa o Pro e nao toca o cupom do site",
-          r.status_code == 200 and "cupom" not in (r.get_json() or {}).get("resultado", "")
-          and not _ind4["referral_coupon_used_at"] and _ind4["plan"] == "pro", str(r.get_json()))
+    check("compra na loja com o codigo antigo ativa o Pro e gasta o cupom do site (nao se usa duas vezes)",
+          r.status_code == 200 and "cupom" in (r.get_json() or {}).get("resultado", "")
+          and bool(_ind4["referral_coupon_used_at"]) and _ind4["plan"] == "pro", str(r.get_json()))
+    _lim_conv = A.CONVITE_DIARIO_LIMITE_IP
+    A.CONVITE_DIARIO_LIMITE_IP = 2
+    _cc = A.app.test_client()
+    _cods_conv = [_cc.get(f"/i/{_cod}", environ_base={"REMOTE_ADDR": "203.0.113.77"}).status_code for _ in range(4)]
+    A.CONVITE_DIARIO_LIMITE_IP = _lim_conv
+    check("a pagina do convite tem teto por IP (429 depois do limite)", _cods_conv == [200, 200, 429, 429], str(_cods_conv))
 
     # Cron: vencido volta ao Gratis; assinante com data velha guardada fica; lembrete 15 dias antes.
     _email_ven, _email_lem, _email_loja = (f"{n}-{_suf_in}@teste.invalid" for n in ("vencido", "lembrete", "loja"))

@@ -347,6 +347,8 @@ INDICACAO_CUPOM_PCT = 70
 INDICACAO_CUPOM_MESES = 12
 INDICACAO_CUPOM_ID = "INDICACAO70"   # id do cupom na Stripe; criado sob demanda
 INDICACAO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # sem 0/O, 1/I
+# Aberturas da página do convite (/i/CÓDIGO) por IP e dia. Ver a rota.
+CONVITE_DIARIO_LIMITE_IP = 300
 INDICACAO_TAMANHO = 6
 # Pro que não é assinatura: vive em drivers.pro_until e o cron rebaixa.
 # "cortesia" é o Pro liberado pelo painel /admin (parceria com cooperativa,
@@ -2658,7 +2660,18 @@ def convite(codigo: str):
     revela nada.
     """
     codigo = codigo.strip().upper()
-    indicador = get_store().get_user_by_referral_code(codigo) if codigo_de_indicacao_valido(codigo) else None
+    if not codigo_de_indicacao_valido(codigo):
+        abort(404)
+    # Código existente devolve o primeiro nome de quem indicou; tentar códigos
+    # em massa não pode virar lista de motoristas. O teto por IP é largo para
+    # o uso real (um link por conversa) e apertado para um script.
+    try:
+        tentativas = get_store().bump_counter(f"convite:{request.remote_addr}:{today_br()}")
+    except Exception:
+        tentativas = 0
+    if tentativas > CONVITE_DIARIO_LIMITE_IP:
+        abort(429)
+    indicador = get_store().get_user_by_referral_code(codigo)
     if not indicador:
         abort(404)
     partes = (indicador.get("full_name") or "").split()
@@ -3886,6 +3899,16 @@ def motorista_do_evento_rc(evento: dict) -> tuple[dict | None, str]:
     return None, ""
 
 
+def compra_cita_desconto_antigo(evento: dict) -> bool:
+    """A compra na loja usou o desconto de indicação encerrado em 2026-11-10.
+
+    Apple: `offer_code` traz o código resgatado. Google: a oferta aparece no
+    identificador do produto, em `offer_code` ou em `discount_identifier`.
+    """
+    textos = " ".join(str(evento.get(k) or "") for k in ("offer_code", "product_id", "discount_identifier")).lower()
+    return "indica70" in textos or "indicacao70" in textos
+
+
 def pro_vem_da_stripe(usuario: dict) -> bool:
     """Assinatura ativa na Stripe. Evento da loja nao mexe nela: sao
     assinaturas independentes (Guideline 3.1.3b).
@@ -4015,6 +4038,12 @@ def webhook_revenuecat():
     elif tipo in RC_EVENTOS_ATIVA:
         ativar_pro_pela_loja(user_id)
         resultado = "pro"
+        # Enquanto o código INDICA70 (Apple) e a oferta indicacao70 (Google) não
+        # forem desativados nos consoles, uma compra com eles ainda pode passar:
+        # quem tinha o cupom antigo do site gasta-o aqui, para não usar duas vezes.
+        if tem_cupom_de_indicacao(usuario) and compra_cita_desconto_antigo(evento):
+            store.update_user(user_id, {"referral_coupon_used_at": now_iso()})
+            resultado += " (cupom de indicação antigo)"
         if tipo == "INITIAL_PURCHASE":
             loja = str(evento.get("store") or "")
             avisar_nova_assinatura(
@@ -5304,13 +5333,15 @@ def montar_dashboard_admin() -> dict:
                                 for e in d["ultimos_eventos"]]
 
     # MRR como faixa: o banco nao diz quem e mensal e quem e anual, nem o preco
-    # do Business legado. Piso = todo Pro da Stripe anual (59,90/12);
+    # do Business legado. Piso = todo Pro anual (59,90/12), na Stripe e na loja;
     # teto = todo Pro mensal. Loja: bruto; a Apple fica com 15%.
     g = d.get("geral") or {}
     pro_stripe = int(g.get("pro_stripe") or 0)
     pro_loja = int(g.get("pro_loja") or 0)
     d["mrr"] = {
-        "piso": round(pro_stripe * 59.90 / 12 + pro_loja * 9.90 * 0.85, 2),
+        # Preços de 2026-11-10 para todo mundo: assinatura feita antes continua
+        # no preço antigo até migrar, então a faixa pode ficar baixa por um tempo.
+        "piso": round(pro_stripe * 59.90 / 12 + pro_loja * 59.90 / 12 * 0.85, 2),
         "teto": round((pro_stripe + pro_loja) * 9.90, 2),
         "business_sem_preco": int(g.get("business") or 0),
     }

@@ -58,6 +58,13 @@ def limpar_contas_de_teste():
     with store.pool.connection() as conn:
         ids = [str(r["id"]) for r in conn.execute(
             "select id from auth.users where email like %s", (f"%{DOMINIO_TESTE}",)).fetchall()]
+    # Registros de acesso das contas de teste (sem FK: nao saem no cascade).
+    if ids:
+        try:
+            with store.pool.connection() as conn, conn.transaction():
+                conn.execute("delete from public.access_logs where driver_id = any(%s::uuid[])", (ids,))
+        except Exception:
+            pass  # migracao 0016 ainda nao aplicada
     for uid in ids:
         A.supabase_admin().auth.admin.delete_user(uid)
         removidas += 1
@@ -74,6 +81,11 @@ def limpar_contas_de_teste():
             # Painel: admins de teste e tentativas de login da suite.
             conn.execute("delete from public.admin_users where email like '%%@teste.invalid'")
             conn.execute("delete from public.rate_limits where key like 'admin_login:%%'")
+            # Tetos de login, cadastro e convite do IP do cliente de teste: a suite
+            # faz centenas de logins e o contador de ontem nao pode barrar o de hoje.
+            conn.execute("""delete from public.rate_limits
+                             where key like 'login:ip:127.0.0.1:%%' or key like 'cadastro:ip:127.0.0.1:%%'
+                                or key like 'convite:203.0.113.77:%%' or key like 'login:e:%%'""")
             # Automacao de e-mails: modelos da suite que sobraram de uma execucao
             # interrompida. Os envios das contas de teste ja sairam no cascade.
             try:
@@ -142,7 +154,7 @@ def recibo_bruto(rid, created_at, driver_id=None, is_guest=True):
 def novo_cliente(email="a@teste.invalid"):
     c = A.app.test_client()
     c.post("/cadastro", data={"nome_completo":"Ana Souza","email":email,"senha":"senha12345",
-        "whatsapp":"11999998888","cpf":"12345678900","cidade":"SP","placa":"abc1d23"})
+        "whatsapp":"11999998888","cpf":"11144477735","cidade":"SP","placa":"abc1d23"})
     return c
 
 print("\n── Páginas públicas novas ──")
@@ -519,7 +531,7 @@ check("recibo normal continua passando", "/recibo/" in r.headers.get("Location",
 
 cc = A.app.test_client()
 r = cc.post("/cadastro", data={"nome_completo":grande,"email":"x@teste.invalid","senha":"senha12345",
-    "whatsapp":"11999998888","cpf":"12345678900","cidade":"SP","placa":"abc1d23"})
+    "whatsapp":"11999998888","cpf":"11144477735","cidade":"SP","placa":"abc1d23"})
 check("cadastro recusa nome gigante (400)", r.status_code == 400, r.status_code)
 check("conta nao foi criada", A.get_store().get_user_by_email("x@teste.invalid") is None)
 
@@ -549,7 +561,7 @@ check("vem preenchida com os dados atuais", "perfil@teste.invalid" in r.get_data
 check("exige login", A.app.test_client().get("/perfil").status_code == 302)
 
 base = {"nome_completo":"Ana Souza Lima","email":"perfil@teste.invalid","whatsapp":"11988887777",
-        "cpf":"12345678900","cidade":"Santos","placa":"xyz9k88","modelo_veiculo":"Corolla"}
+        "cpf":"11144477735","cidade":"Santos","placa":"xyz9k88","modelo_veiculo":"Corolla"}
 
 r = cpf_.post("/perfil", data={**base, "senha_atual":"errada"})
 check("senha errada nao salva nada", r.status_code == 401, r.status_code)
@@ -653,7 +665,7 @@ _capp = A.app.test_client()
 _email_app = "renova@teste.invalid"
 _r = _capp.post("/api/cadastro", json={
     "nome_completo": "Renova Teste", "email": _email_app, "senha": "senha12345",
-    "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel",
+    "whatsapp": "(45) 99888-7777", "cpf": "52998224725", "cidade": "Cascavel",
     "placa": "RNV1234"})
 check("cadastro pela API devolve refresh_token",
       _r.status_code == 201 and bool(_r.get_json().get("refresh_token")),
@@ -901,7 +913,7 @@ if A.get_store().kind == "postgres":
     _crz = A.app.test_client()
     _r = _crz.post("/api/cadastro", json={
         "nome_completo": "Razao Teste", "email": "razao@teste.invalid", "senha": "senha12345",
-        "whatsapp": "45998238620", "cpf": "12345678901", "cidade": "Cascavel", "placa": "RZS1234"})
+        "whatsapp": "45998238620", "cpf": "52998224725", "cidade": "Cascavel", "placa": "RZS1234"})
     _tkz = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
     _cabz = {"Authorization": f"Bearer {_tkz}"}
 
@@ -987,7 +999,7 @@ if A.get_store().kind == "postgres":
     _cqr = A.app.test_client()
     _r = _cqr.post("/api/cadastro", json={
         "nome_completo": "Sem Nome Teste", "email": "semnome-app@teste.invalid", "senha": "senha12345",
-        "whatsapp": "45998238621", "cpf": "12345678901", "cidade": "Cascavel", "placa": "QRS1234"})
+        "whatsapp": "45998238621", "cpf": "52998224725", "cidade": "Cascavel", "placa": "QRS1234"})
     _tkq = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
     _cabq = {"Authorization": f"Bearer {_tkq}"}
 
@@ -1073,7 +1085,7 @@ try:
     _cmail = A.app.test_client()
     _r = _cmail.post("/api/cadastro", json={
         "nome_completo": "Correio Teste", "email": "correio@teste.invalid",
-        "senha": "senha12345", "whatsapp": "(45) 99888-7777", "cpf": "12345678901",
+        "senha": "senha12345", "whatsapp": "(45) 99888-7777", "cpf": "52998224725",
         "cidade": "Cascavel", "placa": "EML1234"})
     _tk = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
     _cab = {"Authorization": f"Bearer {_tk}"}
@@ -1172,7 +1184,7 @@ print("\n-- Exclusao de conta pelo app --")
 _cdel = A.app.test_client()
 _r = _cdel.post("/api/cadastro", json={
     "nome_completo": "Some Teste", "email": "some@teste.invalid", "senha": "senha12345",
-    "whatsapp": "45998238620", "cpf": "12345678901", "cidade": "Cascavel", "placa": "DEL1234"})
+    "whatsapp": "45998238620", "cpf": "52998224725", "cidade": "Cascavel", "placa": "DEL1234"})
 _tkd = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
 _cabd = {"Authorization": f"Bearer {_tkd}"}
 
@@ -1195,13 +1207,74 @@ check("assinante pela loja e barrado, com motivo",
 check("e a conta continua existindo",
       A.get_store().get_user_by_email("some@teste.invalid") is not None)
 
-A.get_store().update_user(_uid_del, {"plan": "free"})
+# Pro pre-pago (indicacao, Pix anual, cortesia) nao tem cobranca: pode apagar.
+A.get_store().update_user(_uid_del, {"plan": "pro", "subscription_status": "cortesia",
+                                     "pro_until": A.to_utc_iso(A.datetime.now(A.timezone.utc) + A.timedelta(days=30))})
+_sess_del = _cdel.get("/api/sessao", headers=_cabd).get_json() or {}
+check("sessao do pre-pago traz o pro_until", bool(_sess_del.get("pro_until")), str(_sess_del.get("pro_until")))
+A.get_store().update_user(_uid_del, {"plan": "pro", "subscription_status": "active",
+                                     "stripe_customer_id": "cus_del", "stripe_subscription_id": "sub_del"})
+check("sessao de quem assina nao traz o pro_until (o app diria 'vale ate')",
+      (_cdel.get("/api/sessao", headers=_cabd).get_json() or {}).get("pro_until") is None)
+A.get_store().update_user(_uid_del, {"plan": "pro", "subscription_status": "cortesia",
+                                     "stripe_customer_id": None, "stripe_subscription_id": None})
+# Supabase Auth fora do ar: 503, e nao 401 (o app apagaria a sessao).
+_adm_real = A.supabase_admin
+class _AuthForaDoAr:
+    class auth:
+        @staticmethod
+        def get_user(token): raise TimeoutError("timed out")
+A.supabase_admin = lambda: _AuthForaDoAr()
+_r = _cdel.get("/api/sessao", headers=_cabd)
+check("Auth fora do ar devolve 503 'indisponivel', nao 401",
+      _r.status_code == 503 and (_r.get_json() or {}).get("erro") == "indisponivel", f"{_r.status_code} {_r.get_json()}")
+A.supabase_admin = _adm_real
 _r = _cdel.post("/api/excluir-conta", headers=_cabd, json={"senha": "senha12345"})
-check("com a senha certa, exclui", _r.status_code == 200, f"{_r.status_code} {str(_r.get_json())[:80]}")
+check("Pro de cortesia exclui a conta pelo app", _r.status_code == 200, f"{_r.status_code} {str(_r.get_json())[:80]}")
 check("a conta sumiu do banco",
       A.get_store().get_user_by_email("some@teste.invalid") is None)
 _r = _cdel.get("/api/sessao", headers=_cabd)
 check("o token antigo nao abre mais a sessao", _r.status_code == 401, str(_r.status_code))
+
+# Site: assinante da loja e barrado (mesma trava do app e do painel).
+_cloja = novo_cliente("loja-del@teste.invalid")
+_uid_loja = A.get_store().get_user_by_email("loja-del@teste.invalid")["_id"]
+A.get_store().update_user(_uid_loja, {"plan": "pro", "subscription_status": "active"})
+_r = _cloja.post("/excluir-conta", data={"senha": "senha12345", "confirmacao": "EXCLUIR"})
+check("site nao apaga assinante da loja (a cobranca continuaria)",
+      _r.status_code == 302 and A.get_store().get_user_by_email("loja-del@teste.invalid") is not None, _r.status_code)
+_h_loja = _cloja.get("/dashboard").get_data(as_text=True)
+check("painel do assinante da loja nao oferece o portal da Stripe",
+      "Gerencie a assinatura na App Store" in _h_loja and "portal-cliente" not in _h_loja)
+A.get_store().update_user(_uid_loja, {"plan": "pro", "subscription_status": "indicacao"})
+_r = _cloja.post("/excluir-conta", data={"senha": "senha12345", "confirmacao": "EXCLUIR"})
+check("site apaga quem tem Pro de indicacao", A.get_store().get_user_by_email("loja-del@teste.invalid") is None)
+
+# Login: senha errada da 401; teto por conta da 429; CPF e e-mail invalidos no cadastro.
+_cl = A.app.test_client()
+check("cadastro com CPF invalido e recusado",
+      _cl.post("/api/cadastro", json={"nome_completo": "X", "email": "cpf-ruim@teste.invalid", "senha": "senha12345",
+                                      "whatsapp": "1", "cpf": "12345678901", "cidade": "c", "placa": "p"}).get_json().get("erro") == "cpf_invalido")
+check("cadastro com e-mail invalido e recusado",
+      _cl.post("/api/cadastro", json={"nome_completo": "X", "email": "sem-arroba", "senha": "senha12345",
+                                      "whatsapp": "1", "cpf": "52998224725", "cidade": "c", "placa": "p"}).get_json().get("erro") == "email_invalido")
+check("documento de outro pais nao passa pela regra do CPF",
+      _cl.post("/api/cadastro", json={"nome_completo": "X", "email": "cr-doc@teste.invalid", "senha": "senha12345",
+                                      "whatsapp": "1", "cpf": "1-1234-5678", "cidade": "c", "placa": "p",
+                                      "pais": "CR", "moeda": "CRC"}).status_code == 201)
+_lim_login = A.LOGIN_DAILY_LIMIT_EMAIL
+A.LOGIN_DAILY_LIMIT_EMAIL = 2
+_cods_login = [_cl.post("/api/login", json={"email": "cr-doc@teste.invalid", "senha": "errada"}).status_code for _ in range(4)]
+A.LOGIN_DAILY_LIMIT_EMAIL = _lim_login
+check("login: senha errada da 401 e, passado o teto da conta, 429", _cods_login == [401, 401, 429, 429], str(_cods_login))
+with A.get_store().pool.connection() as _conn:
+    _n_acessos = _conn.execute("select count(*) as n from public.access_logs where driver_id = %s",
+                               (A.get_store().get_user_by_email("cr-doc@teste.invalid")["_id"],)).fetchone()["n"]
+check("cadastro pelo app grava o registro de acesso (Marco Civil)", _n_acessos >= 1, str(_n_acessos))
+check("CPF valido com pontuacao passa", A.cpf_valido("529.982.247-25") and not A.cpf_valido("111.111.111-11"))
+check("mascara do CPF: meio oculto, CNPJ inteiro",
+      A.mascarar_documento("52998224725") == "529.***.***-25" and A.mascarar_documento("12345678000195") == "12.345.678/0001-95"
+      and A.mascarar_documento("1-1234-5678", "CR") == "1-1234-5678")
 
 # A tela existe no app, com senha e confirmacao.
 _html_app = io.open("mobile/www/index.html", encoding="utf-8").read()
@@ -1464,7 +1537,7 @@ r = _ca.get("/admin/motoristas?cursor=adulterado")
 check("cursor invalido volta a primeira pagina (200)", r.status_code == 200, r.status_code)
 r = _ca.get(f"/admin/motoristas/{_alvo_m['_id']}"); _ficha = r.get_data(as_text=True)
 check("ficha do motorista abre", r.status_code == 200, r.status_code)
-check("ficha mascara o CPF", "***.***.789-00" in _ficha and "12345678900" not in _ficha and "123.456.789-00" not in _ficha)
+check("ficha mascara o CPF", "123.***.***-00" in _ficha and "12345678900" not in _ficha and "123.456.789-00" not in _ficha)
 check("ficha mostra e-mail e WhatsApp inteiros", "reset@teste.invalid" in _ficha)
 check("uuid inexistente da 404", _ca.get("/admin/motoristas/00000000-0000-0000-0000-000000000000").status_code == 404)
 check("id que nao e uuid da 404", _ca.get("/admin/motoristas/abc").status_code == 404)
@@ -1852,7 +1925,7 @@ try:
         _email_app = f"aviso-app-{_suf_av}@teste.invalid"
         A.app.test_client().post("/api/cadastro", json={
             "nome_completo": "Aviso App", "email": _email_app, "senha": "senha12345",
-            "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel", "placa": "AVS1234"})
+            "whatsapp": "(45) 99888-7777", "cpf": "52998224725", "cidade": "Cascavel", "placa": "AVS1234"})
         check("cadastro pelo site chama o aviso", ("cadastro", _email_site, "site") in _chamadas, str(_chamadas))
         check("cadastro pelo app chama o aviso", ("cadastro", _email_app, "app") in _chamadas, str(_chamadas))
         _id_site = A.get_store().get_user_by_email(_email_site)["_id"]
@@ -1876,6 +1949,15 @@ try:
                                                  "price_in_purchased_currency": 119.9, "currency": "BRL"}}).status_code
 
             _antes_rc = len(_chamadas)
+            # Compra de sandbox so vira Pro para as contas de teste permitidas.
+            _crc_sb = _crc.post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                                json={"event": {"type": "INITIAL_PURCHASE", "id": f"rc-sb-{_suf_av}", "app_user_id": _id_app,
+                                                "product_id": "br.com.recibotaxi.app.pro.mensal", "store": "PLAY_STORE",
+                                                "environment": "SANDBOX"}})
+            check("compra de sandbox sem permissao nao vira Pro",
+                  _crc_sb.status_code == 200 and (_crc_sb.get_json() or {}).get("ignorado") == "sandbox"
+                  and A.get_store().get_user_by_id(_id_app)["plan"] == "free", str(_crc_sb.get_json()))
+            os.environ["RC_SANDBOX_PERMITIDOS"] = _email_app
             check("primeira compra no app responde 200", _evento_rc("INITIAL_PURCHASE") == 200)
             check("primeira compra no app avisa o plano e a loja",
                   ("assinatura", _email_app, "anual", "Google Play (Android)", "R$ 119,90", True) in _chamadas[_antes_rc:],
@@ -1926,7 +2008,7 @@ A.get_stripe = lambda: _sf
 _env_precos = {k: os.environ.get(k) for k in ("STRIPE_PRO_PRICE_ID", "STRIPE_PRO_ANUAL_PRICE_ID")}
 os.environ["STRIPE_PRO_PRICE_ID"] = "price_falso_mensal"
 os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = "price_falso_anual"
-_dados_pg = {"senha": "senha12345", "whatsapp": "11999998888", "cpf": "12345678900", "cidade": "SP", "placa": "abc1d23"}
+_dados_pg = {"senha": "senha12345", "whatsapp": "11999998888", "cpf": "11144477735", "cidade": "SP", "placa": "abc1d23"}
 try:
     _c = A.app.test_client()
     h = _c.get("/cadastro?plano=pro_anual").get_data(as_text=True)
@@ -1995,7 +2077,7 @@ print("\n-- Estimativa de corrida --")
 _cest = A.app.test_client()
 _r = _cest.post("/api/cadastro", json={
     "nome_completo": "Rota Teste", "email": "rota@teste.invalid", "senha": "senha12345",
-    "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel", "placa": "ROT1234"})
+    "whatsapp": "(45) 99888-7777", "cpf": "52998224725", "cidade": "Cascavel", "placa": "ROT1234"})
 _tke = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
 _cabe = {"Authorization": f"Bearer {_tke}"}
 _rota_falsa = {"km": 12.4, "minutos": 31, "minutos_sem_transito": 22}
@@ -2251,7 +2333,7 @@ print("\n-- Recibo da corrida --")
 _cvc = A.app.test_client()
 _r = _cvc.post("/api/cadastro", json={
     "nome_completo": "Corrida Teste", "email": "viacorrida@teste.invalid", "senha": "senha12345",
-    "whatsapp": "(45) 99888-7777", "cpf": "12345678901", "cidade": "Cascavel", "placa": "VIA1234"})
+    "whatsapp": "(45) 99888-7777", "cpf": "52998224725", "cidade": "Cascavel", "placa": "VIA1234"})
 _tkv = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
 _cabv = {"Authorization": f"Bearer {_tkv}"}
 
@@ -2718,6 +2800,26 @@ try:
     check("EXPIRATION da loja nao derruba quem tem pre-pago vigente",
           r.status_code == 200 and (r.get_json() or {}).get("resultado") == "mantido_prepago"
           and store.get_user_by_id(_i1["_id"])["plan"] == "pro", str(r.get_json()))
+    check("...e quem pagou o anual por Pix fica como 'prepago' (recebe o lembrete de renovacao)",
+          store.get_user_by_id(_i1["_id"])["subscription_status"] == "prepago",
+          store.get_user_by_id(_i1["_id"])["subscription_status"])
+    # Ativacao pela loja nao apaga o vinculo com a Stripe de quem tambem assina pelo site.
+    store.update_user(_i1["_id"], {"stripe_customer_id": "cus_dupla", "stripe_subscription_id": "sub_dupla"})
+    A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                             json={"event": {"type": "RENEWAL", "id": f"teste-suite-{_suf_in}-ren",
+                                             "app_user_id": _i1["_id"], "store": "APP_STORE", "environment": "PRODUCTION"}})
+    check("evento da loja nao apaga a assinatura da Stripe",
+          store.get_user_by_id(_i1["_id"])["stripe_subscription_id"] == "sub_dupla")
+    store.update_user(_i1["_id"], {"stripe_customer_id": None, "stripe_subscription_id": None,
+                                   "subscription_status": "indicacao"})
+    # TRANSFER: quem perde a assinatura da loja mas tem pre-pago vigente continua Pro.
+    r = A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                                 json={"event": {"type": "TRANSFER", "id": f"teste-suite-{_suf_in}-tr", "store": "APP_STORE",
+                                                 "environment": "PRODUCTION", "transferred_from": [_i1["_id"]],
+                                                 "transferred_to": [_ind["_id"]]}})
+    check("TRANSFER respeita o pre-pago vigente de quem perdeu a assinatura",
+          r.status_code == 200 and store.get_user_by_id(_i1["_id"])["plan"] == "pro"
+          and store.get_user_by_id(_i1["_id"])["subscription_status"] == "indicacao", str(r.get_json()))
     # O desconto das lojas acabou em 2026-11-10: a sessao nao o informa nem a
     # quem ganhou o cupom do site (o app 1.3 esconde o bloco sem a chave), e a
     # compra na loja com o codigo antigo nao mexe no cupom do site.
@@ -2780,13 +2882,13 @@ try:
     # API do app: cadastro com codigo.
     r = A.app.test_client().post("/api/cadastro", json={
         "nome_completo": "Via App", "email": f"viaapp-{_suf_in}@teste.invalid", "senha": "senha12345",
-        "whatsapp": "1", "cpf": "1", "cidade": "c", "placa": "p", "indicacao": _cod})
+        "whatsapp": "1", "cpf": "39053344705", "cidade": "c", "placa": "p", "indicacao": _cod})
     _va = store.get_user_by_email(f"viaapp-{_suf_in}@teste.invalid")
     check("app: cadastro com codigo liga ao indicador", r.status_code == 201 and _va and _va["referred_by"] == _ind["_id"],
           str(r.status_code))
     r = A.app.test_client().post("/api/cadastro", json={
         "nome_completo": "Via App 2", "email": f"viaapp2-{_suf_in}@teste.invalid", "senha": "senha12345",
-        "whatsapp": "1", "cpf": "1", "cidade": "c", "placa": "p", "indicacao": "NOPE"})
+        "whatsapp": "1", "cpf": "39053344705", "cidade": "c", "placa": "p", "indicacao": "NOPE"})
     check("app: codigo errado e recusado", r.status_code == 400 and (r.get_json() or {}).get("erro") == "codigo_indicacao_invalido")
 
     # Painel: ficha mostra quem indicou quem e o pre-pago.

@@ -178,6 +178,11 @@
           <a href="{{ url_for('oferta_anual') }}" class="btn btn-manage-plan btn-sm">
             <i class="bi bi-arrow-repeat me-1"></i>Renovar o Pro
           </a>
+          {% elif assina_na_loja %}
+          {# Assinatura da App Store ou do Google Play: o portal da Stripe não a conhece. #}
+          <span class="receipt-count-badge" title="Assinatura feita no app">
+            <i class="bi bi-phone me-1"></i>Gerencie a assinatura na App Store ou no Google Play
+          </span>
           {% elif user_plan != 'free' %}
           <form action="{{ url_for('portal_cliente') }}" method="post">
             <button type="submit" class="btn btn-manage-plan btn-sm">
@@ -247,6 +252,13 @@
           </h2>
           <span class="receipt-count-badge">{{ receipts|length }}</span>
         </div>
+        {% if user_plan == 'free' %}
+          {% if historico_limitado %}
+          <p class="text-muted small">No plano Grátis o painel mostra os recibos do mês atual{% if recibos_anteriores %}; você tem mais {{ recibos_anteriores }} de meses anteriores guardados, e os links deles continuam abrindo{% endif %}. <a href="{{ url_for('planos') }}">No Pro, todo o histórico fica aqui.</a></p>
+          {% else %}
+          <p class="text-muted small">A partir de {{ historico_gratis_desde[8:10] }}/{{ historico_gratis_desde[5:7] }}/{{ historico_gratis_desde[0:4] }}, o plano Grátis passa a mostrar no painel só os recibos do mês atual. Nada é apagado e os links já enviados continuam abrindo. <a href="{{ url_for('planos') }}">No Pro, todo o histórico fica aqui.</a></p>
+          {% endif %}
+        {% endif %}
 
         {% if receipts %}
         <div class="receipt-list">
@@ -303,7 +315,7 @@
         A exclusão é <strong>imediata e definitiva</strong>. Removemos seu cadastro e
         <strong>todos os {{ receipts|length }} recibo(s)</strong> da sua conta — inclusive os
         links já enviados a passageiros, que deixarão de funcionar.
-        {% if user_plan != 'free' %}Sua assinatura {{ user_plan|capitalize }} também será cancelada.{% endif %}
+        {% if assina_na_loja %}Sua assinatura é pela App Store ou pelo Google Play: cancele lá antes, senão a cobrança continua e a conta não é excluída.{% elif prepago %}Os dias de Pro que você ainda tem também se perdem.{% elif user_plan != 'free' %}Sua assinatura {{ user_plan|capitalize }} também será cancelada.{% endif %}
         Não é possível desfazer.
       </p>
 

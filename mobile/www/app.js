@@ -649,12 +649,21 @@ function blocoQr(recibo) {
     </div>`;
 }
 
+function documentoMascarado(d) {
+  const texto = String(d.documento_passageiro || '');
+  if ((d.pais || paisAtual()) !== 'BR') return texto;
+  const digitos = texto.replace(/\D/g, '');
+  if (digitos.length === 11) return `${digitos.slice(0, 3)}.***.***-${digitos.slice(9)}`;
+  return texto;
+}
+
 function textoParaCompartilhar(recibo) {
   const d = recibo.dados;
   const linhas = [
     `✅ Recibo #${recibo.rid}`,
     ...(d.passageiro ? [`👤 Passageiro: ${d.passageiro}`] : []),
-    ...(d.documento_passageiro ? [`🧾 ${rotuloDocumentoDe(d)}: ${d.documento_passageiro}`] : []),
+    // CPF com o meio escondido: a mensagem e encaminhavel; o PDF leva o inteiro.
+    ...(d.documento_passageiro ? [`🧾 ${rotuloDocumentoDe(d)}: ${documentoMascarado(d)}`] : []),
     ...(d.razao_social ? [`🏢 Razão social: ${d.razao_social}`] : []),
     `📅 Data: ${formatarBR(d.data)}`,
     ...(horarioDe(d) ? [`🕐 Horário: ${horarioDe(d)}`] : []),
@@ -804,7 +813,15 @@ $('form-login').addEventListener('submit', async (ev) => {
       method: 'POST',
       body: JSON.stringify({ email: $('email').value, senha: $('senha').value }),
     });
-    if (!resp.ok) { erro.textContent = 'E-mail ou senha inválidos.'; erro.hidden = false; return; }
+    if (!resp.ok) {
+      // 401 e senha errada; 429 e teto de tentativas; 503 e o login fora do ar.
+      // Dizer "senha invalida" para os tres fazia o motorista trocar a senha a toa.
+      erro.textContent = resp.status === 429
+        ? 'Muitas tentativas de entrar hoje. Tente amanhã ou use "Esqueci minha senha".'
+        : resp.status >= 500 ? 'O serviço de login está fora do ar. Tente de novo em instantes.'
+        : 'E-mail ou senha inválidos.';
+      erro.hidden = false; return;
+    }
     const t = await resp.json();
     Guardado.set('access_token', t.access_token);
     Guardado.set('refresh_token', t.refresh_token);
@@ -892,6 +909,9 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
     senha_curta: 'A senha precisa ter pelo menos 8 caracteres.',
     campos_obrigatorios: 'Preencha todos os campos marcados com *.',
     campo_longo: 'Um dos campos ficou longo demais.',
+    email_invalido: 'Confira o e-mail: ele não parece válido.',
+    cpf_invalido: 'Confira o CPF: os dígitos não conferem.',
+    muitas_tentativas: 'Muitos cadastros a partir desta rede hoje. Tente amanhã ou fale com o suporte.',
     indisponivel: 'Serviço indisponível agora. Tente em instantes.',
   };
 

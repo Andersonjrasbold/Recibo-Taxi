@@ -23,9 +23,7 @@
         <p class="mb-4">
           Cada colega que se cadastra com o seu código e emite o primeiro recibo rende
           <strong>{{ indicacao.meses_por_indicado }} mês de Pro grátis</strong> para você
-          (até {{ indicacao.max_meses }} meses) e libera o seu
-          <strong>desconto de {{ indicacao.pct }}% por {{ indicacao.meses_cupom }} meses</strong>
-          no Pro mensal do site.
+          (até {{ indicacao.max_meses }} meses).
         </p>
 
         {% if current_user %}
@@ -62,14 +60,16 @@
             <span class="profile-item-label">Meses de Pro ganhos</span>
             <span class="profile-item-value">{{ resumo.meses_ganhos }} de {{ indicacao.max_meses }}</span>
           </div>
+          {% if resumo.cupom %}
+          {# Desconto ganho antes de 10/11/2026: continua valendo, como os Termos prometem. #}
           <div class="profile-item">
-            <span class="profile-item-label">Desconto de {{ indicacao.pct }}%</span>
+            <span class="profile-item-label">Desconto de {{ indicacao.pct }}% (ganho antes de 10/11/2026)</span>
             <span class="profile-item-value">
               {% if resumo.cupom == 'usado' %}em uso na sua assinatura
-              {% elif resumo.cupom == 'liberado' %}liberado: <a href="{{ url_for('planos') }}">assinar o Pro mensal</a>
-              {% else %}ainda não{% endif %}
+              {% else %}liberado: <a href="{{ url_for('planos') }}">assinar o Pro mensal</a>{% endif %}
             </span>
           </div>
+          {% endif %}
           {% if pro_until %}
           <div class="profile-item">
             <span class="profile-item-label">Seu Pro vale até</span>
@@ -108,8 +108,9 @@
           <li>O colega cria a conta com o seu código, no campo "Código de indicação" do cadastro, no app ou no site.</li>
           <li>A recompensa libera quando ele <strong>emite o primeiro recibo</strong>, não no cadastro.</li>
           <li>Você ganha {{ indicacao.meses_por_indicado }} mês de Pro por colega ativo, até {{ indicacao.max_meses }} meses. Os meses somam: quem já tem Pro de indicação ganha mais 30 dias no fim do prazo.</li>
-          <li>Quem já assina o Pro (pelo site ou pelo app) não recebe o mês grátis, porque já tem tudo; o desconto fica guardado para quando a assinatura acabar.</li>
-          <li>O desconto de {{ indicacao.pct }}% vale para o <strong>Pro mensal assinado pelo site</strong>, por {{ indicacao.meses_cupom }} meses, e é aplicado sozinho na hora de assinar. Uma vez por motorista.</li>
+          <li>Só quem indica ganha; o colega indicado começa no plano Grátis, como todo mundo.</li>
+          <li>Quem já assina o Pro (pelo site ou pelo app) não recebe o mês grátis, porque já tem tudo.</li>
+          <li>O desconto de {{ indicacao.pct }}% no Pro mensal do site deixou de ser concedido em 10/11/2026, quando o preço do Pro caiu pela metade. Quem já tinha ganhado continua podendo usar.</li>
           <li>Conta criada só para ganhar a recompensa pode ser removida, junto com a recompensa.</li>
           <li>Podemos encerrar ou mudar o programa a qualquer momento; o que já foi ganho continua valendo.</li>
         </ul>

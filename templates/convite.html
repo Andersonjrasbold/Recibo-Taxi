@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ nome }} te convidou para o Recibo Táxi{% endblock %}
+{% block description %}Recibo de corrida pelo celular, grátis para começar. Ao criar a conta, use o código {{ codigo }}.{% endblock %}
+{% block og_title %}{{ nome }} te convidou para o Recibo Táxi{% endblock %}
+{% block head %}
+{# Página pessoal, uma por motorista: não é conteúdo para a busca. #}
+<meta name="robots" content="noindex, nofollow">
+{% endblock %}
+
+{% block content %}
+<section class="db-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-7">
+        <div class="db-card">
+          <div class="db-card-header">
+            <h1 class="db-card-title"><i class="bi bi-people-fill me-2"></i>{{ nome }} te convidou para o Recibo Táxi</h1>
+          </div>
+          <p class="mb-3">
+            É o app em que o taxista e o motorista de aplicativo fazem o recibo da corrida no celular:
+            sai na hora, funciona sem internet e vai pelo WhatsApp do passageiro ou em PDF.
+            Grátis para começar, com {{ free_monthly_limit }} recibos por mês.
+          </p>
+
+          <p class="mb-2"><strong>1.</strong> Baixe o app.</p>
+          <a href="{{ link_baixar }}" class="btn btn-generate w-100 mb-4" id="btn-baixar">
+            <i class="bi bi-download me-2"></i>Baixar o Recibo Táxi
+          </a>
+
+          <p class="mb-2"><strong>2.</strong> Ao criar a conta, digite este código no campo "Código de indicação":</p>
+          <div class="d-flex gap-2 align-items-center mb-1">
+            <input type="text" id="codigo" class="form-control form-control-db mono text-center fs-3" value="{{ codigo }}" readonly
+                   aria-label="Código de indicação">
+            <button type="button" class="btn btn-manage-plan" id="btn-copiar" title="Copiar código">
+              <i class="bi bi-clipboard"></i>
+            </button>
+          </div>
+          <p class="text-muted small mb-4">Com o código, {{ nome }} ganha um mês de Pro quando você emitir o primeiro recibo. Você começa no plano Grátis, como todo mundo.</p>
+
+          <p class="small mb-0">Prefere usar pelo computador? <a href="{{ link_cadastro }}">Crie a conta pelo site</a>, que o código já vai preenchido.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script nonce="{{ csp_nonce }}">
+  (function () {
+    var botao = document.getElementById('btn-copiar');
+    var campo = document.getElementById('codigo');
+    if (!botao || !campo) return;
+    botao.addEventListener('click', function () {
+      var feito = function () { botao.innerHTML = '<i class="bi bi-check-lg"></i>'; setTimeout(function () { botao.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500); };
+      if (navigator.clipboard) { navigator.clipboard.writeText(campo.value).then(feito); }
+      else { campo.select(); document.execCommand('copy'); feito(); }
+    });
+  })();
+</script>
+{% endblock %}

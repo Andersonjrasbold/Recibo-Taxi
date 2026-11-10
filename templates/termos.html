@@ -115,8 +115,8 @@
               </thead>
               <tbody>
                 <tr><td>Grátis</td><td>R$ 0,00</td><td>Até {{ free_monthly_limit }} recibos salvos por mês</td></tr>
-                <tr><td>Pro</td><td>R$ 19,90/mês</td><td>Ilimitado</td></tr>
-                <tr><td>Pro anual</td><td>R$ 119,90/ano, em pagamento único (quase metade do valor de 12 mensalidades)</td><td>Ilimitado</td></tr>
+                <tr><td>Pro</td><td>R$ 9,90/mês</td><td>Ilimitado</td></tr>
+                <tr><td>Pro anual</td><td>R$ 59,90/ano, em pagamento único (quase metade do valor de 12 mensalidades)</td><td>Ilimitado</td></tr>
                 <tr><td>Pro anual por Pix (oferta)</td><td>{{ preco_pro_anual_pix }} por 12 meses, pagamento único por Pix ou cartão, sem renovação automática (item 6.7)</td><td>Ilimitado</td></tr>
               </tbody>
             </table>
@@ -184,7 +184,8 @@
           <h3 class="legal-h3">6.8 Programa de indicação</h3>
           <ul class="legal-list">
             <li>Cada motorista tem um código. Quem cria a conta com ele fica ligado a quem indicou.</li>
-            <li>A recompensa libera quando o indicado <strong>emite o primeiro recibo</strong>: quem indicou ganha {{ indicacao.meses_por_indicado }} mês de Pro por colega ativo, até {{ indicacao.max_meses }} meses, e um desconto de {{ indicacao.pct }}% por {{ indicacao.meses_cupom }} meses no Pro mensal contratado pelo site, uma vez por motorista.</li>
+            <li>A recompensa libera quando o indicado <strong>emite o primeiro recibo</strong>: quem indicou ganha {{ indicacao.meses_por_indicado }} mês de Pro por colega ativo, até {{ indicacao.max_meses }} meses. O indicado não recebe recompensa.</li>
+            <li>O desconto de {{ indicacao.pct }}% por {{ indicacao.meses_cupom }} meses no Pro mensal contratado pelo site deixou de ser concedido em 10/11/2026. Quem o recebeu antes dessa data pode usá-lo normalmente, uma vez, pelo site.</li>
             <li>Os meses de Pro ganhos não são assinatura: têm data de fim, somam-se entre si e não geram cobrança. Quem já assina o Pro não recebe o mês grátis.</li>
             <li>Contas criadas só para obter a recompensa (sem uso real, dados falsos ou repetidos) podem ser removidas junto com a recompensa.</li>
             <li>O programa pode ser alterado ou encerrado a qualquer momento, com aviso no site. O que já foi concedido continua valendo até o fim do prazo.</li>

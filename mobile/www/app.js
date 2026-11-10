@@ -1783,17 +1783,19 @@ $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); ab
 
 // ── Indicação ──────────────────────────────────────────────────────────────
 //
-// O codigo vem do servidor com a sessao e fica guardado: a tela abre sem
-// sinal. A mensagem e a mesma do site, para o colega receber o mesmo texto
-// venha de onde vier. Nada aqui fala de desconto no site (Apple 3.1.1).
+// O codigo e o link vem do servidor com a sessao e ficam guardados: a tela
+// abre sem sinal. A mensagem e a mesma do site (mensagem_de_indicacao em
+// app.py): so quem indica ganha o mes de Pro, e nada de "segundos" que
+// ninguem mediu. Nada aqui fala de desconto no site (Apple 3.1.1).
 
 function mensagemDeIndicacao() {
   const codigo = Guardado.get('codigo_indicacao') || '';
-  const link = Guardado.get('link_indicacao') || `https://www.recibotaxi.com.br/cadastro?indicacao=${codigo}`;
+  const link = Guardado.get('link_indicacao') || `https://www.recibotaxi.com.br/i/${codigo}`;
   const nome = ((Guardado.get('motorista') || {}).full_name || '').split(' ')[0] || 'um colega';
-  return 'Oi! Eu uso o Recibo Táxi para dar recibo de corrida pelo celular, sem internet, '
-    + `em 10 segundos. Cria sua conta grátis com o meu código *${codigo}* que a gente ganha `
-    + `um mês de Pro: ${link} — ${nome}`;
+  return 'Oi! Uso o Recibo Táxi para dar recibo de corrida pelo celular: sai na hora, funciona '
+    + 'sem internet e vai pelo WhatsApp do passageiro. É grátis para começar. Baixa por aqui '
+    + `e, ao criar a conta, coloca o meu código *${codigo}* (assim eu ganho um mês de Pro): `
+    + `${link} — ${nome}`;
 }
 
 function abrirIndicacao() {

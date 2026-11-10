@@ -417,7 +417,11 @@ def planos_html(plano):
 h = planos_html("free")
 check("free ve o botao de assinar Pro", "Assinar Pro" in h)
 check("Business nao aparece mais na pagina", "Business" not in h)
-check("free ve o plano anual a R$ 119,90, o mesmo preco das lojas", "R$ 119,90/ano" in h and "economize R$ 118,90" in h)
+check("free ve o plano anual a R$ 59,90, o mesmo preco das lojas", "R$ 59,90/ano" in h and "economize R$ 58,90" in h)
+# Precos antigos (R$ 19,90 e R$ 119,90 ate 2026-11-10) nao podem sobrar em pagina nenhuma.
+for _pag in ("/", "/planos", "/termos", "/indicar"):
+    _h_pag = A.app.test_client().get(_pag).get_data(as_text=True)
+    check(f"{_pag} nao cita o preco antigo do Pro", "19,90" not in _h_pag and "119,90" not in _h_pag)
 # O anual era R$ 119,40 ate 2026-10-03. Preco velho esquecido numa pagina e
 # promessa que o checkout nao cumpre.
 for _pag in ("/", "/planos", "/termos"):
@@ -425,7 +429,7 @@ for _pag in ("/", "/planos", "/termos"):
           "119,40" not in A.app.test_client().get(_pag).get_data(as_text=True))
 # -- Card proprio do anual ------------------------------------------------
 # O valor por mes e o destaque, mas o total cobrado tem de estar no mesmo
-# card: R$ 9,99 sozinho faria o motorista achar que paga isso todo mes. E o
+# card: R$ 4,99 sozinho faria o motorista achar que paga isso todo mes. E o
 # botao so vende pelo site quando o Price anual existe; sem ele, leva ao app.
 def _card(html, plano):
     partes = html.split(f'data-plano="{plano}"', 1)
@@ -433,12 +437,12 @@ def _card(html, plano):
 
 _anual = _card(h, "anual")
 check("o anual tem card proprio, com o valor por mes em destaque",
-      'pricing-amount">9<' in _anual and ",99<" in _anual)
+      'pricing-amount">4<' in _anual and ",99<" in _anual)
 check("o card do anual mostra o total cobrado no ano",
-      "R$ 119,90/ano" in _anual and "pagos de uma vez" in _anual)
-check("o card do mensal nao repete o anual", "119,90" not in _card(h, "mensal"))
+      "R$ 59,90/ano" in _anual and "pagos de uma vez" in _anual)
+check("o card do mensal nao repete o anual", "59,90" not in _card(h, "mensal"))
 _home = A.app.test_client().get("/").get_data(as_text=True)
-check("a home tambem tem o card do anual", 'pricing-amount">9<' in _card(_home, "anual"))
+check("a home tambem tem o card do anual", 'pricing-amount">4<' in _card(_home, "anual"))
 _c_anual = novo_cliente("cardanual@teste.invalid")
 _preco_anual = os.environ.pop("STRIPE_PRO_ANUAL_PRICE_ID", None)
 try:
@@ -2557,8 +2561,29 @@ try:
     check("a pagina de indicacao gera o codigo", len(_cod) == A.INDICACAO_TAMANHO and _cod in h, repr(_cod))
     check("o codigo nao muda na segunda visita", _cod in _ci.get("/indicar").get_data(as_text=True)
           and store.get_user_by_email(_email_ind)["referral_code"] == _cod)
-    check("a pagina traz o link com o codigo e o botao do WhatsApp",
-          f"/cadastro?indicacao={_cod}" in h and "wa.me/?text=" in h and "Como funciona" in h)
+    check("a pagina traz o link do convite com o codigo e o botao do WhatsApp",
+          f"/i/{_cod}" in h and "wa.me/?text=" in h and "Como funciona" in h)
+    with A.app.test_request_context(base_url="https://www.recibotaxi.com.br"):
+        _msg_ind = A.mensagem_de_indicacao(_ind, _cod)
+    check("a mensagem do convite diz que so quem indica ganha e nao promete segundos",
+          "eu ganho um mês de Pro" in _msg_ind and "a gente ganha" not in _msg_ind and "segundos" not in _msg_ind
+          and f"/i/{_cod}" in _msg_ind, _msg_ind)
+    # Pagina do convite: quem recebe o link cai na loja, nao no formulario.
+    _hc = A.app.test_client().get(f"/i/{_cod.lower()}", base_url="https://www.recibotaxi.com.br")
+    _html_c = _hc.get_data(as_text=True)
+    check("a pagina do convite abre com o codigo em qualquer caixa e diz quem convidou",
+          _hc.status_code == 200 and f'value="{_cod}"' in _html_c and "te convidou" in _html_c, _hc.status_code)
+    check("o convite leva a loja com o canal e o codigo, e ao cadastro do site como alternativa",
+          f"/baixar?c=indicacao&amp;i={_cod}" in _html_c and f"/cadastro?indicacao={_cod}" in _html_c)
+    check("a pagina do convite nao vai para a busca, mas tem o banner do app (e para instalar)",
+          'content="noindex, nofollow"' in _html_c and "apple-itunes-app" in _html_c)
+    check("convite com codigo inexistente da 404",
+          A.app.test_client().get("/i/ZZZZZZ").status_code == 404 and A.app.test_client().get("/i/abc").status_code == 404)
+    _loc_c = A.app.test_client().get(f"/baixar?c=indicacao&i={_cod}", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location", "")
+    check("o Android recebe o codigo do convite no referrer do Play",
+          _loc_c.startswith(A.PLAY_STORE_URL + "&referrer=utm_source%3Dindicacao") and f"utm_content%3D{_cod}" in _loc_c, _loc_c)
+    check("codigo invalido no /baixar e ignorado",
+          "utm_content" not in A.app.test_client().get("/baixar?c=indicacao&i=../x", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location", ""))
     check("sem login, /indicar mostra as regras e convida a criar conta",
           "Como funciona" in A.app.test_client().get("/indicar").get_data(as_text=True))
     check("o link preenche o codigo no cadastro",
@@ -2591,10 +2616,10 @@ try:
     check("primeiro recibo do indicado: indicador vira Pro por um mes",
           _ind2["plan"] == "pro" and _ind2["subscription_status"] == "indicacao" and _dias(_ind2["pro_until"]) in (29, 30),
           str((_ind2["plan"], _ind2["subscription_status"], _ind2["pro_until"])))
-    check("...e ganha o cupom", bool(_ind2["referral_coupon_granted_at"]) and not _ind2["referral_coupon_used_at"])
+    check("...e nao ganha mais o cupom de 70% (encerrado em 2026-11-10)", not _ind2["referral_coupon_granted_at"])
     _ref1 = _referral(_i1["_id"])
     check("a indicacao fica ativada com a recompensa anotada",
-          _ref1["activated_at"] is not None and "mes_pro" in _ref1["reward"] and "cupom" in _ref1["reward"], str(_ref1))
+          _ref1["activated_at"] is not None and "mes_pro" in _ref1["reward"] and "cupom" not in _ref1["reward"], str(_ref1))
     check("contas de teste nao recebem o e-mail de recompensa", not any(p == _email_ind for p, _, _ in _avisos_in))
     _c1.post("/recibo", data=_recibo)
     check("segundo recibo do mesmo indicado nao rende de novo",
@@ -2626,14 +2651,16 @@ try:
     _cA, _ = _indicado("A", store.get_user_by_id(_ass["_id"])["referral_code"])
     _cA.post("/recibo", data=_recibo)
     _ass2 = store.get_user_by_id(_ass["_id"])
-    check("assinante que indica ganha o cupom, mas nao o mes (ja e Pro)",
-          bool(_ass2["referral_coupon_granted_at"]) and not _ass2["pro_until"] and _ass2["subscription_status"] == "active",
+    check("assinante que indica nao ganha o mes (ja e Pro) nem cupom",
+          not _ass2["referral_coupon_granted_at"] and not _ass2["pro_until"] and _ass2["subscription_status"] == "active",
           str((_ass2["referral_coupon_granted_at"], _ass2["pro_until"], _ass2["subscription_status"])))
 
-    # Cupom de 70% no checkout do mensal, mesmo com o mes de indicacao correndo.
+    # Quem ganhou o cupom de 70% ANTES de 2026-11-10 continua com ele no checkout
+    # do mensal (os Termos prometem que o que foi concedido vale ate o fim).
+    store.update_user(_ind["_id"], {"referral_coupon_granted_at": "2026-10-25T12:00:00+00:00"})
     r = _ci.post("/assinar/pro")
     _s = _sf_in.sessoes[-1] if _sf_in.sessoes else {}
-    check("checkout do mensal leva o cupom de indicacao",
+    check("checkout do mensal de quem ja tinha o cupom continua com o desconto",
           r.status_code == 303 and _s.get("discounts") == [{"coupon": A.INDICACAO_CUPOM_ID}]
           and _s.get("metadata", {}).get("cupom") == "indicacao" and _s.get("mode") == "subscription",
           f"{r.status_code} {_s.get('discounts')} {_s.get('mode')}")
@@ -2681,7 +2708,7 @@ try:
     _sess = _c1.get("/api/sessao").get_json() or {}
     check("/api/sessao traz pro_until e o codigo de indicacao",
           bool(_sess.get("pro_until")) and len(_sess.get("codigo_indicacao") or "") == A.INDICACAO_TAMANHO
-          and "/cadastro?indicacao=" in (_sess.get("link_indicacao") or ""), str(_sess.get("codigo_indicacao")))
+          and "/i/" in (_sess.get("link_indicacao") or ""), str(_sess.get("codigo_indicacao")))
 
     # Pre-pago vigente segura o Pro quando a loja ou a Stripe mandam encerrar.
     os.environ["REVENUECAT_WEBHOOK_SECRET"] = "segredo-de-teste-123"
@@ -2691,25 +2718,29 @@ try:
     check("EXPIRATION da loja nao derruba quem tem pre-pago vigente",
           r.status_code == 200 and (r.get_json() or {}).get("resultado") == "mantido_prepago"
           and store.get_user_by_id(_i1["_id"])["plan"] == "pro", str(r.get_json()))
-    # O desconto nas lojas: a sessao informa o cupom, e a compra com o codigo
-    # da Apple (ou a oferta do Google) marca o cupom como usado.
+    # O desconto das lojas acabou em 2026-11-10: a sessao nao o informa nem a
+    # quem ganhou o cupom do site (o app 1.3 esconde o bloco sem a chave), e a
+    # compra na loja com o codigo antigo nao mexe no cupom do site.
     _sess_ind = _ci.get("/api/sessao").get_json() or {}
-    _cup = _sess_ind.get("cupom_indicacao") or {}
-    check("/api/sessao informa o cupom das lojas a quem ganhou",
-          _cup.get("disponivel") is True and _cup.get("codigo_apple") == A.INDICACAO_CODIGO_APPLE
-          and _cup.get("tag_google") == A.INDICACAO_TAG_GOOGLE and _cup.get("pct") == 70, str(_cup))
-    check("quem nao ganhou nao ve o cupom", (_sess.get("cupom_indicacao") or {}).get("disponivel") is False)
+    check("/api/sessao nao oferece mais o desconto das lojas", "cupom_indicacao" not in _sess_ind)
+    check("a sessao continua mandando o link e o codigo de indicacao",
+          _sess_ind.get("codigo_indicacao") and _sess_ind.get("link_indicacao", "").endswith("/i/" + _sess_ind["codigo_indicacao"]),
+          str(_sess_ind.get("link_indicacao")))
     r = A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
                                  json={"event": {"type": "INITIAL_PURCHASE", "id": f"teste-suite-{_suf_in}-cupom",
                                                  "app_user_id": _ind["_id"], "store": "APP_STORE", "environment": "PRODUCTION",
-                                                 "product_id": "br.com.recibotaxi.app.pro.mensal", "offer_code": A.INDICACAO_CODIGO_APPLE,
+                                                 "product_id": "br.com.recibotaxi.app.pro.mensal", "offer_code": "INDICA70",
                                                  "price_in_purchased_currency": 5.9, "currency": "BRL"}})
     _ind4 = store.get_user_by_id(_ind["_id"])
-    check("compra com o codigo da Apple marca o cupom como usado",
+    check("compra na loja com o codigo antigo ativa o Pro e gasta o cupom do site (nao se usa duas vezes)",
           r.status_code == 200 and "cupom" in (r.get_json() or {}).get("resultado", "")
           and bool(_ind4["referral_coupon_used_at"]) and _ind4["plan"] == "pro", str(r.get_json()))
-    check("depois disso a sessao nao oferece o cupom de novo",
-          ((_ci.get("/api/sessao").get_json() or {}).get("cupom_indicacao") or {}).get("disponivel") is False)
+    _lim_conv = A.CONVITE_DIARIO_LIMITE_IP
+    A.CONVITE_DIARIO_LIMITE_IP = 2
+    _cc = A.app.test_client()
+    _cods_conv = [_cc.get(f"/i/{_cod}", environ_base={"REMOTE_ADDR": "203.0.113.77"}).status_code for _ in range(4)]
+    A.CONVITE_DIARIO_LIMITE_IP = _lim_conv
+    check("a pagina do convite tem teto por IP (429 depois do limite)", _cods_conv == [200, 200, 429, 429], str(_cods_conv))
 
     # Cron: vencido volta ao Gratis; assinante com data velha guardada fica; lembrete 15 dias antes.
     _email_ven, _email_lem, _email_loja = (f"{n}-{_suf_in}@teste.invalid" for n in ("vencido", "lembrete", "loja"))

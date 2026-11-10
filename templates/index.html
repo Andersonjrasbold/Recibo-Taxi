@@ -202,19 +202,19 @@
       </div>
 
       <!-- Pro anual. O valor por mes e o destaque; o total cobrado vem logo
-           abaixo, legivel, para ninguem confundir R$ 9,99 com a cobranca. -->
+           abaixo, legivel, para ninguem confundir R$ 4,99 com a cobranca. -->
       <div class="col-sm-10 col-md-6 col-lg-4">
         <div class="pricing-card pricing-featured" data-plano="anual">
           <div class="pricing-popular-badge">Melhor custo-benefício</div>
           <div class="pricing-plan-name">Pro anual</div>
           <div class="pricing-price-wrap">
             <span class="pricing-currency">R$</span>
-            <span class="pricing-amount">9</span>
+            <span class="pricing-amount">4</span>
             <span class="pricing-cents">,99</span>
             <span class="pricing-period">/mês</span>
           </div>
-          <p class="pricing-cobranca"><strong>R$ 119,90/ano</strong>, pagos de uma vez</p>
-          <p class="pricing-anual"><span class="pricing-anual-badge">economize R$ 118,90</span> em relação ao mensal</p>
+          <p class="pricing-cobranca"><strong>R$ 59,90/ano</strong>, pagos de uma vez</p>
+          <p class="pricing-anual"><span class="pricing-anual-badge">economize R$ 58,90</span> em relação ao mensal</p>
           <p class="pricing-tagline">Para quem trabalha o ano todo</p>
           <ul class="pricing-features">
             <li class="on"><i class="bi bi-check-lg"></i>Tudo do Pro mensal</li>
@@ -226,7 +226,7 @@
           {% if anual_no_site %}
             {% if current_user %}
             <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post">
-              <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 119,90/ano</button>
+              <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 59,90/ano</button>
             </form>
             {% else %}
             <a href="{{ url_for('cadastro', plano='pro_anual') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
@@ -244,7 +244,7 @@
           <div class="pricing-plan-name">Pro mensal</div>
           <div class="pricing-price-wrap">
             <span class="pricing-currency">R$</span>
-            <span class="pricing-amount">19</span>
+            <span class="pricing-amount">9</span>
             <span class="pricing-cents">,90</span>
             <span class="pricing-period">/mês</span>
           </div>

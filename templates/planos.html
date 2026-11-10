@@ -51,19 +51,19 @@
       </div>
 
       <!-- Pro anual. O valor por mes e o destaque; o total cobrado vem logo
-           abaixo, legivel, para ninguem confundir R$ 9,99 com a cobranca. -->
+           abaixo, legivel, para ninguem confundir R$ 4,99 com a cobranca. -->
       <div class="col-sm-10 col-md-6 col-lg-4">
         <div class="pricing-card pricing-featured" data-plano="anual">
           <div class="pricing-popular-badge">Melhor custo-benefício</div>
           <div class="pricing-plan-name">Pro anual</div>
           <div class="pricing-price-wrap">
             <span class="pricing-currency">R$</span>
-            <span class="pricing-amount">9</span>
+            <span class="pricing-amount">4</span>
             <span class="pricing-cents">,99</span>
             <span class="pricing-period">/mês</span>
           </div>
-          <p class="pricing-cobranca"><strong>R$ 119,90/ano</strong>, pagos de uma vez</p>
-          <p class="pricing-anual"><span class="pricing-anual-badge">economize R$ 118,90</span> em relação ao mensal</p>
+          <p class="pricing-cobranca"><strong>R$ 59,90/ano</strong>, pagos de uma vez</p>
+          <p class="pricing-anual"><span class="pricing-anual-badge">economize R$ 58,90</span> em relação ao mensal</p>
           <p class="pricing-tagline">Para quem trabalha o ano todo</p>
           <ul class="pricing-features">
             <li class="on"><i class="bi bi-check-lg"></i>Tudo do Pro mensal</li>
@@ -77,7 +77,7 @@
             {% if plano == 'pro' %}
               {% if anual_no_site %}
               <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post">
-                <button type="submit" class="btn btn-pricing-primary w-100">Mudar para o anual — R$ 119,90/ano</button>
+                <button type="submit" class="btn btn-pricing-primary w-100">Mudar para o anual — R$ 59,90/ano</button>
               </form>
               {% else %}
               <p class="pricing-cta-nota mb-0">Seu Pro já está ativo.</p>
@@ -88,7 +88,7 @@
             </form>
             {% elif anual_no_site %}
             <form action="{{ url_for('assinar', plan='pro_anual') }}" method="post">
-              <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 119,90/ano</button>
+              <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 59,90/ano</button>
             </form>
             {% else %}
             <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
@@ -108,7 +108,7 @@
           <div class="pricing-plan-name">Pro mensal</div>
           <div class="pricing-price-wrap">
             <span class="pricing-currency">R$</span>
-            <span class="pricing-amount">19</span>
+            <span class="pricing-amount">9</span>
             <span class="pricing-cents">,90</span>
             <span class="pricing-period">/mês</span>
           </div>
@@ -142,7 +142,7 @@
                 {% if not stripe_configured %}
                 Assinar Pro (em breve)
                 {% else %}
-                Assinar Pro — R$ 19,90/mês
+                Assinar Pro — R$ 9,90/mês
                 {% endif %}
               </button>
             </form>
@@ -187,7 +187,7 @@
               </h3>
               <div id="faq-anual" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
                 <div class="accordion-body faq-body">
-                  É o mesmo Pro, com tudo ilimitado, pago uma única vez por ano: R$ 119,90, quase metade dos R$ 238,80 que custam 12 meses no plano mensal. Quem já é Pro mensal pode mudar para o anual a qualquer momento — os dias que sobraram do mês são descontados. A renovação acontece só a cada 12 meses e pode ser cancelada pelo portal do cliente.
+                  É o mesmo Pro, com tudo ilimitado, pago uma única vez por ano: R$ 59,90, quase metade dos R$ 118,80 que custam 12 meses no plano mensal. Quem já é Pro mensal pode mudar para o anual a qualquer momento — os dias que sobraram do mês são descontados. A renovação acontece só a cada 12 meses e pode ser cancelada pelo portal do cliente.
                 </div>
               </div>
             </div>

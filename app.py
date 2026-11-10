@@ -111,10 +111,16 @@ CANAL_DOWNLOAD_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,29}$")
 APPLE_PROVIDER_TOKEN = os.environ.get("APPLE_PROVIDER_TOKEN", "").strip()
 
 
-def link_play_com_canal(canal: str) -> str:
-    """Ficha do Play com o canal no `referrer` (o Console mostra como Origem do UTM)."""
-    referrer = quote(f"utm_source={canal}&utm_medium=link&utm_campaign={canal}", safe="")
-    return f"{PLAY_STORE_URL}&referrer={referrer}"
+def link_play_com_canal(canal: str, conteudo: str = "") -> str:
+    """Ficha do Play com o canal no `referrer` (o Console mostra como Origem do UTM).
+
+    `conteudo` vai em utm_content: é como o código de quem indicou chega ao
+    aparelho junto com a instalação (o app lê o referrer numa versão futura).
+    """
+    utm = f"utm_source={canal}&utm_medium=link&utm_campaign={canal}"
+    if conteudo:
+        utm += f"&utm_content={conteudo}"
+    return f"{PLAY_STORE_URL}&referrer={quote(utm, safe='')}"
 
 
 def link_appstore_com_canal(canal: str) -> str:
@@ -308,8 +314,8 @@ EMAIL_AVISOS_PADRAO = "suporte@recibotaxi.com.br"
 EMAIL_AVISO_CADASTRO_DIA = 50
 AVISO_CADASTRO_CHAVE = "aviso_cadastro"      # contador diário (a suíte troca)
 AVISO_ASSINATURA_CHAVE = "aviso_assinatura"  # um aviso por evento de webhook (a suíte troca)
-PRECO_PRO_MENSAL = "R$ 19,90"
-PRECO_PRO_ANUAL = "R$ 119,90"
+PRECO_PRO_MENSAL = "R$ 9,90"    # R$ 19,90 até 2026-11-10 (decisão do Anderson)
+PRECO_PRO_ANUAL = "R$ 59,90"    # R$ 119,90 até 2026-11-10; dá R$ 4,99 por mês
 # Anual pago uma vez (Pix ou cartão), fora das lojas: oferta que sai pelo
 # WhatsApp e pela página /oferta/anual, que o app nunca aponta (regra 3.1.3(b)
 # da Apple: comprado fora vale no app, desde que o app não leve até a oferta).
@@ -326,23 +332,23 @@ PLANOS_ROTULO = {
 }
 
 # Indicação: o colega indicado emite o primeiro recibo e quem indicou ganha um
-# mês de Pro (até INDICACAO_MAX_MESES, um por colega ativo) e o cupom de 70%
-# por 12 meses no Pro mensal do site. Teto de uma recompensa de cada tipo por
-# colega: sem teto, criar contas falsas renderia Pro para sempre.
+# mês de Pro (até INDICACAO_MAX_MESES, um por colega ativo). Só quem indica
+# ganha; o indicado não (decisão do Anderson, 2026-11-10). Teto por colega:
+# sem teto, criar contas falsas renderia Pro para sempre.
 INDICACAO_MESES_POR_INDICADO = 1
 INDICACAO_MAX_MESES = 3
+# Cupom de 70% por 12 meses no Pro mensal do site: ENCERRADO em 2026-11-10,
+# junto com a queda do preço (R$ 19,90 → R$ 9,90). Ninguém ganha mais; quem
+# já tinha ganhado (referral_coupon_granted_at sem used_at) continua podendo
+# usar no site, como os Termos prometem. As constantes ficam só para isso. O
+# desconto equivalente das lojas (código INDICA70 na Apple, oferta indicacao70
+# no Google) saiu da sessão do app; o Anderson desativa os dois nos consoles.
 INDICACAO_CUPOM_PCT = 70
 INDICACAO_CUPOM_MESES = 12
 INDICACAO_CUPOM_ID = "INDICACAO70"   # id do cupom na Stripe; criado sob demanda
-# O mesmo desconto dentro do app, pelas lojas (criados em 2026-10-19 pela API):
-# na Apple, código de oferta do Pro mensal a R$ 5,90 por 12 meses, resgatado
-# pela folha da App Store; no Google, oferta `indicacao70` (70% por 12 meses)
-# de elegibilidade "determinada pelo desenvolvedor" — o app só a mostra a
-# quem o servidor diz que ganhou.
-INDICACAO_CODIGO_APPLE = "INDICA70"   # escolha do Anderson (2026-10-19); COLEGA70 ficou desativado
-INDICACAO_TAG_GOOGLE = "indicacao70"
-INDICACAO_PRECO_APPLE = "R$ 5,90"
 INDICACAO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # sem 0/O, 1/I
+# Aberturas da página do convite (/i/CÓDIGO) por IP e dia. Ver a rota.
+CONVITE_DIARIO_LIMITE_IP = 300
 INDICACAO_TAMANHO = 6
 # Pro que não é assinatura: vive em drivers.pro_until e o cron rebaixa.
 # "cortesia" é o Pro liberado pelo painel /admin (parceria com cooperativa,
@@ -381,10 +387,10 @@ PERMISSIONS_POLICY_APP = "camera=(), microphone=(), payment=()"
 
 STRIPE_PRICE_IDS = {
     "pro": "STRIPE_PRO_PRICE_ID",
-    # Anual = o MESMO Pro, cobrado uma vez por ano: R$ 119,90, o mesmo valor no
+    # Anual = o MESMO Pro, cobrado uma vez por ano: R$ 59,90, o mesmo valor no
     # site, na App Store e no Google Play (decisão do Anderson em 2026-10-03).
     # Antes era R$ 119,40, metade exata de 12 mensalidades, mas a Apple não tem
-    # esse ponto de preço; 119,90 é o mais próximo. É um Price a mais no mesmo
+    # esse ponto de preço; 59,90 é o mais próximo. É um Price a mais no mesmo
     # produto do Stripe:
     # o metadata.plan do checkout continua "pro", então webhook, gates e a
     # tela de planos não distinguem ciclo — só o Stripe sabe.
@@ -2040,11 +2046,16 @@ def baixar_app():
     canal = request.args.get("c", "").strip().lower()
     if not CANAL_DOWNLOAD_RE.match(canal):
         canal = ""
+    # `i` = código de quem indicou (vem da página do convite). Só com canal, e
+    # só no formato do código; segue ao Play em utm_content.
+    codigo = request.args.get("i", "").strip().upper()
+    if not (canal and codigo_de_indicacao_valido(codigo)):
+        codigo = ""
 
     if re.search(r"iPhone|iPad|iPod", agente):
         loja, destino = "appstore", (link_appstore_com_canal(canal) if canal else APP_STORE_URL)
     elif "Android" in agente:
-        loja, destino = "play", (link_play_com_canal(canal) if canal else PLAY_STORE_URL)
+        loja, destino = "play", (link_play_com_canal(canal, codigo) if canal else PLAY_STORE_URL)
     else:
         loja, destino = "site", url_for("index") + "#app"
 
@@ -2610,17 +2621,65 @@ def codigo_de_indicacao(usuario: dict) -> str:
     raise RuntimeError("não foi possível gerar um código de indicação")
 
 
+def codigo_de_indicacao_valido(codigo: str) -> bool:
+    return len(codigo) == INDICACAO_TAMANHO and all(ch in INDICACAO_ALFABETO for ch in codigo)
+
+
 def link_de_indicacao(codigo: str) -> str:
-    return absolute_url("cadastro", indicacao=codigo)
+    """O convite abre a página /i/CÓDIGO, que leva à loja do aparelho, e não ao
+    formulário do site: o que alimenta a posição nas lojas é instalação. O app
+    pega este link na sessão, então os apps já instalados passam a mandar o
+    link novo sem atualização."""
+    return absolute_url("convite", codigo=codigo)
 
 
 def mensagem_de_indicacao(usuario: dict, codigo: str) -> str:
-    """Texto pronto para o WhatsApp: o botão "Indicar" abre o wa.me com ele."""
+    """Texto pronto para o WhatsApp: o botão "Indicar" abre o wa.me com ele.
+
+    Diz só o que é verdade: quem indica ganha o mês de Pro; o colega não ganha
+    nada além do app (a versão antiga dizia "a gente ganha"). Sem "10 segundos",
+    que ninguém mediu.
+    """
     nome = (usuario.get("full_name") or "").split()[0] if usuario.get("full_name") else "um colega"
     return (
-        f"Oi! Eu uso o {APP_NAME} para dar recibo de corrida pelo celular, sem internet, "
-        f"em 10 segundos. Cria sua conta grátis com o meu código *{codigo}* que a gente ganha "
-        f"um mês de Pro: {link_de_indicacao(codigo)} — {nome}"
+        f"Oi! Uso o {APP_NAME} para dar recibo de corrida pelo celular: sai na hora, funciona "
+        f"sem internet e vai pelo WhatsApp do passageiro. É grátis para começar. Baixa por aqui "
+        f"e, ao criar a conta, coloca o meu código *{codigo}* (assim eu ganho um mês de Pro): "
+        f"{link_de_indicacao(codigo)} — {nome}"
+    )
+
+
+@app.get("/i/<codigo>")
+def convite(codigo: str):
+    """Página do convite: quem recebeu o link de um colega cai aqui.
+
+    Mostra quem convidou, o código em letras grandes e o botão da loja do
+    aparelho (/baixar?c=indicacao&i=CÓDIGO, que conta o clique e leva o código
+    no referrer do Play). Quem prefere o computador cria a conta pelo site com
+    o código já preenchido. Código que não existe dá 404: link adivinhado não
+    revela nada.
+    """
+    codigo = codigo.strip().upper()
+    if not codigo_de_indicacao_valido(codigo):
+        abort(404)
+    # Código existente devolve o primeiro nome de quem indicou; tentar códigos
+    # em massa não pode virar lista de motoristas. O teto por IP é largo para
+    # o uso real (um link por conversa) e apertado para um script.
+    try:
+        tentativas = get_store().bump_counter(f"convite:{request.remote_addr}:{today_br()}")
+    except Exception:
+        tentativas = 0
+    if tentativas > CONVITE_DIARIO_LIMITE_IP:
+        abort(429)
+    indicador = get_store().get_user_by_referral_code(codigo)
+    if not indicador:
+        abort(404)
+    partes = (indicador.get("full_name") or "").split()
+    nome = partes[0] if partes else "Um colega"
+    return render_template(
+        "convite.html", codigo=codigo, nome=nome,
+        link_baixar=url_for("baixar_app", c="indicacao", i=codigo),
+        link_cadastro=url_for("cadastro", indicacao=codigo),
     )
 
 
@@ -2667,9 +2726,6 @@ def recompensar_indicador(indicador_id: str, indicado: dict) -> None:
             "select count(*) as n from public.referrals where referrer_id = %s and activated_at is not null",
             (indicador_id,)).fetchone()["n"]
     recompensas = []
-    if not indicador.get("referral_coupon_granted_at"):
-        store.update_user(indicador_id, {"referral_coupon_granted_at": now_iso()})
-        recompensas.append("cupom")
     fim = None
     if ativas > INDICACAO_MAX_MESES:
         recompensas.append("teto_de_meses")
@@ -2681,10 +2737,10 @@ def recompensar_indicador(indicador_id: str, indicado: dict) -> None:
     with store.pool.connection() as conn:
         conn.execute("update public.referrals set reward = %s where referred_id = %s",
                      (",".join(recompensas), indicado["_id"]))
-    avisar_indicador(indicador, fim, "cupom" in recompensas)
+    avisar_indicador(indicador, fim)
 
 
-def avisar_indicador(indicador: dict, fim: datetime | None, cupom_novo: bool) -> bool:
+def avisar_indicador(indicador: dict, fim: datetime | None) -> bool:
     email = normalize_email(indicador.get("email", ""))
     if any(email.endswith(s) for s in EMAIL_AUTO_SUFIXOS_EXCLUIDOS):
         return False
@@ -2694,10 +2750,6 @@ def avisar_indicador(indicador: dict, fim: datetime | None, cupom_novo: bool) ->
     if fim:
         linhas.append(f"Você ganhou {INDICACAO_MESES_POR_INDICADO} mês de Pro: recibos ilimitados até "
                       f"{fim.astimezone(BR_TZ).strftime('%d/%m/%Y')}.")
-    if cupom_novo:
-        linhas.append(f"E o seu desconto de {INDICACAO_CUPOM_PCT}% por {INDICACAO_CUPOM_MESES} meses no "
-                      f"Pro mensal do site está liberado: é só assinar em {absolute_url('planos')} "
-                      "que ele entra sozinho.")
     linhas += ["", f"Indique mais colegas em {absolute_url('indicar')}."]
     try:
         return send_email(email, "Seu colega começou a usar o Recibo Táxi", "\n".join(linhas), timeout=8)
@@ -2925,7 +2977,7 @@ def _migrar_para_anual(stripe, price_id: str, usuario: dict):
         )
         return redirect(url_for("planos"))
     flash(
-        "Pronto! Sua assinatura passou para o plano anual: R$ 119,90 por ano, "
+        "Pronto! Sua assinatura passou para o plano anual: R$ 59,90 por ano, "
         "com o que sobrou do mês já descontado.",
         "success",
     )
@@ -3342,14 +3394,8 @@ def api_sessao():
             "pro_until": g.user.get("pro_until") or None,
             "codigo_indicacao": codigo_de_indicacao(g.user),
             "link_indicacao": link_de_indicacao(codigo_de_indicacao(g.user)),
-            # Desconto de indicação nas lojas: o app mostra o código da Apple ou
-            # compra a oferta do Google só quando `disponivel` é verdadeiro.
-            "cupom_indicacao": {
-                "disponivel": tem_cupom_de_indicacao(g.user),
-                "pct": INDICACAO_CUPOM_PCT, "meses": INDICACAO_CUPOM_MESES,
-                "codigo_apple": INDICACAO_CODIGO_APPLE, "preco_apple": INDICACAO_PRECO_APPLE,
-                "tag_google": INDICACAO_TAG_GOOGLE,
-            },
+            # Desconto de indicação nas lojas: encerrado em 2026-11-10. O app 1.3
+            # lê `cupom_indicacao` e, sem ele, esconde o bloco (app.js, cupomDeIndicacao).
             "moeda_simbolo": simbolo,
             "moeda_casas": casas,
             # Este servidor aceita recibo sem nome do passageiro. O app 1.4 so
@@ -3853,17 +3899,14 @@ def motorista_do_evento_rc(evento: dict) -> tuple[dict | None, str]:
     return None, ""
 
 
-def compra_com_desconto_de_indicacao(evento: dict) -> bool:
-    """O evento do RevenueCat diz que a compra usou o desconto de indicação.
+def compra_cita_desconto_antigo(evento: dict) -> bool:
+    """A compra na loja usou o desconto de indicação encerrado em 2026-11-10.
 
     Apple: `offer_code` traz o código resgatado. Google: a oferta aparece no
-    identificador do produto (`sub:plano:oferta`), em `offer_code` ou nos
-    campos `discount_*`, conforme a versão do RevenueCat — por isso os três.
+    identificador do produto, em `offer_code` ou em `discount_identifier`.
     """
     textos = " ".join(str(evento.get(k) or "") for k in ("offer_code", "product_id", "discount_identifier")).lower()
-    if INDICACAO_CODIGO_APPLE.lower() in textos or INDICACAO_TAG_GOOGLE in textos:
-        return True
-    return bool(evento.get("discount_percentage") or evento.get("discount_amount"))
+    return "indica70" in textos or "indicacao70" in textos
 
 
 def pro_vem_da_stripe(usuario: dict) -> bool:
@@ -3995,11 +4038,12 @@ def webhook_revenuecat():
     elif tipo in RC_EVENTOS_ATIVA:
         ativar_pro_pela_loja(user_id)
         resultado = "pro"
-        # Compra com o desconto de indicação (código da Apple ou oferta do
-        # Google): o cupom vale uma vez, e a loja cuida dos 12 meses.
-        if tem_cupom_de_indicacao(usuario) and compra_com_desconto_de_indicacao(evento):
+        # Enquanto o código INDICA70 (Apple) e a oferta indicacao70 (Google) não
+        # forem desativados nos consoles, uma compra com eles ainda pode passar:
+        # quem tinha o cupom antigo do site gasta-o aqui, para não usar duas vezes.
+        if tem_cupom_de_indicacao(usuario) and compra_cita_desconto_antigo(evento):
             store.update_user(user_id, {"referral_coupon_used_at": now_iso()})
-            resultado += " (cupom de indicação)"
+            resultado += " (cupom de indicação antigo)"
         if tipo == "INITIAL_PURCHASE":
             loja = str(evento.get("store") or "")
             avisar_nova_assinatura(
@@ -5289,14 +5333,16 @@ def montar_dashboard_admin() -> dict:
                                 for e in d["ultimos_eventos"]]
 
     # MRR como faixa: o banco nao diz quem e mensal e quem e anual, nem o preco
-    # do Business legado. Piso = todo Pro da Stripe anual (119,90/12);
+    # do Business legado. Piso = todo Pro anual (59,90/12), na Stripe e na loja;
     # teto = todo Pro mensal. Loja: bruto; a Apple fica com 15%.
     g = d.get("geral") or {}
     pro_stripe = int(g.get("pro_stripe") or 0)
     pro_loja = int(g.get("pro_loja") or 0)
     d["mrr"] = {
-        "piso": round(pro_stripe * 119.90 / 12 + pro_loja * 19.90 * 0.85, 2),
-        "teto": round((pro_stripe + pro_loja) * 19.90, 2),
+        # Preços de 2026-11-10 para todo mundo: assinatura feita antes continua
+        # no preço antigo até migrar, então a faixa pode ficar baixa por um tempo.
+        "piso": round(pro_stripe * 59.90 / 12 + pro_loja * 59.90 / 12 * 0.85, 2),
+        "teto": round((pro_stripe + pro_loja) * 9.90, 2),
         "business_sem_preco": int(g.get("business") or 0),
     }
     a = d.get("ativacao") or {}

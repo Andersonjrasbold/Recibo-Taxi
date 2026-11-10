@@ -149,7 +149,7 @@ HISTÓRICO SEMPRE À MÃO
 Toque em qualquer recibo do histórico para reenviar, mesmo dias depois.
 
 PLANO GRÁTIS E PLANO PRO
-O plano Grátis já resolve o dia a dia. O Pro libera recibos ilimitados e histórico permanente. Escolha o mensal, por R$ 19,90 por mês, ou o anual, que sai por quase metade do preço. Os dois renovam automaticamente e podem ser cancelados quando quiser no Google Play.
+O plano Grátis já resolve o dia a dia. O Pro libera recibos ilimitados por R$ 9,90 por mês, ou R$ 59,90 por ano (dá R$ 4,99 por mês). Os dois renovam automaticamente e podem ser cancelados quando quiser no Google Play.
 
 Este recibo não é documento fiscal.
 ```

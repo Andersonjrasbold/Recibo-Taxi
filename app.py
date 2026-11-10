@@ -44,6 +44,14 @@ except ImportError:
     create_client = None
     ClientOptions = None
 
+try:  # supabase-py >= 2.10 chama o módulo de supabase_auth; antes era gotrue
+    from supabase_auth.errors import AuthRetryableError
+except ImportError:
+    try:
+        from gotrue.errors import AuthRetryableError
+    except ImportError:
+        AuthRetryableError = None
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # dependência opcional, usada só em desenvolvimento
@@ -252,6 +260,16 @@ EMAIL_DAILY_LIMIT = 60
 # A Política de Privacidade promete remover recibos sem cadastro em 12 meses.
 GUEST_RETENTION_DAYS = 365
 COUNTER_RETENTION_DAYS = 7
+# Registros de acesso (login, renovação de sessão e cadastro: data, hora e IP),
+# guardados por 6 meses como o Marco Civil (art. 15) exige de provedor de
+# aplicação com fins econômicos. Migração 0016. A Política de Privacidade e a
+# página de exclusão dizem exatamente isto.
+ACCESS_LOG_RETENTION_DAYS = 180
+# Histórico no painel do site: a partir desta data o plano Grátis vê só os
+# recibos do mês atual; o Pro vê todos. Decisão do Anderson em 2026-11-10,
+# com os 15 dias de aviso que os Termos (seção 11) prometem. Os recibos
+# continuam guardados e os links públicos continuam abrindo.
+HISTORICO_GRATIS_DESDE = "2026-11-26"
 # past_due mantém o plano enquanto a Stripe tenta novas cobranças.
 ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trialing", "past_due")
 
@@ -262,6 +280,13 @@ RESET_TOKEN_MAX_AGE = 3600  # 1 hora
 # largo porque operadora de celular poe milhares de aparelhos atras do mesmo IP.
 RESET_DAILY_LIMIT_EMAIL = 5
 RESET_DAILY_LIMIT_IP = 30
+# Tentativas de login por dia: por conta (força bruta numa senha) e por IP.
+# O teto por IP é largo porque operadora de celular põe milhares de aparelhos
+# atrás do mesmo endereço; o que segura o ataque é o teto por conta. Cadastro
+# por IP idem: uma tarde num ponto de táxi cadastra dezenas na mesma rede.
+LOGIN_DAILY_LIMIT_EMAIL = 30
+LOGIN_DAILY_LIMIT_IP = 1000
+CADASTRO_DAILY_LIMIT_IP = 200
 
 # Estimativa de corrida (/api/estimativa). A rota vem da Routes API do Google,
 # que cobra cada consulta acima da cota gratis do mes. O teto diario por
@@ -741,7 +766,9 @@ def compose_receipt_message(receipt: dict, public_url: str) -> str:
         # Documento e razao social so entram quando existem: sao o que faz o
         # recibo valer para a empresa lancar a despesa. O app ja mandava no
         # WhatsApp; sem isto, o mesmo recibo por e-mail saia sem eles.
-        *([f"🧾 {rotulo_documento(pais_do_recibo(receipt))}: {receipt['passenger_document']}"]
+        # CPF mascarado: a mensagem é encaminhável; o PDF do app leva o inteiro.
+        *([f"🧾 {rotulo_documento(pais_do_recibo(receipt))}: "
+           f"{mascarar_documento(receipt['passenger_document'], pais_do_recibo(receipt))}"]
           if receipt.get("passenger_document") else []),
         *([f"🏢 Razão social: {receipt['passenger_company']}"]
           if receipt.get("passenger_company") else []),
@@ -826,13 +853,100 @@ def pode_enviar_email(driver_id: str) -> bool:
     return usados <= EMAIL_DAILY_LIMIT
 
 
+def chave_de_contador(valor: str) -> str:
+    """E-mail (ou outro dado pessoal) numa chave de rate_limits: só o hash. A
+    tabela dura 7 dias e aparece no painel; não precisa guardar o e-mail em
+    claro, e o pedido de redefinição grava até e-mail de quem nem é cliente."""
+    return hashlib.sha256(valor.strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+def passou_do_teto(prefixo: str, chave: str, limite: int) -> bool:
+    """Soma 1 ao contador do dia e diz se passou do teto. Banco fora do ar não
+    bloqueia ninguém: o teto é proteção contra abuso, não requisito."""
+    try:
+        return get_store().bump_counter(f"{prefixo}:{chave}:{today_br()}") > limite
+    except Exception as exc:
+        app.logger.warning("contador %s indisponível: %s", prefixo, exc)
+        return False
+
+
+def registrar_acesso(driver_id: str, canal: str) -> None:
+    """Grava o acesso sem nunca impedir o login: sem a tabela (migração 0016
+    ainda não aplicada) ou com o banco lento, só avisa no log."""
+    try:
+        get_store().registrar_acesso(str(driver_id), client_ip(), canal)
+    except Exception as exc:
+        app.logger.warning("registro de acesso não gravado (migração 0016 aplicada?): %s", exc)
+
+
+def _chaves_de_login(email: str) -> list[tuple[str, int]]:
+    """Contadores de FALHAS de login do dia. O par conta+IP é o que segura força
+    bruta sem deixar um estranho trancar a conta de alguém só com o e-mail;
+    o teto por conta sozinha, bem mais largo, é a rede de segurança."""
+    dia = today_br()
+    h = chave_de_contador(email)
+    return [(f"login:ei:{h}:{client_ip()}:{dia}", LOGIN_DAILY_LIMIT_EMAIL),
+            (f"login:e:{h}:{dia}", LOGIN_DAILY_LIMIT_EMAIL * 5),
+            (f"login:ip:{client_ip()}:{dia}", LOGIN_DAILY_LIMIT_IP)]
+
+
+def login_bloqueado(email: str) -> bool:
+    """Já passou do teto de falhas hoje? Só lê; quem soma é registrar_falha_de_login."""
+    if not email:
+        return False
+    try:
+        store = get_store()
+        return any(store.get_counter(chave) >= limite for chave, limite in _chaves_de_login(email))
+    except Exception as exc:
+        app.logger.warning("teto de login indisponível: %s", exc)
+        return False
+
+
+def registrar_falha_de_login(email: str) -> None:
+    if not email:
+        return
+    try:
+        store = get_store()
+        for chave, _ in _chaves_de_login(email):
+            store.bump_counter(chave)
+    except Exception as exc:
+        app.logger.warning("contador de login indisponível: %s", exc)
+
+
+def zerar_falhas_de_login(email: str) -> None:
+    """Login certo ou senha redefinida: a conta volta a ter o dia inteiro.
+    O contador do IP fica: um login certo não pode limpar a força bruta de
+    um endereço contra outras contas."""
+    try:
+        store = get_store()
+        for chave, _ in _chaves_de_login(email):
+            if not chave.startswith("login:ip:"):
+                store.reset_counter(chave)
+    except Exception as exc:
+        app.logger.warning("contador de login indisponível: %s", exc)
+
+
 def pode_pedir_redefinicao(email: str) -> bool:
     """Consome uma unidade dos tetos diarios de redefinicao (e-mail e IP)."""
     store = get_store()
     dia = today_br()
-    por_email = store.bump_counter(f"reset:email:{email}:{dia}")
+    por_email = store.bump_counter(f"reset:e:{chave_de_contador(email)}:{dia}")
     por_ip = store.bump_counter(f"reset:ip:{client_ip()}:{dia}")
     return por_email <= RESET_DAILY_LIMIT_EMAIL and por_ip <= RESET_DAILY_LIMIT_IP
+
+
+def cpf_valido(texto: str) -> bool:
+    """Dígitos verificadores do CPF. Só para motorista do Brasil: em outro país
+    o campo guarda outro documento."""
+    digitos = re.sub(r"\D", "", texto or "")
+    if len(digitos) != 11 or digitos == digitos[0] * 11:
+        return False
+    for tamanho in (9, 10):
+        soma = sum(int(d) * peso for d, peso in zip(digitos[:tamanho], range(tamanho + 1, 1, -1)))
+        esperado = (soma * 10) % 11 % 10
+        if esperado != int(digitos[tamanho]):
+            return False
+    return True
 
 
 def enviar_link_de_redefinicao(user: dict) -> bool:
@@ -1367,6 +1481,23 @@ class PostgresStore:
         with self.pool.connection() as conn:
             conn.execute("delete from public.rate_limits where key = %s", (key,))
 
+    def get_counter(self, key: str) -> int:
+        with self.pool.connection() as conn:
+            linha = conn.execute("select count from public.rate_limits where key = %s", (key,)).fetchone()
+        return int(linha["count"]) if linha else 0
+
+    def registrar_acesso(self, driver_id: str, ip: str, canal: str) -> None:
+        """Data, hora e IP de um acesso (migração 0016). Sem FK: o registro
+        sobrevive à exclusão da conta pelos 6 meses que a lei pede."""
+        with self.pool.connection() as conn:
+            conn.execute(
+                "insert into public.access_logs (driver_id, ip, channel) values (%s, %s, %s)",
+                (driver_id, (ip or "")[:64], canal[:20]))
+
+    def purge_access_logs_before(self, cutoff_iso: str) -> int:
+        with self.pool.connection() as conn:
+            return conn.execute("delete from public.access_logs where at < %s", (cutoff_iso,)).rowcount
+
     def bump_download_click(self, day: str, channel: str, store: str) -> None:
         """Soma um clique no /baixar por dia, canal e loja (migração 0014).
 
@@ -1533,6 +1664,43 @@ def supabase_public():
     )
 
 
+class AuthIndisponivel(Exception):
+    """O Supabase Auth não respondeu (rede, tempo esgotado, 5xx).
+
+    Não é credencial errada. Tratar como se fosse derrubava o motorista: o app
+    recebia 401, tentava renovar, recebia 401 de novo e apagava a sessão (ver a
+    auditoria de 2026-11-10). O errorhandler transforma em 503 "indisponivel".
+    """
+
+
+def _auth_recusou_credencial(exc: Exception) -> bool:
+    """A exceção do Auth diz que token ou senha é inválido (4xx)? Qualquer
+    outra coisa (rede, timeout, 5xx, erro "retryable") é o serviço fora do ar."""
+    if AuthRetryableError is not None and isinstance(exc, AuthRetryableError):
+        return False
+    status = getattr(exc, "status", None)
+    try:
+        # 429 é o teto do próprio GoTrue, compartilhado por todos os motoristas
+        # porque as chamadas saem dos IPs da Vercel: é indisponibilidade, não
+        # credencial errada. Só os códigos que o GoTrue usa para token ou senha
+        # inválidos contam como recusa.
+        return status is not None and int(status) in (400, 401, 403, 404, 422)
+    except (TypeError, ValueError):
+        return False
+
+
+@app.errorhandler(AuthIndisponivel)
+def _auth_indisponivel(exc):
+    """503 em vez de 401: o app mantém a sessão e tenta de novo depois."""
+    app.logger.warning("Supabase Auth indisponível: %s", exc.__cause__ or exc)
+    if request.path.startswith("/api/"):
+        return jsonify({"erro": "indisponivel",
+                        "mensagem": "O serviço de login está fora do ar. Tente de novo em instantes."}), 503
+    flash("O serviço de login está fora do ar. Nada foi alterado; tente de novo em instantes.", "danger")
+    destino = request.referrer if request.referrer and request.referrer.startswith(request.host_url) else url_for("index")
+    return redirect(destino, code=303)
+
+
 def auth_criar_usuario(email: str, password: str, metadata: dict) -> str:
     """Cria o usuário já confirmado e devolve o id.
 
@@ -1571,8 +1739,10 @@ def auth_conferir_senha(email: str, password: str) -> str | None:
         resposta = supabase_public().auth.sign_in_with_password(
             {"email": email, "password": password}
         )
-    except Exception:
-        return None  # credencial inválida é o caso comum; não faz log
+    except Exception as exc:
+        if _auth_recusou_credencial(exc):
+            return None  # credencial inválida é o caso comum; não faz log
+        raise AuthIndisponivel() from exc
     return str(resposta.user.id) if resposta and resposta.user else None
 
 
@@ -1586,8 +1756,10 @@ def auth_entrar_com_token(email: str, password: str) -> dict | None:
         resposta = supabase_public().auth.sign_in_with_password(
             {"email": email, "password": password}
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        if _auth_recusou_credencial(exc):
+            return None
+        raise AuthIndisponivel() from exc
     if not resposta or not resposta.session or not resposta.user:
         return None
     return {
@@ -1610,8 +1782,10 @@ def auth_renovar_sessao(refresh_token: str) -> dict | None:
         return None
     try:
         resposta = supabase_public().auth.refresh_session(refresh_token)
-    except Exception:
-        return None
+    except Exception as exc:
+        if _auth_recusou_credencial(exc):
+            return None
+        raise AuthIndisponivel() from exc
     if not resposta or not resposta.session or not resposta.user:
         return None
     return {
@@ -1628,8 +1802,10 @@ def auth_usuario_do_token(token: str) -> str | None:
         return None
     try:
         resposta = supabase_admin().auth.get_user(token)
-    except Exception:
-        return None
+    except Exception as exc:
+        if _auth_recusou_credencial(exc):
+            return None
+        raise AuthIndisponivel() from exc
     return str(resposta.user.id) if resposta and resposta.user else None
 
 
@@ -1723,7 +1899,7 @@ def chamar_resend(payload: dict, timeout: int = 15, idempotency_key: str = "") -
         )
         return False, "", f"HTTP {exc.code}: {detalhe}", exc.code in (401, 403, 429) or exc.code >= 500
     except Exception as exc:
-        app.logger.error("Falha ao chamar o Resend para %s: %s", destino, exc)
+        app.logger.error("Falha ao chamar o Resend para %s: %s", filtro_mascarar_email(destino), exc)
         return False, "", str(exc)[:200], True
 
 
@@ -1766,7 +1942,7 @@ def send_email(to_address: str, subject: str, body: str, timeout: int = 15) -> b
                 smtp.send_message(message)
         return True
     except Exception as exc:
-        app.logger.error("Falha ao enviar e-mail para %s: %s", to_address, exc)
+        app.logger.error("Falha ao enviar e-mail para %s: %s", filtro_mascarar_email(to_address), exc)
         return False
 
 
@@ -1947,6 +2123,8 @@ def inject_globals() -> dict:
         "paises": PAISES,
         "moedas": MOEDAS,
         "preco_pro_anual_pix": PRECO_PRO_ANUAL_PIX,
+        "preco_pro_mensal": PRECO_PRO_MENSAL,
+        "preco_pro_anual": PRECO_PRO_ANUAL,
         "indicacao": {"pct": INDICACAO_CUPOM_PCT, "meses_cupom": INDICACAO_CUPOM_MESES,
                       "meses_por_indicado": INDICACAO_MESES_POR_INDICADO, "max_meses": INDICACAO_MAX_MESES},
     }
@@ -2074,13 +2252,19 @@ def login():
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
         password = request.form.get("senha", "")
+        if login_bloqueado(email):
+            flash("Muitas tentativas de entrar hoje. Tente de novo amanhã ou use \"Esqueci minha senha\".", "danger")
+            return render_template("login.html", form=request.form), 429
         user_id = auth_conferir_senha(email, password)
         user = get_store().get_user_by_id(user_id) if user_id else None
         if not user:
+            registrar_falha_de_login(email)
             flash("E-mail ou senha inválidos.", "danger")
             return render_template("login.html", form=request.form), 401
+        zerar_falhas_de_login(email)
         session["user_id"] = user["_id"]
         session["pw_stamp"] = user.get("password_changed_at") or ""
+        registrar_acesso(user["_id"], "site")
         plano = plano_pedido(request.form.get("plano", ""))
         if plano:
             # Clicou em "Assinar" antes de entrar: segue direto para o pagamento.
@@ -2117,6 +2301,10 @@ def cadastro():
             flash("Preencha todos os campos obrigatórios.", "danger")
             return render_template("register.html", form=request.form), 400
 
+        if not email_valido(email):
+            flash("Confira o e-mail: ele não parece válido.", "danger")
+            return render_template("register.html", form=request.form), 400
+
         if len(password) < 8:
             flash("A senha precisa ter pelo menos 8 caracteres.", "danger")
             return render_template("register.html", form=request.form), 400
@@ -2126,6 +2314,14 @@ def cadastro():
         except ValueError as exc:
             flash(str(exc), "danger")
             return render_template("register.html", form=request.form), 400
+
+        if pais == PAIS_PADRAO and not cpf_valido(cpf):
+            flash("Confira o CPF: os dígitos não conferem.", "danger")
+            return render_template("register.html", form=request.form), 400
+
+        if passou_do_teto("cadastro:ip", client_ip(), CADASTRO_DAILY_LIMIT_IP):
+            flash("Muitos cadastros a partir desta rede hoje. Tente de novo amanhã ou fale com o suporte.", "danger")
+            return render_template("register.html", form=request.form), 429
 
         # Código de quem indicou: opcional, mas, se veio, tem de existir —
         # engolir um código errado deixaria a indicação sem dono.
@@ -2168,6 +2364,7 @@ def cadastro():
         }, "site")
         session["user_id"] = user_id
         session["pw_stamp"] = ""
+        registrar_acesso(user_id, "site_cadastro")
         plano = plano_pedido(request.form.get("plano", ""))
         novo = get_store().get_user_by_id(user_id) if plano else None
         if novo:
@@ -2237,6 +2434,7 @@ def redefinir_senha(token: str):
         # as outras sessões e invalida este mesmo token.
         auth_definir_senha(user["_id"], password)
         get_store().update_user(user["_id"], {"password_changed_at": now_iso()})
+        zerar_falhas_de_login(user["email"])  # a saída prometida pelo 429
         session.clear()
         flash("Senha redefinida! Entre com a nova senha.", "success")
         return redirect(url_for("login"))
@@ -2280,7 +2478,15 @@ def perfil():
             flash(str(exc), "danger")
             return render_template("perfil.html", form=request.form), 400
 
+        # Mesma regra do cadastro; conta antiga com CPF errado só é cobrada quando mexer nele.
+        if pais == PAIS_PADRAO and cpf != (g.user.get("cpf") or "") and not cpf_valido(cpf):
+            flash("Confira o CPF: os dígitos não conferem.", "danger")
+            return render_template("perfil.html", form=request.form), 400
+
         if email != g.user["email"]:
+            if not email_valido(email):
+                flash("Confira o e-mail: ele não parece válido.", "danger")
+                return render_template("perfil.html", form=request.form), 400
             existente = get_store().get_user_by_email(email)
             if existente and existente["_id"] != g.user["_id"]:
                 flash("Já existe uma conta com este e-mail.", "danger")
@@ -2328,6 +2534,14 @@ def excluir_conta():
         flash("Senha incorreta. A conta não foi excluída.", "danger")
         return redirect(url_for("dashboard"))
 
+    # Quem assinou pela loja cancela na loja: a Apple e a Google não deixam o
+    # servidor cancelar por fora, e apagar aqui não para a cobrança de lá.
+    # Mesma trava do app e do painel.
+    if assina_pela_loja(g.user):
+        flash("Sua assinatura é pela App Store ou pelo Google Play. Cancele lá primeiro "
+              "e depois exclua a conta; apagar agora não pararia a cobrança da loja.", "danger")
+        return redirect(url_for("dashboard"))
+
     # Apagar a conta sem conseguir parar a cobrança deixaria uma assinatura
     # órfã, cobrando alguém que já não tem como cancelá-la pelo app.
     subscription_id = g.user.get("stripe_subscription_id")
@@ -2366,6 +2580,11 @@ def excluir_conta():
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
+def historico_limitado_ao_mes(usuario: dict) -> bool:
+    """Grátis vê só o mês atual no painel a partir de HISTORICO_GRATIS_DESDE."""
+    return usuario.get("plan", "free") not in PAID_PLANS and today_br() >= HISTORICO_GRATIS_DESDE
+
+
 @app.get("/dashboard")
 @login_required
 def dashboard():
@@ -2382,6 +2601,13 @@ def dashboard():
     receipts_this_month = sum(
         1 for r in receipts if month_start <= r.get("created_at", "") < month_end
     )
+    # Histórico de meses anteriores é do Pro. O Grátis vê o mês atual (para
+    # reenviar o recibo que o passageiro perdeu); os outros continuam guardados
+    # e os links públicos continuam abrindo.
+    recibos_anteriores = len(receipts) - receipts_this_month
+    total_recibos = len(receipts)
+    if historico_limitado_ao_mes(g.user):
+        receipts = [r for r in receipts if month_start <= r.get("created_at", "") < month_end]
 
     if request.args.get("subscribed") == "1":
         # O plano só muda quando o webhook chega, alguns segundos depois — não
@@ -2405,6 +2631,10 @@ def dashboard():
         "dashboard.html",
         receipts=receipts,
         receipts_this_month=receipts_this_month,
+        recibos_anteriores=recibos_anteriores,
+        total_recibos=total_recibos,
+        historico_limitado=historico_limitado_ao_mes(g.user),
+        historico_gratis_desde=HISTORICO_GRATIS_DESDE,
         today=today_br(),
         user_plan=user_plan,
         monthly_limit=None if user_plan in PAID_PLANS else FREE_MONTHLY_LIMIT,
@@ -2412,6 +2642,7 @@ def dashboard():
         valor_exemplo=formatar_numero(0, casas),
         pro_until=_instante(g.user.get("pro_until")) if g.user.get("subscription_status") in STATUS_PREPAGO else None,
         prepago=g.user.get("subscription_status") in STATUS_PREPAGO,
+        assina_na_loja=assina_pela_loja(g.user),
     )
 
 
@@ -2528,6 +2759,22 @@ def _instante(valor) -> datetime | None:
         return datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def assina_pela_loja(usuario: dict) -> bool:
+    """Pro vindo da App Store ou do Google Play: pago, sem id da Stripe e sem
+    ser pré-pago (indicação, anual por Pix, cortesia). Só esse o servidor não
+    consegue cancelar, então só esse trava a exclusão da conta."""
+    return (usuario.get("plan") in PAID_PLANS and not usuario.get("stripe_subscription_id")
+            and usuario.get("subscription_status") not in STATUS_PREPAGO)
+
+
+def status_prepago_ao_encerrar(usuario: dict) -> str:
+    """Status que fica quando a assinatura acaba e sobram dias pré-pagos:
+    preserva indicação e cortesia; só o que foi pago é 'prepago' (e recebe o
+    lembrete de renovação)."""
+    atual = usuario.get("subscription_status") or ""
+    return atual if atual in STATUS_PREPAGO else "prepago"
 
 
 def pro_prepago_vigente(usuario: dict) -> bool:
@@ -3121,7 +3368,8 @@ def stripe_webhook():
             motorista_id = user["_id"]
             if pro_prepago_vigente(user):
                 # Tinha dias pré-pagos guardados: a assinatura acabou, o Pro não.
-                store.update_user(user["_id"], {"stripe_subscription_id": None, "subscription_status": "prepago"})
+                store.update_user(user["_id"], {"stripe_subscription_id": None,
+                                                "subscription_status": status_prepago_ao_encerrar(user)})
                 resultado = "mantido_prepago"
             else:
                 store.update_user(user["_id"], {
@@ -3141,12 +3389,15 @@ def stripe_webhook():
                 store.update_user(user["_id"], {"subscription_status": status})
                 resultado = f"status: {status}"
             elif pro_prepago_vigente(user):
-                store.update_user(user["_id"], {"subscription_status": "prepago"})
+                store.update_user(user["_id"], {"subscription_status": status_prepago_ao_encerrar(user)})
                 resultado = f"mantido_prepago ({status})"
             else:
+                # Assinatura encerrada: o id sai junto, para não parecer viva
+                # depois (pro_vem_da_stripe olha só a presença do id).
                 store.update_user(user["_id"], {
                     "plan": "free",
                     "subscription_status": status,
+                    "stripe_subscription_id": None,
                 })
                 resultado = f"free ({status})"
 
@@ -3178,16 +3429,21 @@ def api_preflight(_qualquer: str):
 def api_login():
     """Login do app nativo. Devolve tokens em vez de criar cookie."""
     dados = corpo_json()
-    tokens = auth_entrar_com_token(
-        normalize_email(str(dados.get("email", ""))), str(dados.get("senha", ""))
-    )
+    email = normalize_email(str(dados.get("email", "")))
+    if login_bloqueado(email):
+        return jsonify({"erro": "muitas_tentativas",
+                        "mensagem": "Muitas tentativas de entrar hoje. Tente amanhã ou use Esqueci minha senha."}), 429
+    tokens = auth_entrar_com_token(email, str(dados.get("senha", "")))
     if not tokens:
+        registrar_falha_de_login(email)
         return jsonify({"erro": "credenciais_invalidas"}), 401
 
     usuario = get_store().get_user_by_id(tokens["user_id"])
     if not usuario:
         return jsonify({"erro": "perfil_ausente"}), 401
 
+    zerar_falhas_de_login(email)
+    registrar_acesso(tokens["user_id"], "app")
     return jsonify(tokens)
 
 
@@ -3248,7 +3504,9 @@ def api_excluir_conta():
 
     # Quem assinou pela loja cancela na loja: a Apple e a Google nao deixam o
     # servidor cancelar por fora, e apagar aqui nao para a cobranca de la.
-    if g.user.get("plan") in PAID_PLANS and not assinatura:
+    # Pro pre-pago (indicacao, anual por Pix, cortesia) nao tem cobranca
+    # nenhuma: pode apagar.
+    if assina_pela_loja(g.user):
         return jsonify({"erro": "assinatura_na_loja"}), 409
 
     auth_excluir_usuario(g.user["_id"])
@@ -3299,6 +3557,7 @@ def api_refresh():
     if not get_store().get_user_by_id(tokens["user_id"]):
         return jsonify({"erro": "perfil_ausente"}), 401
 
+    registrar_acesso(tokens["user_id"], "app_refresh")
     return jsonify(tokens)
 
 
@@ -3329,11 +3588,21 @@ def api_cadastro():
     if len(campos["senha"]) < 8:
         return jsonify({"erro": "senha_curta", "minimo": 8}), 400
 
+    if not email_valido(campos["email"]):
+        return jsonify({"erro": "email_invalido", "mensagem": "Confira o e-mail: ele não parece válido."}), 400
+
     # As versões do app de antes da 0010 não mandam país nem moeda: vale o Brasil.
     try:
         pais, moeda = pais_e_moeda(str(dados.get("pais") or ""), str(dados.get("moeda") or ""))
     except ValueError as exc:
         return jsonify({"erro": "pais_ou_moeda_invalido", "mensagem": str(exc)}), 400
+
+    if pais == PAIS_PADRAO and not cpf_valido(campos["cpf"]):
+        return jsonify({"erro": "cpf_invalido", "mensagem": "Confira o CPF: os dígitos não conferem."}), 400
+
+    if passou_do_teto("cadastro:ip", client_ip(), CADASTRO_DAILY_LIMIT_IP):
+        return jsonify({"erro": "muitas_tentativas",
+                        "mensagem": "Muitos cadastros a partir desta rede hoje. Tente amanhã ou fale com o suporte."}), 429
 
     codigo_indicacao = str(dados.get("indicacao") or "").strip().upper()
     indicador = get_store().get_user_by_referral_code(codigo_indicacao) if codigo_indicacao else None
@@ -3367,6 +3636,7 @@ def api_cadastro():
     tokens = auth_entrar_com_token(campos["email"], campos["senha"])
     if not tokens:
         return jsonify({"erro": "criado_sem_login"}), 500
+    registrar_acesso(tokens["user_id"], "app_cadastro")
     return jsonify(tokens), 201
 
 
@@ -3391,7 +3661,10 @@ def api_sessao():
             "ddi": PAISES.get(g.user.get("country") or PAIS_PADRAO, ("", "", ""))[2],
             "moeda": moeda,
             # Pro pré-pago (anual por Pix ou mês de indicação) vence; o app mostra a data.
-            "pro_until": g.user.get("pro_until") or None,
+            # So para Pro pre-pago: assinante tambem pode ter dias guardados, e o
+            # app mostraria "Seu Pro vale ate X, depois e so assinar" a quem assina.
+            "pro_until": (g.user.get("pro_until") or None)
+                         if g.user.get("subscription_status") in STATUS_PREPAGO else None,
             "codigo_indicacao": codigo_de_indicacao(g.user),
             "link_indicacao": link_de_indicacao(codigo_de_indicacao(g.user)),
             # Desconto de indicação nas lojas: encerrado em 2026-11-10. O app 1.3
@@ -3525,8 +3798,17 @@ def api_criar_recibo():
         "via_corrida": dados.get("via_corrida") is True,
         "driver_snapshot": snapshot_do_motorista(g.user),
     }
+    # created_at do cliente (recibo emitido offline e sincronizado depois): só
+    # ISO-8601, nem no futuro nem antes de 30 dias; fora disso vale a hora do
+    # servidor. Texto inválido dava 500 e data retroativa descasava a cota.
     if dados.get("created_at"):
-        receipt["created_at"] = str(dados["created_at"])
+        instante = _instante(str(dados["created_at"]))
+        agora = datetime.now(timezone.utc)
+        # Não antes do mês corrente: a cota é consumida no mês do servidor, e
+        # um recibo datado do mês passado descasaria a contagem do painel.
+        piso = max(agora - timedelta(days=30), _instante(month_range_utc()[0]) or agora)
+        if instante and piso <= instante <= agora + timedelta(minutes=5):
+            receipt["created_at"] = to_utc_iso(instante)
 
     quota = None if g.user.get("plan", "free") in PAID_PLANS else FREE_MONTHLY_LIMIT
     salvo, criado_agora = get_store().create_receipt_idempotente(receipt, quota)
@@ -3921,11 +4203,20 @@ def pro_vem_da_stripe(usuario: dict) -> bool:
 
 
 def ativar_pro_pela_loja(user_id: str) -> None:
-    get_store().update_user(user_id, {
-        "plan": "pro",
-        "subscription_status": "active",
-        "stripe_subscription_id": None,
-    })
+    """Pro pela loja.
+
+    O id da Stripe só fica se a assinatura de lá estiver viva (quem assina nos
+    dois lugares não pode ter a da Stripe esquecida pelo servidor). Id de
+    assinatura já encerrada ou perdida é apagado: pro_vem_da_stripe olha só a
+    presença do id, e um id obsoleto seguraria o Pro para sempre quando a
+    loja expirasse."""
+    store = get_store()
+    usuario = store.get_user_by_id(user_id) or {}
+    updates: dict = {"plan": "pro", "subscription_status": "active"}
+    if not (usuario.get("stripe_subscription_id")
+            and usuario.get("subscription_status") in ACTIVE_SUBSCRIPTION_STATUSES):
+        updates["stripe_subscription_id"] = None
+    store.update_user(user_id, updates)
 
 
 def _registrar_rc(evento: dict, outcome: str, *, driver_id: str | None = None,
@@ -3984,6 +4275,9 @@ def transferir_assinatura_rc(evento: dict) -> dict:
     for usuario in perdem.values():
         if pro_vem_da_stripe(usuario):
             feitos.append((usuario, "mantido_stripe (a da loja foi para outra conta)"))
+        elif pro_prepago_vigente(usuario):
+            get_store().update_user(usuario["_id"], {"subscription_status": status_prepago_ao_encerrar(usuario)})
+            feitos.append((usuario, "mantido_prepago (a da loja foi para outra conta)"))
         else:
             get_store().update_user(usuario["_id"], {"plan": "free", "subscription_status": "transferred"})
             feitos.append((usuario, "free (a assinatura foi para outra conta)"))
@@ -4014,6 +4308,30 @@ def webhook_revenuecat():
     evento = corpo_json().get("event")
     evento = evento if isinstance(evento, dict) else {}
     tipo = str(evento.get("type", ""))
+
+    # Compra de teste (sandbox: TestFlight, teste interno do Play e a própria
+    # revisão da Apple) não vira Pro de verdade. Mas ignorar também não serve:
+    # o revisor da Apple compra em sandbox e precisa ver o Pro ativo na hora.
+    # Então a compra de sandbox vira Pro de cortesia só até a expiração que o
+    # próprio evento traz (assinatura de sandbox dura minutos); o cron rebaixa.
+    # As contas de teste em RC_SANDBOX_PERMITIDOS seguem o fluxo completo.
+    if str(evento.get("environment") or "").upper() == "SANDBOX" and tipo not in ("TEST", "TRANSFER"):
+        usuario_sb, _ = motorista_do_evento_rc(evento)
+        permitidos = {e.strip().lower() for e in os.environ.get("RC_SANDBOX_PERMITIDOS", "").split(",") if e.strip()}
+        if not usuario_sb or normalize_email(usuario_sb.get("email", "")) not in permitidos:
+            resultado_sb = "ignorado: sandbox"
+            if usuario_sb and tipo in RC_EVENTOS_ATIVA and not pro_vem_da_stripe(usuario_sb) \
+                    and usuario_sb.get("subscription_status") not in ACTIVE_SUBSCRIPTION_STATUSES:
+                fim_ms = evento.get("expiration_at_ms")
+                fim = datetime.fromtimestamp(int(fim_ms) / 1000, timezone.utc) if fim_ms else \
+                    datetime.now(timezone.utc) + timedelta(hours=1)
+                fim = min(fim, datetime.now(timezone.utc) + timedelta(days=1))
+                get_store().update_user(usuario_sb["_id"], {
+                    "plan": "pro", "subscription_status": "cortesia", "pro_until": to_utc_iso(fim)})
+                resultado_sb = f"sandbox: cortesia até {fim.isoformat()}"
+            _registrar_rc(evento, resultado_sb, driver_id=(usuario_sb or {}).get("_id"),
+                          app_user_id=str(evento.get("app_user_id") or ""))
+            return jsonify({"ok": True, "ignorado": "sandbox", "resultado": resultado_sb})
 
     if tipo == "TRANSFER":
         return jsonify({"ok": True, "evento": tipo, "resultado": transferir_assinatura_rc(evento)})
@@ -4059,7 +4377,7 @@ def webhook_revenuecat():
         elif pro_prepago_vigente(usuario):
             # Dias pré-pagos guardados (anual por Pix ou mês de indicação)
             # entram em vigor quando a assinatura da loja acaba.
-            store.update_user(user_id, {"subscription_status": "prepago"})
+            store.update_user(user_id, {"subscription_status": status_prepago_ao_encerrar(usuario)})
             resultado = "mantido_prepago"
         else:
             store.update_user(user_id, {"plan": "free", "subscription_status": tipo.lower()})
@@ -4108,6 +4426,12 @@ def tarefa_limpeza():
     counters_removed, counters_left = store.purge_counters_before(
         to_utc_iso(now - timedelta(days=COUNTER_RETENTION_DAYS)), CLEANUP_BATCH_LIMIT
     )
+    try:
+        acessos_removidos = store.purge_access_logs_before(
+            to_utc_iso(now - timedelta(days=ACCESS_LOG_RETENTION_DAYS)))
+    except Exception as exc:  # migração 0016 ainda não aplicada
+        app.logger.warning("limpeza de access_logs pulada: %s", exc)
+        acessos_removidos = 0
     # Pro pré-pago (migração 0012): quem passou da data volta ao Grátis, e quem
     # pagou o anual recebe o aviso de renovação 15 dias antes. Falha aqui não
     # derruba a limpeza: vira log, e amanhã o cron tenta de novo.
@@ -4130,6 +4454,7 @@ def tarefa_limpeza():
             "ok": True,
             "recibos_removidos": receipts_removed,
             "contadores_removidos": counters_removed,
+            "acessos_removidos": acessos_removidos,
             "pro_expirados": pro_expirados,
             "lembretes_enviados": lembretes,
             "backlog_restante": incompleto,
@@ -4623,12 +4948,12 @@ def email_descadastro(token: str):
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="19 de outubro de 2026")
+    return render_template("privacidade.html", updated_at="11 de novembro de 2026")
 
 
 @app.get("/termos")
 def termos():
-    return render_template("termos.html", updated_at="19 de outubro de 2026")
+    return render_template("termos.html", updated_at="11 de novembro de 2026")
 
 
 @app.get("/excluir-conta")
@@ -4644,7 +4969,7 @@ def pagina_excluir_conta():
 
     Mesma URL do POST logo abaixo, que e quem realmente apaga: aqui e GET.
     """
-    return render_template("excluir_conta.html", updated_at="14 de setembro de 2026")
+    return render_template("excluir_conta.html", updated_at="11 de novembro de 2026")
 
 
 # ── Receipt view ──────────────────────────────────────────────────────────────
@@ -4691,6 +5016,9 @@ def recibo_view(rid: str):
     context["is_guest"] = receipt.get("is_guest", False)
     context["just_created"] = request.args.get("created") == "1"
     context["rotulo_documento"] = rotulo_documento(pais_do_recibo(receipt))
+    # Quem emitiu vê o documento inteiro; qualquer outro visitante, mascarado.
+    context["documento_exibido"] = (receipt.get("passenger_document") or "") if is_issuer \
+        else mascarar_documento(receipt.get("passenger_document") or "", pais_do_recibo(receipt))
     context["horario"] = horario_da_corrida(receipt)
 
     return render_template("recibo_view.html", dados=context)
@@ -5160,8 +5488,8 @@ _SQL_ADMIN = {
           from public.rate_limits where key like 'email:%%' group by 1 order by 1 desc""",
     "resets_por_dia": r"""
         select substring(key from '(\d{4}-\d{2}-\d{2})$') as dia,
-               coalesce(sum(count) filter (where key like 'reset:email:%%'), 0) as pedidos,
-               count(*) filter (where key like 'reset:email:%%') as emails_distintos,
+               coalesce(sum(count) filter (where key like 'reset:e:%%'), 0) as pedidos,
+               count(*) filter (where key like 'reset:e:%%') as emails_distintos,
                count(*) filter (where key like 'reset:ip:%%' and count >= %(teto_reset_ip)s) as ips_no_teto
           from public.rate_limits where key like 'reset:%%' group by 1 order by 1 desc""",
     "tentativas_admin": """
@@ -5460,7 +5788,7 @@ def admin_motoristas():
     if len(linhas) > tamanho:
         linhas = linhas[:tamanho]
         proximo = _cursor_dumps(linhas[-1]["created_at"], linhas[-1]["id"])
-    app.logger.info("admin %s listou motoristas q=%r", g.admin["email"], q)
+    app.logger.info("admin %s listou motoristas (busca com %d caracteres)", g.admin["email"], len(q or ""))
     return render_template(
         "admin/motoristas.html", motoristas=linhas, proximo=proximo,
         filtros={"q": q, "plano": plano, "status": status, "origem": origem,
@@ -5583,8 +5911,9 @@ def admin_excluir_motorista(driver_id):
             flash("Não consegui cancelar a assinatura na Stripe, então o cadastro "
                   "não foi excluído. Tente de novo em alguns minutos.", "danger")
             return voltar
-    elif motorista.get("plan") in PAID_PLANS:
-        # A Apple e a Google não deixam o servidor cancelar por fora.
+    elif assina_pela_loja(motorista):
+        # A Apple e a Google não deixam o servidor cancelar por fora. Pro
+        # pré-pago (indicação, Pix, cortesia) não cobra nada: pode apagar.
         flash("Este motorista assina pela App Store ou pelo Google Play. Ele precisa "
               "cancelar na loja antes; apagar agora não para a cobrança de lá.", "danger")
         return voltar
@@ -5598,7 +5927,8 @@ def admin_excluir_motorista(driver_id):
         return voltar
 
     _ADMIN_CACHE.pop("dashboard", None)
-    app.logger.warning("admin %s excluiu o motorista %s (%s)", g.admin["email"], did, motorista.get("email"))
+    app.logger.warning("admin %s excluiu o motorista %s (%s)", g.admin["email"], did,
+                       filtro_mascarar_email(motorista.get("email")))
     flash(f"Cadastro de {motorista.get('full_name') or motorista.get('email')} excluído, com todos os recibos.", "success")
     return redirect(url_for("admin_motoristas"))
 
@@ -5993,11 +6323,27 @@ def filtro_valor(valor, moeda=None) -> str:
     return formatar_valor(valor, moeda)
 
 
+def mascarar_documento(valor, pais: str = PAIS_PADRAO) -> str:
+    """CPF com o meio escondido (123.***.***-09): o que fica na página pública
+    do recibo e nas mensagens, porque link vazado não pode entregar o CPF
+    inteiro do passageiro. CNPJ é dado público e sai inteiro; documento de
+    outro país sai como veio (não dá para saber o que é)."""
+    texto = str(valor or "")
+    if pais != PAIS_PADRAO:
+        return texto
+    digitos = re.sub(r"\D", "", texto)
+    if len(digitos) == 11:
+        return f"{digitos[:3]}.***.***-{digitos[9:]}"
+    if len(digitos) == 14:
+        return format_document_br(digitos)
+    return texto
+
+
 @app.template_filter("mascarar_cpf")
 def filtro_mascarar_cpf(valor) -> str:
     digitos = re.sub(r"\D", "", str(valor or ""))
     if len(digitos) == 11:
-        return f"***.***.{digitos[6:9]}-{digitos[9:]}"
+        return f"{digitos[:3]}.***.***-{digitos[9:]}"
     if len(digitos) == 14:  # CNPJ e dado publico
         return format_document_br(digitos)
     return "***" if digitos else ""

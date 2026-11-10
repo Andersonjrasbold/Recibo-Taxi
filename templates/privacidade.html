@@ -54,8 +54,8 @@
 
           <h3 class="legal-h3">2.2 Dados das corridas e dos passageiros</h3>
           <ul class="legal-list">
-            <li>Nome do passageiro, e-mail e WhatsApp, quando informados pelo motorista.</li>
-            <li>Data, hora, origem, destino, valor, forma de pagamento e observações da corrida.</li>
+            <li>Nome do passageiro, e-mail, WhatsApp e, quando informados pelo motorista, CPF ou CNPJ e razão social (para o passageiro prestar contas da despesa). Na página pública do recibo e nas mensagens, o CPF aparece com o meio oculto; o PDF gerado pelo motorista leva o número inteiro.</li>
+            <li>Data, horário de saída e de chegada, origem, destino, quilometragem, valor, forma de pagamento e observações da corrida.</li>
           </ul>
           <p class="legal-note">
             Esses dados são inseridos <strong>pelo motorista</strong>. Cabe a ele informar o
@@ -135,13 +135,18 @@
                 </tr>
                 <tr>
                   <td>Programa de indicação: ligar o seu cadastro a quem te indicou e conceder as recompensas</td>
-                  <td>Código de indicação, quem indicou quem, data do primeiro recibo. Quem indicou vê o seu primeiro nome e se você já emitiu recibo</td>
+                  <td>Código de indicação, quem indicou quem, data do primeiro recibo. Quem indicou vê o seu primeiro nome e se você já emitiu recibo. A página do convite (recibotaxi.com.br/i/CÓDIGO) mostra o primeiro nome de quem indicou a quem tiver o link, que é enviado pelo próprio motorista</td>
                   <td>Execução de contrato (art. 7º, V)</td>
                 </tr>
                 <tr>
-                  <td>Conter abuso em cadastro e recuperação de senha</td>
-                  <td>Endereço IP, de forma agregada e temporária</td>
+                  <td>Conter abuso em login, cadastro e recuperação de senha</td>
+                  <td>Endereço IP e um código derivado do e-mail, em contadores diários apagados em 7 dias</td>
                   <td>Legítimo interesse (art. 7º, IX)</td>
+                </tr>
+                <tr>
+                  <td>Guardar registros de acesso por 6 meses</td>
+                  <td>Data, hora, endereço IP e conta de cada login, renovação de sessão e cadastro</td>
+                  <td>Cumprimento de obrigação legal (art. 7º, II; Marco Civil da Internet, art. 15)</td>
                 </tr>
                 <tr>
                   <td>Cumprir obrigações legais e fiscais</td>
@@ -194,12 +199,19 @@
             <li><strong>Após a exclusão da conta:</strong> seus dados e todos os seus recibos são apagados imediatamente e de forma definitiva.</li>
             <li><strong>Recibos emitidos sem conta (gerador desativado):</strong> mantidos por até
               12 meses a partir da emissão e depois removidos automaticamente por rotina diária.</li>
-            <li><strong>Contadores antiabuso:</strong> guardamos por 7 dias um contador por
-              endereço IP (cadastro e recuperação de senha) e um contador diário de estimativas por
-              motorista, só para limitar abuso, e depois eles são apagados.</li>
-            <li><strong>Registros de conexão:</strong> não mantemos registros de acesso próprios.
+            <li><strong>Contadores antiabuso:</strong> guardamos por 7 dias contadores diários por
+              endereço IP (login, cadastro, recuperação de senha e abertura da página do convite), por
+              conta (tentativas de login que falharam e pedidos de recuperação de senha, identificadas
+              por um código derivado do e-mail, não pelo e-mail), de estimativas de corrida e de recibos
+              enviados por e-mail por motorista, só para limitar abuso, e depois eles são apagados.</li>
+            <li><strong>Registros de acesso:</strong> guardamos data, hora e endereço IP de cada login,
+              renovação de sessão e cadastro por 6 meses, como exige o artigo 15 do Marco Civil da
+              Internet, e depois eles são apagados. Esses registros ficam mesmo depois da exclusão da
+              conta, até completarem os 6 meses, e não são usados para nenhuma outra finalidade.
               A infraestrutura de hospedagem (Vercel) mantém logs operacionais por período curto,
               sob a política dela.</li>
+            <li><strong>Cliques nos links de download:</strong> contamos quantos cliques cada canal de
+              divulgação gera por dia, sem endereço IP nem qualquer dado de quem clicou.</li>
             <li><strong>Dados fiscais de pagamento:</strong> pelo prazo exigido pela legislação tributária.</li>
           </ul>
 

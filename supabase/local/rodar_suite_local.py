@@ -44,6 +44,10 @@ import app as A  # noqa: E402
 
 import psycopg
 from psycopg.rows import dict_row
+try:
+    from supabase_auth.errors import AuthApiError   # o app distingue 4xx (credencial) de falha do servico
+except ImportError:
+    from gotrue.errors import AuthApiError
 
 
 def _hash(s):
@@ -81,7 +85,7 @@ class _Admin:
         email = (attrs.get("email") or "").strip().lower()
         with _conn() as c:
             if c.execute("select 1 from auth.users where lower(email) = %s", (email,)).fetchone():
-                raise Exception("User already registered")
+                raise AuthApiError("User already registered", 422, "email_exists")
             linha = c.execute(
                 """insert into auth.users (email, encrypted_password, raw_user_meta_data, email_confirmed_at)
                    values (%s, %s, %s::jsonb, now()) returning id""",
@@ -112,29 +116,29 @@ class _Auth:
             u = c.execute("select id, email, encrypted_password, banned_until from auth.users where lower(email) = %s",
                           (email,)).fetchone()
         if not u or u["encrypted_password"] != _hash(cred.get("password") or ""):
-            raise Exception("Invalid login credentials")
+            raise AuthApiError("Invalid login credentials", 400, "invalid_credentials")
         if u["banned_until"] and u["banned_until"].timestamp() > time.time():
-            raise Exception("User is banned")
+            raise AuthApiError("User is banned", 403, "user_banned")
         return _sessao(str(u["id"]), u["email"])
 
     def refresh_session(self, token):
         uid = _REFRESH.pop(token, None)
         if not uid:
-            raise Exception("Invalid Refresh Token")
+            raise AuthApiError("Invalid Refresh Token", 400, "refresh_token_not_found")
         with _conn() as c:
             u = c.execute("select email from auth.users where id = %s", (uid,)).fetchone()
         if not u:
-            raise Exception("User not found")
+            raise AuthApiError("User not found", 404, "user_not_found")
         return _sessao(uid, u["email"])
 
     def get_user(self, token):
         uid = _TOKENS.get(token)
         if not uid:
-            raise Exception("invalid JWT")
+            raise AuthApiError("invalid JWT", 401, "bad_jwt")
         with _conn() as c:
             u = c.execute("select email from auth.users where id = %s", (uid,)).fetchone()
         if not u:
-            raise Exception("User not found")
+            raise AuthApiError("User not found", 404, "user_not_found")
         return _Obj(user=_Obj(id=uid, email=u["email"]))
 
 

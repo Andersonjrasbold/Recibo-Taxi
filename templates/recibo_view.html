@@ -81,7 +81,10 @@
             {% if dados.passenger_document %}
             <div class="detail-item">
               <span class="detail-label">{{ dados.rotulo_documento }}</span>
-              <span class="detail-value mono">{{ dados.passenger_document }}</span>
+              <span class="detail-value mono">{{ dados.documento_exibido }}</span>
+              {% if not dados.is_issuer and dados.documento_exibido != dados.passenger_document %}
+              <small class="d-block text-muted">Parte do número fica oculta nesta página. O PDF que o motorista envia traz o número completo.</small>
+              {% endif %}
             </div>
             {% endif %}
             {% if dados.passenger_company %}

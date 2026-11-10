@@ -114,9 +114,9 @@
                 <tr><th>Plano</th><th>Preço</th><th>Limite de recibos</th></tr>
               </thead>
               <tbody>
-                <tr><td>Grátis</td><td>R$ 0,00</td><td>Até {{ free_monthly_limit }} recibos salvos por mês</td></tr>
-                <tr><td>Pro</td><td>R$ 9,90/mês</td><td>Ilimitado</td></tr>
-                <tr><td>Pro anual</td><td>R$ 59,90/ano, em pagamento único (quase metade do valor de 12 mensalidades)</td><td>Ilimitado</td></tr>
+                <tr><td>Grátis</td><td>R$ 0,00</td><td>Até {{ free_monthly_limit }} recibos por mês; o painel do site mostra os recibos do mês atual (regra válida a partir de 26/11/2026)</td></tr>
+                <tr><td>Pro</td><td>{{ preco_pro_mensal }}/mês, assinatura com renovação automática</td><td>Ilimitado; o painel mostra todos os meses</td></tr>
+                <tr><td>Pro anual</td><td>{{ preco_pro_anual }}/ano, assinatura com renovação automática anual (equivale a R$ 4,99 por mês)</td><td>Ilimitado; o painel mostra todos os meses</td></tr>
                 <tr><td>Pro anual por Pix (oferta)</td><td>{{ preco_pro_anual_pix }} por 12 meses, pagamento único por Pix ou cartão, sem renovação automática (item 6.7)</td><td>Ilimitado</td></tr>
               </tbody>
             </table>
@@ -137,8 +137,8 @@
 
           <h3 class="legal-h3">6.2 Renovação automática</h3>
           <ul class="legal-list">
-            <li>A assinatura Pro é <strong>mensal e de renovação automática</strong>.</li>
-            <li>A cobrança ocorre no ato da contratação e se repete a cada mês, na mesma data, até o cancelamento.</li>
+            <li>A assinatura Pro é <strong>de renovação automática</strong>, mensal ou anual, conforme o plano escolhido.</li>
+            <li>A cobrança ocorre no ato da contratação e se repete a cada mês (plano mensal) ou a cada ano (plano anual), na mesma data, até o cancelamento.</li>
             <li>O pagamento é processado pela Stripe. Não armazenamos dados do seu cartão.</li>
             <li>Preços são em reais (BRL) e já incluem os tributos aplicáveis.</li>
           </ul>

@@ -139,9 +139,14 @@
                   <td>Execução de contrato (art. 7º, V)</td>
                 </tr>
                 <tr>
-                  <td>Conter abuso em cadastro e recuperação de senha</td>
-                  <td>Endereço IP, de forma agregada e temporária</td>
+                  <td>Conter abuso em login, cadastro e recuperação de senha</td>
+                  <td>Endereço IP e um código derivado do e-mail, em contadores diários apagados em 7 dias</td>
                   <td>Legítimo interesse (art. 7º, IX)</td>
+                </tr>
+                <tr>
+                  <td>Guardar registros de acesso por 6 meses</td>
+                  <td>Data, hora, endereço IP e conta de cada login, renovação de sessão e cadastro</td>
+                  <td>Cumprimento de obrigação legal (art. 7º, II; Marco Civil da Internet, art. 15)</td>
                 </tr>
                 <tr>
                   <td>Cumprir obrigações legais e fiscais</td>
@@ -196,9 +201,9 @@
               12 meses a partir da emissão e depois removidos automaticamente por rotina diária.</li>
             <li><strong>Contadores antiabuso:</strong> guardamos por 7 dias contadores diários por
               endereço IP (login, cadastro, recuperação de senha e abertura da página do convite), por
-              conta (tentativas de login e de recuperação de senha, identificadas por um código derivado
-              do e-mail, não pelo e-mail) e de estimativas por motorista, só para limitar abuso, e depois
-              eles são apagados.</li>
+              conta (tentativas de login que falharam e pedidos de recuperação de senha, identificadas
+              por um código derivado do e-mail, não pelo e-mail), de estimativas de corrida e de recibos
+              enviados por e-mail por motorista, só para limitar abuso, e depois eles são apagados.</li>
             <li><strong>Registros de acesso:</strong> guardamos data, hora e endereço IP de cada login,
               renovação de sessão e cadastro por 6 meses, como exige o artigo 15 do Marco Civil da
               Internet, e depois eles são apagados. Esses registros ficam mesmo depois da exclusão da

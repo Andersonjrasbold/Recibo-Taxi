@@ -1264,9 +1264,17 @@ check("documento de outro pais nao passa pela regra do CPF",
                                       "pais": "CR", "moeda": "CRC"}).status_code == 201)
 _lim_login = A.LOGIN_DAILY_LIMIT_EMAIL
 A.LOGIN_DAILY_LIMIT_EMAIL = 2
+with A.app.test_request_context("/api/login", environ_base={"REMOTE_ADDR": "127.0.0.1"}):
+    _estado_login = {k: A.get_store().get_counter(k) for k, _ in A._chaves_de_login("cr-doc@teste.invalid")}
+check("contadores de login da conta nova comecam zerados",
+      all(v == 0 for k, v in _estado_login.items() if not k.startswith("login:ip:")), str(_estado_login))
 _cods_login = [_cl.post("/api/login", json={"email": "cr-doc@teste.invalid", "senha": "errada"}).status_code for _ in range(4)]
+check("login: senha errada da 401 e, passado o teto de falhas, 429", _cods_login == [401, 401, 429, 429], str(_cods_login))
+with A.app.test_request_context("/api/login", environ_base={"REMOTE_ADDR": "127.0.0.1"}):
+    A.zerar_falhas_de_login("cr-doc@teste.invalid")
+_cods_login2 = [_cl.post("/api/login", json={"email": "cr-doc@teste.invalid", "senha": "senha12345"}).status_code for _ in range(3)]
+check("login certo nao conta no teto (so falhas contam)", _cods_login2 == [200, 200, 200], str(_cods_login2))
 A.LOGIN_DAILY_LIMIT_EMAIL = _lim_login
-check("login: senha errada da 401 e, passado o teto da conta, 429", _cods_login == [401, 401, 429, 429], str(_cods_login))
 with A.get_store().pool.connection() as _conn:
     _n_acessos = _conn.execute("select count(*) as n from public.access_logs where driver_id = %s",
                                (A.get_store().get_user_by_email("cr-doc@teste.invalid")["_id"],)).fetchone()["n"]
@@ -1954,9 +1962,13 @@ try:
                                 json={"event": {"type": "INITIAL_PURCHASE", "id": f"rc-sb-{_suf_av}", "app_user_id": _id_app,
                                                 "product_id": "br.com.recibotaxi.app.pro.mensal", "store": "PLAY_STORE",
                                                 "environment": "SANDBOX"}})
-            check("compra de sandbox sem permissao nao vira Pro",
+            _u_sb = A.get_store().get_user_by_id(_id_app)
+            check("compra de sandbox sem permissao vira Pro de cortesia so ate expirar (revisao da Apple)",
                   _crc_sb.status_code == 200 and (_crc_sb.get_json() or {}).get("ignorado") == "sandbox"
-                  and A.get_store().get_user_by_id(_id_app)["plan"] == "free", str(_crc_sb.get_json()))
+                  and _u_sb["plan"] == "pro" and _u_sb["subscription_status"] == "cortesia"
+                  and A._instante(_u_sb["pro_until"]) <= A.datetime.now(A.timezone.utc) + A.timedelta(days=1),
+                  str((_crc_sb.get_json(), _u_sb["plan"], _u_sb["subscription_status"])))
+            A.get_store().update_user(_id_app, {"plan": "free", "subscription_status": None, "pro_until": None})
             os.environ["RC_SANDBOX_PERMITIDOS"] = _email_app
             check("primeira compra no app responde 200", _evento_rc("INITIAL_PURCHASE") == 200)
             check("primeira compra no app avisa o plano e a loja",
@@ -2804,12 +2816,20 @@ try:
           store.get_user_by_id(_i1["_id"])["subscription_status"] == "prepago",
           store.get_user_by_id(_i1["_id"])["subscription_status"])
     # Ativacao pela loja nao apaga o vinculo com a Stripe de quem tambem assina pelo site.
-    store.update_user(_i1["_id"], {"stripe_customer_id": "cus_dupla", "stripe_subscription_id": "sub_dupla"})
+    store.update_user(_i1["_id"], {"stripe_customer_id": "cus_dupla", "stripe_subscription_id": "sub_dupla",
+                                   "subscription_status": "active"})
     A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
                              json={"event": {"type": "RENEWAL", "id": f"teste-suite-{_suf_in}-ren",
                                              "app_user_id": _i1["_id"], "store": "APP_STORE", "environment": "PRODUCTION"}})
-    check("evento da loja nao apaga a assinatura da Stripe",
+    check("evento da loja nao apaga a assinatura viva da Stripe",
           store.get_user_by_id(_i1["_id"])["stripe_subscription_id"] == "sub_dupla")
+    store.update_user(_i1["_id"], {"subscription_status": "canceled", "plan": "free"})
+    A.app.test_client().post("/webhook/revenuecat", headers={"Authorization": "Bearer segredo-de-teste-123"},
+                             json={"event": {"type": "RENEWAL", "id": f"teste-suite-{_suf_in}-ren2",
+                                             "app_user_id": _i1["_id"], "store": "APP_STORE", "environment": "PRODUCTION"}})
+    check("...mas apaga o id de assinatura da Stripe ja encerrada (senao seguraria o Pro para sempre)",
+          store.get_user_by_id(_i1["_id"])["stripe_subscription_id"] is None
+          and store.get_user_by_id(_i1["_id"])["plan"] == "pro")
     store.update_user(_i1["_id"], {"stripe_customer_id": None, "stripe_subscription_id": None,
                                    "subscription_status": "indicacao"})
     # TRANSFER: quem perde a assinatura da loja mas tem pre-pago vigente continua Pro.

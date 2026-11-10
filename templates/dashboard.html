@@ -26,7 +26,7 @@
       <div class="stat-card">
         <div class="stat-icon stat-icon-blue"><i class="bi bi-receipt"></i></div>
         <div class="stat-body">
-          <div class="stat-value">{{ receipts|length }}</div>
+          <div class="stat-value">{{ total_recibos }}</div>
           <div class="stat-label">Total de recibos</div>
         </div>
       </div>
@@ -313,7 +313,7 @@
     <div class="danger-body">
       <p class="danger-text">
         A exclusão é <strong>imediata e definitiva</strong>. Removemos seu cadastro e
-        <strong>todos os {{ receipts|length }} recibo(s)</strong> da sua conta — inclusive os
+        <strong>todos os {{ total_recibos }} recibo(s)</strong> da sua conta — inclusive os
         links já enviados a passageiros, que deixarão de funcionar.
         {% if assina_na_loja %}Sua assinatura é pela App Store ou pelo Google Play: cancele lá antes, senão a cobrança continua e a conta não é excluída.{% elif prepago %}Os dias de Pro que você ainda tem também se perdem.{% elif user_plan != 'free' %}Sua assinatura {{ user_plan|capitalize }} também será cancelada.{% endif %}
         Não é possível desfazer.

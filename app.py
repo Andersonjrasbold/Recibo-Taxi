@@ -879,11 +879,51 @@ def registrar_acesso(driver_id: str, canal: str) -> None:
         app.logger.warning("registro de acesso não gravado (migração 0016 aplicada?): %s", exc)
 
 
+def _chaves_de_login(email: str) -> list[tuple[str, int]]:
+    """Contadores de FALHAS de login do dia. O par conta+IP é o que segura força
+    bruta sem deixar um estranho trancar a conta de alguém só com o e-mail;
+    o teto por conta sozinha, bem mais largo, é a rede de segurança."""
+    dia = today_br()
+    h = chave_de_contador(email)
+    return [(f"login:ei:{h}:{client_ip()}:{dia}", LOGIN_DAILY_LIMIT_EMAIL),
+            (f"login:e:{h}:{dia}", LOGIN_DAILY_LIMIT_EMAIL * 5),
+            (f"login:ip:{client_ip()}:{dia}", LOGIN_DAILY_LIMIT_IP)]
+
+
 def login_bloqueado(email: str) -> bool:
-    """Tetos diários de tentativas de login, por conta e por IP."""
-    por_email = passou_do_teto("login:e", chave_de_contador(email), LOGIN_DAILY_LIMIT_EMAIL) if email else False
-    por_ip = passou_do_teto("login:ip", client_ip(), LOGIN_DAILY_LIMIT_IP)
-    return por_email or por_ip
+    """Já passou do teto de falhas hoje? Só lê; quem soma é registrar_falha_de_login."""
+    if not email:
+        return False
+    try:
+        store = get_store()
+        return any(store.get_counter(chave) >= limite for chave, limite in _chaves_de_login(email))
+    except Exception as exc:
+        app.logger.warning("teto de login indisponível: %s", exc)
+        return False
+
+
+def registrar_falha_de_login(email: str) -> None:
+    if not email:
+        return
+    try:
+        store = get_store()
+        for chave, _ in _chaves_de_login(email):
+            store.bump_counter(chave)
+    except Exception as exc:
+        app.logger.warning("contador de login indisponível: %s", exc)
+
+
+def zerar_falhas_de_login(email: str) -> None:
+    """Login certo ou senha redefinida: a conta volta a ter o dia inteiro.
+    O contador do IP fica: um login certo não pode limpar a força bruta de
+    um endereço contra outras contas."""
+    try:
+        store = get_store()
+        for chave, _ in _chaves_de_login(email):
+            if not chave.startswith("login:ip:"):
+                store.reset_counter(chave)
+    except Exception as exc:
+        app.logger.warning("contador de login indisponível: %s", exc)
 
 
 def pode_pedir_redefinicao(email: str) -> bool:
@@ -1441,6 +1481,11 @@ class PostgresStore:
         with self.pool.connection() as conn:
             conn.execute("delete from public.rate_limits where key = %s", (key,))
 
+    def get_counter(self, key: str) -> int:
+        with self.pool.connection() as conn:
+            linha = conn.execute("select count from public.rate_limits where key = %s", (key,)).fetchone()
+        return int(linha["count"]) if linha else 0
+
     def registrar_acesso(self, driver_id: str, ip: str, canal: str) -> None:
         """Data, hora e IP de um acesso (migração 0016). Sem FK: o registro
         sobrevive à exclusão da conta pelos 6 meses que a lei pede."""
@@ -1635,7 +1680,11 @@ def _auth_recusou_credencial(exc: Exception) -> bool:
         return False
     status = getattr(exc, "status", None)
     try:
-        return status is not None and 400 <= int(status) < 500
+        # 429 é o teto do próprio GoTrue, compartilhado por todos os motoristas
+        # porque as chamadas saem dos IPs da Vercel: é indisponibilidade, não
+        # credencial errada. Só os códigos que o GoTrue usa para token ou senha
+        # inválidos contam como recusa.
+        return status is not None and int(status) in (400, 401, 403, 404, 422)
     except (TypeError, ValueError):
         return False
 
@@ -2209,8 +2258,10 @@ def login():
         user_id = auth_conferir_senha(email, password)
         user = get_store().get_user_by_id(user_id) if user_id else None
         if not user:
+            registrar_falha_de_login(email)
             flash("E-mail ou senha inválidos.", "danger")
             return render_template("login.html", form=request.form), 401
+        zerar_falhas_de_login(email)
         session["user_id"] = user["_id"]
         session["pw_stamp"] = user.get("password_changed_at") or ""
         registrar_acesso(user["_id"], "site")
@@ -2313,6 +2364,7 @@ def cadastro():
         }, "site")
         session["user_id"] = user_id
         session["pw_stamp"] = ""
+        registrar_acesso(user_id, "site_cadastro")
         plano = plano_pedido(request.form.get("plano", ""))
         novo = get_store().get_user_by_id(user_id) if plano else None
         if novo:
@@ -2382,6 +2434,7 @@ def redefinir_senha(token: str):
         # as outras sessões e invalida este mesmo token.
         auth_definir_senha(user["_id"], password)
         get_store().update_user(user["_id"], {"password_changed_at": now_iso()})
+        zerar_falhas_de_login(user["email"])  # a saída prometida pelo 429
         session.clear()
         flash("Senha redefinida! Entre com a nova senha.", "success")
         return redirect(url_for("login"))
@@ -2425,7 +2478,15 @@ def perfil():
             flash(str(exc), "danger")
             return render_template("perfil.html", form=request.form), 400
 
+        # Mesma regra do cadastro; conta antiga com CPF errado só é cobrada quando mexer nele.
+        if pais == PAIS_PADRAO and cpf != (g.user.get("cpf") or "") and not cpf_valido(cpf):
+            flash("Confira o CPF: os dígitos não conferem.", "danger")
+            return render_template("perfil.html", form=request.form), 400
+
         if email != g.user["email"]:
+            if not email_valido(email):
+                flash("Confira o e-mail: ele não parece válido.", "danger")
+                return render_template("perfil.html", form=request.form), 400
             existente = get_store().get_user_by_email(email)
             if existente and existente["_id"] != g.user["_id"]:
                 flash("Já existe uma conta com este e-mail.", "danger")
@@ -2544,6 +2605,7 @@ def dashboard():
     # reenviar o recibo que o passageiro perdeu); os outros continuam guardados
     # e os links públicos continuam abrindo.
     recibos_anteriores = len(receipts) - receipts_this_month
+    total_recibos = len(receipts)
     if historico_limitado_ao_mes(g.user):
         receipts = [r for r in receipts if month_start <= r.get("created_at", "") < month_end]
 
@@ -2570,6 +2632,7 @@ def dashboard():
         receipts=receipts,
         receipts_this_month=receipts_this_month,
         recibos_anteriores=recibos_anteriores,
+        total_recibos=total_recibos,
         historico_limitado=historico_limitado_ao_mes(g.user),
         historico_gratis_desde=HISTORICO_GRATIS_DESDE,
         today=today_br(),
@@ -3329,9 +3392,12 @@ def stripe_webhook():
                 store.update_user(user["_id"], {"subscription_status": status_prepago_ao_encerrar(user)})
                 resultado = f"mantido_prepago ({status})"
             else:
+                # Assinatura encerrada: o id sai junto, para não parecer viva
+                # depois (pro_vem_da_stripe olha só a presença do id).
                 store.update_user(user["_id"], {
                     "plan": "free",
                     "subscription_status": status,
+                    "stripe_subscription_id": None,
                 })
                 resultado = f"free ({status})"
 
@@ -3369,12 +3435,14 @@ def api_login():
                         "mensagem": "Muitas tentativas de entrar hoje. Tente amanhã ou use Esqueci minha senha."}), 429
     tokens = auth_entrar_com_token(email, str(dados.get("senha", "")))
     if not tokens:
+        registrar_falha_de_login(email)
         return jsonify({"erro": "credenciais_invalidas"}), 401
 
     usuario = get_store().get_user_by_id(tokens["user_id"])
     if not usuario:
         return jsonify({"erro": "perfil_ausente"}), 401
 
+    zerar_falhas_de_login(email)
     registrar_acesso(tokens["user_id"], "app")
     return jsonify(tokens)
 
@@ -3736,7 +3804,10 @@ def api_criar_recibo():
     if dados.get("created_at"):
         instante = _instante(str(dados["created_at"]))
         agora = datetime.now(timezone.utc)
-        if instante and agora - timedelta(days=30) <= instante <= agora + timedelta(minutes=5):
+        # Não antes do mês corrente: a cota é consumida no mês do servidor, e
+        # um recibo datado do mês passado descasaria a contagem do painel.
+        piso = max(agora - timedelta(days=30), _instante(month_range_utc()[0]) or agora)
+        if instante and piso <= instante <= agora + timedelta(minutes=5):
             receipt["created_at"] = to_utc_iso(instante)
 
     quota = None if g.user.get("plan", "free") in PAID_PLANS else FREE_MONTHLY_LIMIT
@@ -4132,11 +4203,20 @@ def pro_vem_da_stripe(usuario: dict) -> bool:
 
 
 def ativar_pro_pela_loja(user_id: str) -> None:
-    """Pro pela loja. Não apaga o id da Stripe: se a pessoa também assina pelo
-    site, um evento da loja não pode fazer o servidor esquecer essa assinatura
-    (o webhook da Stripe não a restaura e o cancelamento dela deixaria de ser
-    tratado)."""
-    get_store().update_user(user_id, {"plan": "pro", "subscription_status": "active"})
+    """Pro pela loja.
+
+    O id da Stripe só fica se a assinatura de lá estiver viva (quem assina nos
+    dois lugares não pode ter a da Stripe esquecida pelo servidor). Id de
+    assinatura já encerrada ou perdida é apagado: pro_vem_da_stripe olha só a
+    presença do id, e um id obsoleto seguraria o Pro para sempre quando a
+    loja expirasse."""
+    store = get_store()
+    usuario = store.get_user_by_id(user_id) or {}
+    updates: dict = {"plan": "pro", "subscription_status": "active"}
+    if not (usuario.get("stripe_subscription_id")
+            and usuario.get("subscription_status") in ACTIVE_SUBSCRIPTION_STATUSES):
+        updates["stripe_subscription_id"] = None
+    store.update_user(user_id, updates)
 
 
 def _registrar_rc(evento: dict, outcome: str, *, driver_id: str | None = None,
@@ -4229,15 +4309,29 @@ def webhook_revenuecat():
     evento = evento if isinstance(evento, dict) else {}
     tipo = str(evento.get("type", ""))
 
-    # Compra de teste (TestFlight, teste interno do Play) não vira Pro de
-    # verdade, a não ser para as contas de teste listadas em RC_SANDBOX_PERMITIDOS.
-    if str(evento.get("environment") or "").upper() == "SANDBOX" and tipo != "TEST":
+    # Compra de teste (sandbox: TestFlight, teste interno do Play e a própria
+    # revisão da Apple) não vira Pro de verdade. Mas ignorar também não serve:
+    # o revisor da Apple compra em sandbox e precisa ver o Pro ativo na hora.
+    # Então a compra de sandbox vira Pro de cortesia só até a expiração que o
+    # próprio evento traz (assinatura de sandbox dura minutos); o cron rebaixa.
+    # As contas de teste em RC_SANDBOX_PERMITIDOS seguem o fluxo completo.
+    if str(evento.get("environment") or "").upper() == "SANDBOX" and tipo not in ("TEST", "TRANSFER"):
         usuario_sb, _ = motorista_do_evento_rc(evento)
         permitidos = {e.strip().lower() for e in os.environ.get("RC_SANDBOX_PERMITIDOS", "").split(",") if e.strip()}
         if not usuario_sb or normalize_email(usuario_sb.get("email", "")) not in permitidos:
-            _registrar_rc(evento, "ignorado: sandbox", driver_id=(usuario_sb or {}).get("_id"),
+            resultado_sb = "ignorado: sandbox"
+            if usuario_sb and tipo in RC_EVENTOS_ATIVA and not pro_vem_da_stripe(usuario_sb) \
+                    and usuario_sb.get("subscription_status") not in ACTIVE_SUBSCRIPTION_STATUSES:
+                fim_ms = evento.get("expiration_at_ms")
+                fim = datetime.fromtimestamp(int(fim_ms) / 1000, timezone.utc) if fim_ms else \
+                    datetime.now(timezone.utc) + timedelta(hours=1)
+                fim = min(fim, datetime.now(timezone.utc) + timedelta(days=1))
+                get_store().update_user(usuario_sb["_id"], {
+                    "plan": "pro", "subscription_status": "cortesia", "pro_until": to_utc_iso(fim)})
+                resultado_sb = f"sandbox: cortesia até {fim.isoformat()}"
+            _registrar_rc(evento, resultado_sb, driver_id=(usuario_sb or {}).get("_id"),
                           app_user_id=str(evento.get("app_user_id") or ""))
-            return jsonify({"ok": True, "ignorado": "sandbox"})
+            return jsonify({"ok": True, "ignorado": "sandbox", "resultado": resultado_sb})
 
     if tipo == "TRANSFER":
         return jsonify({"ok": True, "evento": tipo, "resultado": transferir_assinatura_rc(evento)})

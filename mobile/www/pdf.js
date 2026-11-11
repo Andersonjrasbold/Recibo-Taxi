@@ -42,6 +42,57 @@ function bytesLatin1(str) {
  * `qr` sao as linhas da matriz do QR ('1' = modulo escuro), que o app.js
  * monta a partir de `link`. Sem elas o PDF sai sem o QR, como antes.
  */
+// Largura do texto na Helvetica, em pontos, por classe de caractere (em
+// milesimos de em, arredondados para cima a partir da tabela da fonte):
+// maiusculas e largos ~0,72, minusculas ~0,56, digitos 0,56, estreitos
+// (i l j t f . , : ; ' | ! espaco) ~0,30. Era uma media unica de 0,56 e um
+// endereco em CAIXA ALTA (habito comum) passava da margem direita.
+const LARGURA_UTIL = 483;   // entre as margens (56 a 539)
+function larguraDe(texto, tam) {
+  let em = 0;
+  for (const ch of String(texto)) {
+    if (/[ijlt f.,:;'|!]/.test(ch) || ch === ' ') em += 0.30;
+    else if (/[A-ZÀ-ÖØ-Þ@%&]/.test(ch) || ch === 'm' || ch === 'w' || ch === 'W' || ch === 'M') em += 0.72;
+    else em += 0.56;
+  }
+  return em * tam;
+}
+const cabeNaLinha = (texto, tam) => larguraDe(texto, tam) <= LARGURA_UTIL;
+
+/** Quebra em linhas por palavra; com `maximo` linhas, a ultima leva "…". */
+function quebrarLinhas(texto, tam, maximo = Infinity) {
+  const palavras = String(texto || '').split(/\s+/).filter(Boolean);
+  const linhas = [];
+  let atual = '';
+  // Palavra maior que a linha (um link sem espacos): parte onde couber.
+  const partir = (palavra) => {
+    const pedacos = [];
+    let pedaco = '';
+    for (const ch of palavra) {
+      if (pedaco && !cabeNaLinha(pedaco + ch, tam)) { pedacos.push(pedaco); pedaco = ''; }
+      pedaco += ch;
+    }
+    if (pedaco) pedacos.push(pedaco);
+    return pedacos;
+  };
+  for (const palavra of palavras) {
+    for (const pedaco of (cabeNaLinha(palavra, tam) ? [palavra] : partir(palavra))) {
+      const tentativa = atual ? `${atual} ${pedaco}` : pedaco;
+      if (cabeNaLinha(tentativa, tam)) { atual = tentativa; continue; }
+      if (atual) linhas.push(atual);
+      atual = pedaco;
+    }
+  }
+  if (atual) linhas.push(atual);
+  if (linhas.length > maximo) {
+    let ultima = linhas[maximo - 1];
+    linhas.length = maximo;
+    while (ultima && !cabeNaLinha(ultima + '…', tam)) ultima = ultima.slice(0, -1);
+    linhas[maximo - 1] = ultima.replace(/\s+$/, '') + '…';
+  }
+  return linhas.length ? linhas : [''];
+}
+
 function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   const d = recibo.dados, m = recibo.motorista || {};
   const L = 56;              // margem esquerda
@@ -51,6 +102,12 @@ function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   const texto = (t, { fonte = 'F1', tam = 11, dx = 0, dy = 18 } = {}) => {
     y -= dy;
     linhas.push(`BT /${fonte} ${tam} Tf ${L + dx} ${y} Td (${escaparPdf(t)}) Tj ET`);
+  };
+  // Texto que pode passar da margem: a primeira linha desce `dy`, as outras
+  // `entre`. Com `maximo`, o que nao coube termina em "…" — a pagina do
+  // recibo online tem o texto inteiro, e o rodape nao pode invadir o QR.
+  const paragrafo = (t, { tam = 12, dy = 14, entre = 13, maximo = 2, fonte = 'F1' } = {}) => {
+    quebrarLinhas(t, tam, maximo).forEach((linha, i) => texto(linha, { fonte, tam, dy: i ? entre : dy }));
   };
   const regua = () => { y -= 10; linhas.push(`${L} ${y} m 539 ${y} l S`); };
 
@@ -97,13 +154,13 @@ function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   y -= 6;
   for (const [rotulo, valor] of campos) {
     texto(rotulo.toUpperCase(), { fonte: 'F2', tam: 8, dy: 20 });
-    texto(String(valor || '-'), { tam: 12, dy: 14 });
+    paragrafo(String(valor || '-'));
   }
 
   regua();
   texto('MOTORISTA', { fonte: 'F2', tam: 8, dy: 22 });
-  texto(m.full_name || '-', { tam: 12, dy: 14 });
-  texto(`Placa ${m.plate || '-'}${m.city ? ' - ' + m.city : ''}`, { tam: 10, dy: 14 });
+  paragrafo(m.full_name || '-', { maximo: 1 });
+  paragrafo(`Placa ${m.plate || '-'}${m.city ? ' - ' + m.city : ''}`, { tam: 10, maximo: 1 });
   if (m.license_number) texto(`Alvará ${m.license_number}`, { tam: 10, dy: 13 });
   if (m.whatsapp) texto(`WhatsApp ${m.whatsapp}`, { tam: 10, dy: 13 });
 
@@ -133,7 +190,10 @@ function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
       }
     });
     linhas.push(`q 0 g ${quadrados.join(' ')} f Q`);
-    y = 164;
+    // A legenda fica a esquerda do QR, em altura fixa — a menos que o texto
+    // de cima (campos longos em duas linhas) ja tenha chegado ali: entao
+    // desce junto. O rodape em y=70 continua folgado.
+    y = Math.min(164, y - 14);
     texto('Aponte a câmera do celular', { fonte: 'F2', tam: 10, dy: 14 });
     texto('para abrir este recibo online:', { tam: 10, dy: 14 });
     if (link) texto(link, { tam: 8, dy: 14 });

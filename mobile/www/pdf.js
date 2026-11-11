@@ -42,6 +42,38 @@ function bytesLatin1(str) {
  * `qr` sao as linhas da matriz do QR ('1' = modulo escuro), que o app.js
  * monta a partir de `link`. Sem elas o PDF sai sem o QR, como antes.
  */
+// Quantos caracteres cabem numa linha da Helvetica no tamanho dado, entre as
+// margens (483 pt). Sem a tabela de larguras da fonte, usa a media larga
+// (0,56 em): sobra um pouco de margem em texto comum e nao estoura com
+// maiusculas. Era assim que um endereco longo saia da pagina pela direita.
+const LARGURA_UTIL = 483;
+const caracteresPorLinha = (tam) => Math.floor(LARGURA_UTIL / (tam * 0.56));
+
+/** Quebra em linhas por palavra; com `maximo` linhas, a ultima leva "…". */
+function quebrarLinhas(texto, tam, maximo = Infinity) {
+  const cabem = caracteresPorLinha(tam);
+  const palavras = String(texto || '').split(/\s+/).filter(Boolean);
+  const linhas = [];
+  let atual = '';
+  for (const palavra of palavras) {
+    // Palavra maior que a linha (um link sem espacos): parte no tamanho.
+    const pedacos = palavra.length > cabem ? palavra.match(new RegExp(`.{1,${cabem}}`, 'g')) : [palavra];
+    for (const pedaco of pedacos) {
+      const tentativa = atual ? `${atual} ${pedaco}` : pedaco;
+      if (tentativa.length <= cabem) { atual = tentativa; continue; }
+      if (atual) linhas.push(atual);
+      atual = pedaco;
+    }
+  }
+  if (atual) linhas.push(atual);
+  if (linhas.length > maximo) {
+    const ultima = linhas[maximo - 1];
+    linhas.length = maximo;
+    linhas[maximo - 1] = ultima.slice(0, Math.max(0, cabem - 1)).replace(/\s+$/, '') + '…';
+  }
+  return linhas.length ? linhas : [''];
+}
+
 function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   const d = recibo.dados, m = recibo.motorista || {};
   const L = 56;              // margem esquerda
@@ -51,6 +83,12 @@ function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   const texto = (t, { fonte = 'F1', tam = 11, dx = 0, dy = 18 } = {}) => {
     y -= dy;
     linhas.push(`BT /${fonte} ${tam} Tf ${L + dx} ${y} Td (${escaparPdf(t)}) Tj ET`);
+  };
+  // Texto que pode passar da margem: a primeira linha desce `dy`, as outras
+  // `entre`. Com `maximo`, o que nao coube termina em "…" — a pagina do
+  // recibo online tem o texto inteiro, e o rodape nao pode invadir o QR.
+  const paragrafo = (t, { tam = 12, dy = 14, entre = 13, maximo = 2, fonte = 'F1' } = {}) => {
+    quebrarLinhas(t, tam, maximo).forEach((linha, i) => texto(linha, { fonte, tam, dy: i ? entre : dy }));
   };
   const regua = () => { y -= 10; linhas.push(`${L} ${y} m 539 ${y} l S`); };
 
@@ -97,13 +135,13 @@ function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   y -= 6;
   for (const [rotulo, valor] of campos) {
     texto(rotulo.toUpperCase(), { fonte: 'F2', tam: 8, dy: 20 });
-    texto(String(valor || '-'), { tam: 12, dy: 14 });
+    paragrafo(String(valor || '-'));
   }
 
   regua();
   texto('MOTORISTA', { fonte: 'F2', tam: 8, dy: 22 });
-  texto(m.full_name || '-', { tam: 12, dy: 14 });
-  texto(`Placa ${m.plate || '-'}${m.city ? ' - ' + m.city : ''}`, { tam: 10, dy: 14 });
+  paragrafo(m.full_name || '-', { maximo: 1 });
+  paragrafo(`Placa ${m.plate || '-'}${m.city ? ' - ' + m.city : ''}`, { tam: 10, maximo: 1 });
   if (m.license_number) texto(`Alvará ${m.license_number}`, { tam: 10, dy: 13 });
   if (m.whatsapp) texto(`WhatsApp ${m.whatsapp}`, { tam: 10, dy: 13 });
 

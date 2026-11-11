@@ -13,6 +13,7 @@
 # Precisa da chave de API da App Store Connect com papel Admin, em
 # ~/Credenciais/Recibo-Taxi/apple/. Ver mobile/CAPACITOR.md.
 set -e
+set -o pipefail   # o `| tail` escondia a falha do xcodebuild e o script seguia para o envio
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 SAIDA="${TMPDIR:-/tmp}/recibo-taxi-build"
 CHAVE="$HOME/Credenciais/Recibo-Taxi/apple/AuthKey_Z53W4BVFVV.p8"

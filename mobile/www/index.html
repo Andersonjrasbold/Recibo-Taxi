@@ -36,8 +36,8 @@
         <button id="btn-indicar" class="menu-item">Indicar um colega</button>
         <button id="btn-historico" class="menu-item">Ver histórico</button>
         <button id="btn-tarifa" class="menu-item">Tarifa da cidade</button>
-        <a href="https://recibo-taxi.vercel.app/privacidade" class="menu-item">Política de Privacidade</a>
-        <a href="https://recibo-taxi.vercel.app/termos" class="menu-item">Termos de Uso</a>
+        <a href="https://www.recibotaxi.com.br/privacidade" class="menu-item">Política de Privacidade</a>
+        <a href="https://www.recibotaxi.com.br/termos" class="menu-item">Termos de Uso</a>
         <button id="btn-sair" class="menu-item menu-item-saida">Sair</button>
         <button id="btn-excluir-conta" class="menu-item menu-item-saida">Excluir minha conta</button>
       </div>
@@ -150,9 +150,9 @@
     <p id="erro-cadastro" class="erro" hidden></p>
     <p class="ajuda" style="margin-top:1rem">
       Ao criar a conta você concorda com os
-      <a href="https://recibo-taxi.vercel.app/termos" class="ligacao">Termos de Uso</a>
+      <a href="https://www.recibotaxi.com.br/termos" class="ligacao">Termos de Uso</a>
       e a
-      <a href="https://recibo-taxi.vercel.app/privacidade" class="ligacao">Política de Privacidade</a>.
+      <a href="https://www.recibotaxi.com.br/privacidade" class="ligacao">Política de Privacidade</a>.
     </p>
   </form>
 </section>
@@ -441,14 +441,6 @@
     <a id="link-gerenciar" href="#" class="ligacao" hidden>Gerenciar assinatura</a>
   </div>
 
-  <!-- Desconto de indicacao, pela loja: codigo de oferta na Apple, oferta do
-       plano no Google. So aparece para quem o servidor diz que ganhou. -->
-  <div id="cupom-pro" class="aviso cupom-pro" hidden>
-    <span id="cupom-pro-texto"></span>
-    <strong id="cupom-pro-codigo" class="codigo-indicacao"></strong>
-    <button type="button" id="btn-resgatar-cupom" class="secundario" hidden>Resgatar o código na App Store</button>
-  </div>
-
   <!-- O preco de cada opcao vem da loja quando a tela abre. O anual so aparece
        se a loja o devolveu; o mensal tem o valor de sempre como reserva. -->
   <div id="planos-pro" class="planos-pro" role="radiogroup" aria-label="Escolha o plano">
@@ -467,7 +459,7 @@
   <div class="cartao-pro">
     <ul class="lista-pro">
       <li>Recibos ilimitados</li>
-      <li>Histórico completo e permanente</li>
+      <li>Histórico de todos os meses no painel do site</li>
       <li>Compartilhar por WhatsApp e e-mail</li>
       <li>Suporte por e-mail</li>
     </ul>
@@ -482,16 +474,16 @@
     quando quiser pelos Ajustes do aparelho, até 24 h antes da próxima cobrança.
   </p>
   <p class="ajuda">
-    <a href="https://recibo-taxi.vercel.app/termos" class="ligacao">Termos de Uso</a>
+    <a href="https://www.recibotaxi.com.br/termos" class="ligacao">Termos de Uso</a>
     ·
-    <a href="https://recibo-taxi.vercel.app/privacidade" class="ligacao">Política de Privacidade</a>
+    <a href="https://www.recibotaxi.com.br/privacidade" class="ligacao">Política de Privacidade</a>
   </p>
 </section>
 
 <!-- ── Indicar ─────────────────────────────────────────────────────────── -->
-<!-- So o mes de Pro aparece aqui. O cupom de 70% do site NAO e citado no app
-     nem ha link para a pagina do site: seria levar o motorista a comprar fora
-     da loja, o que a Apple recusa (3.1.1). -->
+<!-- So o mes de Pro aparece aqui. Nao ha link para a pagina de planos do
+     site: seria levar o motorista a comprar fora da loja, o que a Apple recusa
+     (3.1.1). O desconto de 70% acabou em 2026-11-10. -->
 <section id="tela-indicar" class="tela" hidden>
   <div class="cabecalho-tela">
     <h1>Indique um colega</h1>
@@ -517,8 +509,7 @@
       <li>O colega informa o código ao criar a conta.</li>
       <li>A recompensa libera no primeiro recibo dele, não no cadastro.</li>
       <li>Os meses somam: quem já tem Pro de indicação ganha mais 30 dias no fim do prazo.</li>
-      <li>O desconto aparece na tela do Pro, para assinar o plano mensal. Vale uma vez.</li>
-      <li>Quem já assina o Pro não recebe o mês grátis; o desconto fica guardado.</li>
+      <li>Quem já assina o Pro não recebe o mês grátis.</li>
     </ul>
   </div>
 </section>

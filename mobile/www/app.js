@@ -10,6 +10,11 @@ const API = (location.protocol === 'capacitor:' || location.hostname === 'localh
   ? 'https://recibo-taxi.vercel.app'
   : '';
 
+// Endereco que o passageiro ve: no QR, no WhatsApp e no PDF. E o dominio
+// proprio, nao o da API — o mesmo site responde nos dois, e o link que
+// circula tem de ser o da marca (e o que o canonical do site aponta).
+const SITE = 'https://www.recibotaxi.com.br';
+
 const RID_TAMANHO = 14;
 
 // Plugins nativos do Capacitor. No navegador não existem, e tudo tem
@@ -71,7 +76,7 @@ async function salvarRecibo(recibo) {
   });
 }
 
-async function listarRecibos() {
+async function todosOsRecibos() {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
     const req = db.transaction('recibos', 'readonly').objectStore('recibos').getAll();
@@ -80,16 +85,42 @@ async function listarRecibos() {
   });
 }
 
+// Cada recibo leva o dono (id do motorista; o e-mail antes da primeira
+// /api/sessao). Dois motoristas no mesmo aparelho: "Sair" nao apaga a fila
+// de proposito, e sem o dono a fila de quem saiu subia na conta de quem
+// entrou depois, e o historico misturava os dois. Recibo sem dono e de
+// antes desta versao: fica com quem estiver na conta e e marcado de vez.
+const identidades = () => [Guardado.get('motorista_id'), (Guardado.get('motorista') || {}).email]
+  .filter(Boolean).map(String);
+const ehMeu = (r) => !r.dono || identidades().includes(r.dono);
+
+async function listarRecibos() {
+  return (await todosOsRecibos()).filter(ehMeu);
+}
+
 const pendentes = async () => (await listarRecibos()).filter((r) => r.pendente);
 
-// Usada so na exclusao de conta. "Sair" NAO apaga nada de proposito: o logout
-// tambem acontece sozinho quando a sessao morre, e ali apagar destruiria a
-// fila de recibos que ainda nao subiram.
+// Recibo sem dono (versao anterior) ou com o e-mail como dono ganha o id do
+// motorista assim que ele existe: o id nao muda, o e-mail pode.
+async function marcarDonoDosRecibos() {
+  const id = Guardado.get('motorista_id');
+  if (!id) return;
+  for (const r of await todosOsRecibos()) {
+    if (ehMeu(r) && r.dono !== String(id)) await salvarRecibo({ ...r, dono: String(id) });
+  }
+}
+
+// Usada so na exclusao de conta, e so nos recibos de quem esta excluindo:
+// os do outro motorista do mesmo aparelho ficam. "Sair" NAO apaga nada de
+// proposito: o logout tambem acontece sozinho quando a sessao morre, e ali
+// apagar destruiria a fila de recibos que ainda nao subiram.
 async function limparRecibosLocais() {
+  const meus = await listarRecibos();
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
     const tx = db.transaction('recibos', 'readwrite');
-    tx.objectStore('recibos').clear();
+    const loja = tx.objectStore('recibos');
+    meus.forEach((r) => loja.delete(r.rid));
     tx.oncomplete = () => ok();
     tx.onerror = () => falha(tx.error);
   });
@@ -114,8 +145,13 @@ const tokenRenovacao = () => Guardado.get('refresh_token');
 // funcionar. So o botao "Sair", manual, destravava.
 let renovando = null;      // uma renovacao por vez, mesmo com varios 401 juntos
 
+// Tres respostas, e nao duas: 'renovada', 'morta' (o servidor recusou o
+// refresh token: 401) e 'indisponivel' (rede caida, 429, 5xx). Antes,
+// qualquer falha valia "morta", e um Supabase fora do ar por um minuto
+// derrubava a sessao de todo mundo — com a fila de recibos presa atras do
+// login. Sessao so morre quando o servidor diz que morreu.
 async function renovarSessao() {
-  if (!tokenRenovacao()) return false;
+  if (!tokenRenovacao()) return 'morta';
   if (!renovando) {
     renovando = (async () => {
       try {
@@ -124,13 +160,15 @@ async function renovarSessao() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refresh_token: tokenRenovacao() }),
         });
-        if (!resp.ok) return false;         // sessao morreu de vez
+        if (resp.status === 401 || resp.status === 403) return 'morta';
+        if (!resp.ok) return 'indisponivel';
         const t = await resp.json();
+        if (!t.access_token || !t.refresh_token) return 'indisponivel';
         Guardado.set('access_token', t.access_token);
         Guardado.set('refresh_token', t.refresh_token);
-        return true;
+        return 'renovada';
       } catch {
-        return false;   // sem rede nao e sessao invalida; tenta de novo depois
+        return 'indisponivel';   // sem rede nao e sessao invalida; tenta de novo depois
       } finally {
         renovando = null;
       }
@@ -138,6 +176,12 @@ async function renovarSessao() {
   }
   return renovando;
 }
+
+// Resposta inventada para "nao deu para renovar agora": quem chamou ve um
+// 503, igual ao que o servidor manda quando o login esta fora do ar, e nao
+// o 401 que o faria encerrar a sessao.
+const respostaIndisponivel = () => new Response(JSON.stringify({ erro: 'indisponivel' }),
+  { status: 503, headers: { 'Content-Type': 'application/json' } });
 
 async function api(caminho, opcoes = {}) {
   const enviar = () => fetch(API + caminho, {
@@ -151,7 +195,9 @@ async function api(caminho, opcoes = {}) {
   let resp = await enviar();
   // 401 quase sempre e so token vencido. Renova por baixo e repete uma vez.
   if (resp.status === 401 && caminho !== '/api/refresh' && tokenRenovacao()) {
-    if (await renovarSessao()) resp = await enviar();
+    const renovacao = await renovarSessao();
+    if (renovacao === 'renovada') resp = await enviar();
+    else if (renovacao === 'indisponivel') resp = respostaIndisponivel();
   }
   return resp;
 }
@@ -166,6 +212,7 @@ async function sincronizar() {
   }
 
   let enviados = 0;
+  let avisouLimite = false;
   // Do mais antigo para o mais novo: se a cota do mes acabar no meio da fila,
   // quem fica de fora e o recibo mais recente, nao o que o passageiro ja
   // espera desde antes. Aconteceu ao contrario num teste: o ultimo emitido
@@ -182,21 +229,33 @@ async function sincronizar() {
         await salvarRecibo({ ...recibo, pendente: false, url: corpo.url });
         enviados++;
       } else if (resp.status === 402) {
-        // Cota do mês acabou: para de tentar, senão fica em laço.
+        // Cota do mês acabou: marca e segue para o proximo, que o servidor
+        // decide (um reenvio de rid ja gravado sobe mesmo sem cota). A tela do
+        // Pro abre uma vez por passada, nao uma por recibo.
+        const corpo = await resp.json().catch(() => ({}));
         await salvarRecibo({ ...recibo, pendente: false, recusado: 'limite_mensal' });
-        const limite = Guardado.get('limite');
-        // Vindo da tela do recibo, "Agora não" volta para ela: e la que esta o
-        // aviso de que este recibo ficou sem QR.
-        if (!$('tela-recibo').hidden) voltarDaAssinaturaParaRecibo = true;
-        abrirAssinatura(
-          `Você usou os ${limite ?? ''} recibos deste mês do plano Grátis: o recibo novo ` +
-          'ficou sem link e sem QR para o passageiro. O Pro libera recibos ilimitados.');
+        // O limite vem na resposta: quem acabou de perder o Pro ainda tinha
+        // "ilimitado" guardado, e a frase saia sem numero.
+        const limite = corpo.limite ?? Guardado.get('limite') ?? '';
+        if (!avisouLimite) {
+          avisouLimite = true;
+          // Vindo da tela do recibo, "Agora não" volta para ela: e la que esta o
+          // aviso de que este recibo ficou sem QR.
+          if (!$('tela-recibo').hidden) voltarDaAssinaturaParaRecibo = true;
+          abrirAssinatura(
+            `Você usou os ${limite} recibos deste mês do plano Grátis: o recibo novo ` +
+            'ficou sem link e sem QR para o passageiro. O Pro libera recibos ilimitados.');
+        }
       } else if (resp.status === 400 || resp.status === 409) {
         await salvarRecibo({ ...recibo, pendente: false, recusado: (await resp.json()).erro });
       } else if (resp.status === 401) {
         // O api() ja tentou renovar. Chegar aqui e sessao morta de verdade —
         // seguir em silencio deixaria a fila crescendo para sempre.
         encerrarSessao();
+        break;
+      } else if (resp.status === 429 || resp.status >= 500) {
+        // Servidor fora do ar ou pedindo calma: os outros da fila levariam a
+        // mesma resposta. Ficam pendentes para a proxima passada.
         break;
       }
     } catch {
@@ -556,11 +615,12 @@ async function esperarSubir(rid) {
 // O rid nasce no aparelho e a URL publica e deterministica a partir dele.
 // Esperar o servidor devolver o endereco criava uma corrida perdida: o
 // motorista toca em enviar antes da sincronizacao terminar, e a mensagem sai
-// sem link. Usa o endereco que o servidor mandou quando ja chegou; senao,
-// monta o mesmo endereco aqui. A base sai do proprio API para nao divergir do
-// lugar onde o recibo e gravado.
+// sem link. Monta sempre o mesmo endereco, no dominio proprio: o QR mostrado
+// antes de o recibo subir e o link de depois sao iguais, e o endereco que o
+// servidor devolve (que depende de uma variavel dele) nao muda o que o
+// passageiro ja recebeu.
 function linkDoRecibo(recibo) {
-  return recibo.url || `${API || location.origin}/recibo/${recibo.rid}`;
+  return `${SITE}/recibo/${recibo.rid}`;
 }
 
 // O QR leva ao recibo online. E o caminho de quem nao deu telefone nem
@@ -955,8 +1015,35 @@ function horarioDe(d) {
   return '';
 }
 
+// Moedas em que uma corrida passa de cem mil (normalize_money, no servidor):
+// o teto de cada uma e o mesmo de la.
+const MOEDAS_GRANDES = ['ARS', 'CLP', 'COP', 'CRC', 'PYG', 'VES'];
+const tetoDoValor = (moeda) => (MOEDAS_GRANDES.includes(moeda) ? 99999999.99 : 99999.99);
+
+// Mesmas regras do servidor (normalize_money), aplicadas ANTES de guardar.
+// O recibo nasce no aparelho, com QR, e ia para a fila como estava: um valor
+// que o servidor recusa ficava recusado para sempre, sem como editar, com o
+// passageiro ja de posse de um link que nunca abriria. Devolve o motivo em
+// palavras, ou '' quando o valor serve.
+function motivoValorInvalido(texto, moeda = moedaAtual().codigo) {
+  const bruto = String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
+  if (!bruto) return 'Informe o valor da corrida.';
+  const limpo = separadoresDoValor(bruto);
+  if (!/^\d+(\.\d+)?$/.test(limpo)) return 'Valor: só o número, ex.: 45,00.';
+  const n = Number(limpo);
+  if (!(n > 0)) return 'O valor precisa ser maior que zero.';
+  if (n > tetoDoValor(moeda)) return 'Valor acima do limite para um recibo de corrida.';
+  return '';
+}
+
+// Dois toques seguidos em "Gerar recibo" (o aparelho engasga, o motorista
+// insiste) geravam dois recibos iguais, com rids diferentes: dois na fila,
+// dois na cota, dois QR. A trava solta quando a tela do recibo ja abriu.
+let emitindo = false;
+
 $('form-recibo').addEventListener('submit', async (ev) => {
   ev.preventDefault();
+  if (emitindo) return;
   const erroRecibo = $('erro-recibo');
   erroRecibo.hidden = true;
   const km = kmNormalizado($('km').value);
@@ -967,14 +1054,30 @@ $('form-recibo').addEventListener('submit', async (ev) => {
     return;
   }
   const valor = $('valor').value.trim();
+  const motivoValor = motivoValorInvalido(valor);
+  if (motivoValor) {
+    erroRecibo.textContent = motivoValor;
+    erroRecibo.hidden = false;
+    $('valor').focus();
+    return;
+  }
+  emitindo = true;
   const rid = novoRid();
+  const criadoEm = new Date().toISOString();
   const recibo = {
     rid,
-    criado_em: new Date().toISOString(),
+    criado_em: criadoEm,
     pendente: true,
+    // Quem emitiu: a fila e o historico sao deste motorista, mesmo que outro
+    // entre no mesmo aparelho depois (ver ehMeu).
+    dono: donoAtual(),
     motorista: Guardado.get('motorista') || {},
     dados: {
       rid,
+      // Hora em que o recibo nasceu, para o servidor gravar a data certa num
+      // recibo emitido sem sinal e enviado dias depois. O servidor so aceita
+      // dentro do mes corrente; fora disso vale a hora dele.
+      created_at: criadoEm,
       passageiro: $('passageiro').value.trim(),
       data: $('data').value,
       hora: $('hora').value,
@@ -1003,7 +1106,14 @@ $('form-recibo').addEventListener('submit', async (ev) => {
     },
   };
 
-  await salvarRecibo(recibo);        // primeiro guarda, depois tenta enviar
+  try {
+    await salvarRecibo(recibo);        // primeiro guarda, depois tenta enviar
+  } catch (e) {
+    emitindo = false;
+    erroRecibo.textContent = 'Não foi possível guardar o recibo no aparelho. Tente de novo.';
+    erroRecibo.hidden = false;
+    return;
+  }
   vibrar('HEAVY');
   $('form-recibo').reset();
   atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
@@ -1013,6 +1123,7 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
   abrirRecibo(recibo);
+  emitindo = false;
 
   await esperarSubir(rid);
   await atualizarAvisoFila();
@@ -1115,14 +1226,14 @@ $('btn-compartilhar').addEventListener('click', async () => {
         files: [escrito.uri],
         dialogTitle: 'Enviar recibo',
       });
-      depoisDeEntregar();
+      depoisDeEntregar(rid);
       return;
     } catch (e) {
       // PDF falhou: cai para texto puro em vez de deixar o motorista na mão.
     }
   }
 
-  if (Share) { await Share.share({ title: `Recibo #${rid}`, text: texto }); depoisDeEntregar(); return; }
+  if (Share) { await Share.share({ title: `Recibo #${rid}`, text: texto }); depoisDeEntregar(rid); return; }
   if (navigator.share) { await navigator.share({ title: `Recibo #${rid}`, text: texto }); return; }
 
   const fone = foneE164(recibo.dados.whatsapp_passageiro);
@@ -1137,6 +1248,8 @@ $('btn-compartilhar').addEventListener('click', async () => {
 // por ano e nunca no TestFlight. O app só escolhe a hora:
 //   - logo depois de o recibo ser entregue, pelo WhatsApp ou pelo PDF: o
 //     trabalho acabou, e não é a tela em que o passageiro está lendo o QR;
+//   - só se ESSE recibo foi aceito pelo servidor: um recibo recusado por
+//     limite, ou ainda na fila, é a pior hora para pedir nota;
 //   - no 3º, no 10º e no 25º recibo aceito pelo servidor, uma vez cada;
 //   - nunca com corrida aberta, e no máximo uma vez a cada 30 dias.
 // Nada em troca da nota: as duas lojas proíbem avaliação incentivada.
@@ -1146,14 +1259,18 @@ const INTERVALO_DA_AVALIACAO = 30 * 864e5;
 // passageiro no carro: aí não pede.
 const JANELA_DEPOIS_DE_ENTREGAR = 10 * 60e3;
 let entregueEm = 0;
+let entregueRid = '';
 let pedindoAvaliacao = false;
 
-async function talvezPedirAvaliacao() {
+async function talvezPedirAvaliacao(rid) {
   const loja = P().InAppReview;
   if (!nativo() || !loja || pedindoAvaliacao || corridaAtual()) return;
   pedindoAvaliacao = true;
   try {
-    const aceitos = (await listarRecibos()).filter((r) => !r.pendente && !r.recusado).length;
+    const lista = await listarRecibos();
+    const entregue = lista.find((r) => r.rid === rid);
+    if (!entregue || entregue.pendente || entregue.recusado) return;
+    const aceitos = lista.filter((r) => !r.pendente && !r.recusado).length;
     // pop(), e nao at(-1): o app roda desde o iOS 15.0, e o at() e do 15.4.
     const marco = MARCOS_DA_AVALIACAO.filter((m) => m <= aceitos).pop() || 0;
     if (marco <= (Guardado.get('avaliacao_marco') || 0)) return;
@@ -1175,21 +1292,25 @@ async function talvezPedirAvaliacao() {
 // No iPhone a folha de compartilhar abre por cima do app, sem sair dele. No
 // Android o app escolhido pode estar na frente quando a promessa resolve, e
 // aí o pedido espera a volta.
-function depoisDeEntregar() {
-  if (document.visibilityState === 'visible') talvezPedirAvaliacao();
-  else entregueEm = Date.now();
+function depoisDeEntregar(rid) {
+  if (document.visibilityState === 'visible') talvezPedirAvaliacao(rid);
+  else { entregueEm = Date.now(); entregueRid = rid; }
 }
 
 // O WhatsApp sempre tira o motorista do app: o pedido fica para a volta.
 $('btn-whats').addEventListener('click', () => {
-  if ($('btn-whats').getAttribute('href')) entregueEm = Date.now();
+  if ($('btn-whats').getAttribute('href')) {
+    entregueEm = Date.now();
+    entregueRid = $('btn-compartilhar').dataset.rid;
+  }
 });
 
 if (P().App) {
   P().App.addListener('resume', () => {
     const recente = Date.now() - entregueEm < JANELA_DEPOIS_DE_ENTREGAR;
-    entregueEm = 0;
-    if (recente) talvezPedirAvaliacao();
+    const rid = entregueRid;
+    entregueEm = 0; entregueRid = '';
+    if (recente) talvezPedirAvaliacao(rid);
   });
 }
 
@@ -1314,12 +1435,17 @@ function abrirAssinatura(motivo) {
 
   const jaAssina = assinaPeloServidor();
   $('pro-ativo').hidden = !jaAssina;
-  mostrarCupomDeIndicacao(jaAssina);
   // Pro pre-pago (anual ou mes de indicacao) tem data de fim; assinatura, nao.
+  // Quem assinou pelo site gerencia la: a loja nao conhece essa assinatura,
+  // e "Gerenciar assinatura" apontaria para uma lista vazia. Sem link para o
+  // site de proposito (Apple 3.1.1): so a explicacao.
   const fimPro = Guardado.get('pro_until');
+  const peloSite = Guardado.get('origem_assinatura') === 'stripe';
   $('pro-ativo-texto').textContent = jaAssina && fimPro
     ? `Seu Pro vale até ${new Date(fimPro).toLocaleDateString('pt-BR')}. Depois disso, é só assinar por aqui.`
-    : 'Sua assinatura Pro está ativa.';
+    : jaAssina && peloSite
+      ? 'Sua assinatura Pro está ativa. Ela foi feita pelo site: para alterar ou cancelar, entre no site com a sua conta.'
+      : 'Sua assinatura Pro está ativa.';
   $('planos-pro').hidden = jaAssina;
   $('btn-assinar').hidden = jaAssina;
   mostrarPlanos();
@@ -1415,12 +1541,7 @@ $('btn-assinar').addEventListener('click', async () => {
     // marcado na tela. Sem ele, nao compra outra coisa no lugar.
     const pacote = pacotesPro[planoEscolhido];
     if (!pacote) throw new Error('sem oferta configurada');
-    // Android com o desconto de indicacao: compra a opcao da oferta
-    // `indicacao70` (70% por 12 meses) em vez do plano base. So o mensal tem.
-    const opcaoComDesconto = planoEscolhido === MENSAL ? opcaoGoogleComDesconto(pacote) : null;
-    const r = opcaoComDesconto
-      ? await Purchases.purchaseSubscriptionOption({ subscriptionOption: opcaoComDesconto })
-      : await Purchases.purchasePackage({ aPackage: pacote });
+    const r = await Purchases.purchasePackage({ aPackage: pacote });
     const virou = !!r?.customerInfo?.entitlements?.active?.pro;
     if (virou) {
       vibrar('HEAVY');
@@ -1465,7 +1586,7 @@ function encerrarSessao() {
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
   Guardado.del('codigo_indicacao'); Guardado.del('link_indicacao'); Guardado.del('pro_until');
-  Guardado.del('cupom_indicacao');
+  Guardado.del('cupom_indicacao'); Guardado.del('origem_assinatura');
   ['moeda', 'moeda_simbolo', 'moeda_casas', 'pais', 'ddi'].forEach((k) => Guardado.del(k));
   aplicarMoedaNaTela();
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
@@ -1486,7 +1607,13 @@ function encerrarSessao() {
 async function reabrirRecusadosPorCota(sessao) {
   const haEspaco = sessao.limite_mensal == null || sessao.usados_no_mes < sessao.limite_mensal;
   if (!haEspaco) return 0;
-  const recusados = (await listarRecibos()).filter((r) => r.recusado === 'limite_mensal');
+  // So quantos cabem: com uma vaga e cinco recusados, reabrir os cinco
+  // mandava os cinco, quatro voltavam com 402 e a tela do Pro abria de novo
+  // sem o motorista ter feito nada. Do mais antigo para o mais novo, como a
+  // fila; o resto espera a proxima vaga.
+  const vagas = sessao.limite_mensal == null ? Infinity : sessao.limite_mensal - sessao.usados_no_mes;
+  const recusados = (await listarRecibos()).filter((r) => r.recusado === 'limite_mensal')
+    .reverse().slice(0, vagas);
   for (const r of recusados) {
     const { recusado, ...resto } = r;
     await salvarRecibo({ ...resto, pendente: true });
@@ -1524,7 +1651,10 @@ async function atualizarSessao() {
     Guardado.set('codigo_indicacao', s.codigo_indicacao || '');
     Guardado.set('link_indicacao', s.link_indicacao || '');
     Guardado.set('pro_until', s.pro_until || '');
-    Guardado.set('cupom_indicacao', s.cupom_indicacao || null);
+    Guardado.set('origem_assinatura', s.origem_assinatura || '');
+    // O id acabou de chegar (ou mudou de e-mail para id): os recibos deste
+    // motorista, inclusive os de antes desta versao, passam a levar o dono.
+    await marcarDonoDosRecibos();
     if (s.moeda) {
       Guardado.set('moeda', s.moeda);
       Guardado.set('moeda_simbolo', s.moeda_simbolo || 'R$');
@@ -1808,21 +1938,25 @@ $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); ab
 // app.py): so quem indica ganha o mes de Pro, e nada de "segundos" que
 // ninguem mediu. Nada aqui fala de desconto no site (Apple 3.1.1).
 
+// O link e montado aqui, no dominio proprio, e nao o que o servidor manda:
+// o dele sai da variavel APP_BASE_URL, que pode apontar para o endereco da
+// API. O caminho /i/CODIGO e o mesmo do site.
+const linkDeIndicacao = (codigo) => `${SITE}/i/${codigo}`;
+
 function mensagemDeIndicacao() {
   const codigo = Guardado.get('codigo_indicacao') || '';
-  const link = Guardado.get('link_indicacao') || `https://www.recibotaxi.com.br/i/${codigo}`;
   const nome = ((Guardado.get('motorista') || {}).full_name || '').split(' ')[0] || 'um colega';
   return 'Oi! Uso o Recibo Táxi para dar recibo de corrida pelo celular: sai na hora, funciona '
     + 'sem internet e vai pelo WhatsApp do passageiro. É grátis para começar. Baixa por aqui '
     + `e, ao criar a conta, coloca o meu código *${codigo}* (assim eu ganho um mês de Pro): `
-    + `${link} — ${nome}`;
+    + `${linkDeIndicacao(codigo)} — ${nome}`;
 }
 
 function abrirIndicacao() {
   const codigo = Guardado.get('codigo_indicacao');
   $('codigo-indicacao').textContent = codigo || '······';
   $('link-indicacao').textContent = codigo
-    ? (Guardado.get('link_indicacao') || '')
+    ? linkDeIndicacao(codigo)
     : 'Conecte à internet uma vez para o app buscar o seu código.';
   $('btn-indicar-whats').disabled = !codigo;
   $('btn-copiar-indicacao').disabled = !codigo;
@@ -1833,52 +1967,10 @@ function abrirIndicacao() {
   if (!codigo) atualizarSessao().then((s) => { if (s && s.codigo_indicacao) abrirIndicacao(); });
 }
 
-// ── Desconto de indicacao nas lojas ────────────────────────────────────────
-//
-// Quem indicou um colega ativo ganha 70% por 12 meses no Pro mensal, dentro
-// do app, pela loja. Na Apple e um codigo de oferta (INDICA70) resgatado na
-// folha da App Store; no Google e uma oferta do plano base, que o app compra
-// direto quando o servidor diz que o motorista tem direito.
-
-const cupomDeIndicacao = () => {
-  const c = Guardado.get('cupom_indicacao');
-  return c && c.disponivel ? c : null;
-};
-
-function opcaoGoogleComDesconto(pacote) {
-  const cupom = cupomDeIndicacao();
-  if (!cupom || plataforma() !== 'android') return null;
-  const opcoes = pacote?.product?.subscriptionOptions || [];
-  return opcoes.find((o) => (o.tags || []).includes(cupom.tag_google)) || null;
-}
-
-function mostrarCupomDeIndicacao(jaAssina) {
-  const cupom = cupomDeIndicacao();
-  const bloco = $('cupom-pro');
-  bloco.hidden = !cupom || jaAssina;
-  if (bloco.hidden) return;
-  const ios = plataforma() === 'ios';
-  $('cupom-pro-texto').textContent = ios
-    ? `Você indicou um colega: o Pro mensal sai por ${cupom.preco_apple}/mês durante ${cupom.meses} meses `
-      + `(${cupom.pct}% de desconto). Resgate o código na App Store e depois toque em "Restaurar compra".`
-    : `Você indicou um colega: ${cupom.pct}% de desconto por ${cupom.meses} meses no Pro mensal. `
-      + 'O desconto entra sozinho ao assinar o plano mensal.';
-  $('cupom-pro-codigo').textContent = ios ? cupom.codigo_apple : '';
-  $('btn-resgatar-cupom').hidden = !ios;
-}
-
-$('btn-resgatar-cupom').addEventListener('click', async () => {
-  const { Purchases } = P();
-  const cupom = cupomDeIndicacao();
-  if (!cupom) return;
-  vibrar('LIGHT');
-  try {
-    if (Purchases?.presentCodeRedemptionSheet) await Purchases.presentCodeRedemptionSheet();
-    else window.open(`https://apps.apple.com/redeem?ctx=offercodes&id=6811583712&code=${cupom.codigo_apple}`, '_blank');
-  } catch (e) {
-    mostrarErroDeCompra($('erro-pro'), e);
-  }
-});
+// O desconto de indicacao nas lojas (INDICA70 na Apple, indicacao70 no
+// Google) acabou em 2026-11-10, junto com o preco novo: o servidor nao manda
+// mais `cupom_indicacao`, e o bloco saiu da tela. Quem indica ganha so o
+// mes de Pro.
 
 $('btn-indicar').addEventListener('click', () => { vibrar('LIGHT'); abrirIndicacao(); });
 $('btn-ir-indicar').addEventListener('click', () => { vibrar('LIGHT'); abrirIndicacao(); });
@@ -2425,6 +2517,9 @@ async function iniciar() {
   aplicarMoedaNaTela();   // com o que ficou guardado; a sessao atualiza se houver rede
   if (!token()) { mostrar('tela-login'); return; }
   irParaInicio();
+  // Antes de qualquer envio: recibos de antes desta versao ganham o dono, com
+  // ou sem sinal, para a fila deste motorista nao se misturar com a de outro.
+  await marcarDonoDosRecibos();
   await atualizarSessao();
   // O nome da saudacao e o dono da corrida aberta chegam com a sessao.
   if (!$('tela-inicio').hidden) irParaInicio();

@@ -17,6 +17,8 @@ const REDE = H.get('c') === 'rede';
 if (REDE) localStorage.setItem('access_token', JSON.stringify('token-falso'));
 window.__regra = () => ({});
 window.__sessao = null;                 // corpo do GET /api/sessao; null = 503
+window.__refresh = null;                // {status, corpo} do POST /api/refresh; null = sem rede
+window.__refreshes = 0;                 // quantas vezes o app tentou renovar
 window.__pedidos = [];
 window.__avaliacoes = 0;                // quantas vezes o app pediu avaliacao a loja
 window.__ouvintes = {};                 // eventos do plugin App ('resume', 'backButton')
@@ -64,6 +66,11 @@ window.fetch = async (url, op) => {
   }
   if (REDE && String(url).endsWith('/api/sessao')) {
     return window.__sessao ? json(window.__sessao, 200) : json({}, 503);
+  }
+  if (REDE && String(url).endsWith('/api/refresh')) {
+    window.__refreshes++;
+    if (!window.__refresh) throw new TypeError('sonda: sem rede');
+    return json(window.__refresh.corpo || {}, window.__refresh.status);
   }
   throw new TypeError('sonda: sem rede');
 };
@@ -185,12 +192,104 @@ window.addEventListener('load', async () => {
       await entregarEVoltar();
       ok('avaliacao: menos de 30 dias depois do ultimo pedido nao pede', __avaliacoes === 1, String(__avaliacoes));
       Guardado.set('avaliacao_pedida_em', Date.now() - 31 * 864e5);
+      const comWhats = await achar('Com WhatsApp');
       clicar('btn-novo'); await espera(100);
-      depoisDeEntregar(); await espera(1300);
+      depoisDeEntregar(comWhats.rid); await espera(1300);
       ok('avaliacao: fora da tela do recibo nao pede', __avaliacoes === 1, String(__avaliacoes));
-      abrirRecibo(await achar('Com WhatsApp'));
-      depoisDeEntregar(); await espera(1300);
+      abrirRecibo(comWhats);
+      depoisDeEntregar(comWhats.rid); await espera(1300);
       ok('avaliacao: depois de compartilhar o PDF, pede', __avaliacoes === 2, String(__avaliacoes));
+      // Recibo recusado por limite: entregar o texto sem link nao e hora de pedir nota.
+      Guardado.set('avaliacao_marco', 0); Guardado.set('avaliacao_pedida_em', 0);
+      abrirRecibo(semCota);
+      depoisDeEntregar(semCota.rid); await espera(1300);
+      ok('avaliacao: recibo recusado entregue nao pede', __avaliacoes === 2, String(__avaliacoes));
+      abrirRecibo(comWhats);
+      depoisDeEntregar(comWhats.rid); await espera(1300);
+      ok('avaliacao: o aceito, na mesma condicao, pede', __avaliacoes === 3, String(__avaliacoes));
+
+      // created_at: a hora em que o recibo nasceu vai no envio, para o
+      // servidor datar certo o recibo emitido sem sinal.
+      let corpoVisto = null;
+      window.__regra = (c) => { corpoVisto = c; return {}; };
+      await emitir('Com created_at', '12');
+      await espera(1200);
+      const comData = await achar('Com created_at');
+      ok('o envio leva created_at igual ao criado_em', corpoVisto && comData && corpoVisto.created_at === comData.criado_em
+         && /^\d{4}-\d{2}-\d{2}T/.test(corpoVisto.created_at), JSON.stringify(corpoVisto && corpoVisto.created_at));
+      ok('o recibo leva o dono', comData && comData.dono === 'web-motorista', JSON.stringify(comData && comData.dono));
+
+      // 402 para quem acabou de perder o Pro: o limite vem na resposta, nao
+      // do que ficou guardado ("ilimitado" = null). E a tela do Pro abre uma
+      // vez por passada, mesmo com dois recibos na fila.
+      Guardado.set('limite', null);
+      const redeDoAparelho = window.Capacitor.Plugins.Network;
+      redeDoAparelho.getStatus = async () => ({ connected: false });   // dois recibos sem sinal
+      await emitir('Sem cota 2', '21'); await espera(300);
+      await emitir('Sem cota 3', '22'); await espera(300);
+      ok('sem sinal, os dois ficam na fila', (await pendentes()).length === 2, String((await pendentes()).length));
+      redeDoAparelho.getStatus = async () => ({ connected: true });
+      let aberturas = 0;
+      const abrirAssinaturaOriginal = abrirAssinatura;
+      window.abrirAssinatura = (motivo) => { aberturas++; return abrirAssinaturaOriginal(motivo); };
+      window.__regra = () => ({ status: 402, corpo: { erro: 'limite_mensal', limite: 6 } });
+      await sincronizar(); await espera(100);
+      const semCota2 = await achar('Sem cota 2'), semCota3 = await achar('Sem cota 3');
+      ok('402: os dois ficam recusados por limite', semCota2 && semCota3 && semCota2.recusado === 'limite_mensal' && semCota3.recusado === 'limite_mensal');
+      ok('402: a frase traz o limite da resposta, nao o guardado', q('motivo-pro').textContent.includes('os 6 recibos'), q('motivo-pro').textContent);
+      ok('402: a tela do Pro abriu uma vez na passada, nao uma por recibo', aberturas === 1, String(aberturas));
+      window.abrirAssinatura = abrirAssinaturaOriginal;
+      clicar('btn-fechar-pro');
+
+      // Vaga unica: dos tres recusados por limite, so o mais antigo volta para a fila.
+      window.__regra = () => ({});
+      window.__sessao = { ...window.__sessao, limite_mensal: 6, usados_no_mes: 5 };
+      await atualizarSessao();
+      const reabertos = (await listarRecibos()).filter((x) => x.pendente || (!x.recusado && x.dados.origem.startsWith('Sem cota')));
+      ok('reabre so quantos cabem na cota (1 vaga, 1 reaberto)', reabertos.length === 1 && reabertos[0].dados.origem === 'Sem cota', JSON.stringify(reabertos.map((x) => x.dados.origem)));
+      await sincronizar();
+      window.__sessao = { ...window.__sessao, limite_mensal: null, usados_no_mes: 6 };
+      await atualizarSessao(); await sincronizar();
+      ok('sem limite, todos os recusados por cota sobem', (await listarRecibos()).every((x) => !x.pendente && x.recusado !== 'limite_mensal'));
+
+      // Sessao: 503 na renovacao nao derruba; 401 derruba.
+      window.__regra = () => ({ status: 401, corpo: { erro: 'nao_autenticado' } });
+      Guardado.set('refresh_token', 'refresh-falso');
+      window.__refresh = { status: 503, corpo: { erro: 'auth_indisponivel' } };
+      await emitir('Servidor caido', '15');
+      await espera(1200);
+      const caido = await achar('Servidor caido');
+      ok('renovacao com 503: o recibo fica na fila e a sessao fica', caido && caido.pendente && !!localStorage.getItem('access_token') && q('tela-login').hidden, JSON.stringify(caido && caido.pendente));
+      ok('renovacao com 503: tentou renovar', __refreshes >= 1, String(__refreshes));
+      window.__refresh = null;   // sem rede na renovacao
+      await sincronizar();
+      ok('renovacao sem rede: a sessao fica', !!localStorage.getItem('access_token') && q('tela-login').hidden);
+      window.__refresh = { status: 401, corpo: { erro: 'refresh_invalido' } };
+      await sincronizar();
+      ok('renovacao com 401: sessao encerrada, vai para o login', !localStorage.getItem('access_token') && !q('tela-login').hidden);
+      ok('a fila de quem saiu nao e apagada', (await todosOsRecibos()).some((x) => x.dados.origem === 'Servidor caido' && x.pendente));
+
+      // Dois motoristas no mesmo aparelho: cada um ve so a propria fila.
+      localStorage.setItem('access_token', JSON.stringify('token-falso'));
+      localStorage.setItem('motorista_id', JSON.stringify('outro'));
+      localStorage.setItem('motorista', JSON.stringify({ full_name: 'Outro', email: 'outro@teste.invalid' }));
+      ok('outro motorista nao ve a fila nem o historico do anterior', (await listarRecibos()).length === 0 && (await pendentes()).length === 0, String((await listarRecibos()).length));
+      window.__regra = () => ({});
+      await sincronizar();
+      ok('a fila do anterior nao sobe na conta do outro', (await todosOsRecibos()).some((x) => x.dados.origem === 'Servidor caido' && x.pendente));
+      // Recibo de antes desta versao (sem dono) e de quem estiver na conta, e e marcado de vez.
+      await salvarRecibo({ rid: 'SEMDONO0000001', criado_em: new Date().toISOString(), pendente: false, url: 'x',
+                           motorista: {}, dados: { rid: 'SEMDONO0000001', origem: 'Antigo', destino: 'Centro', valor: '1', valor_exibido: '1,00', data: '2026-11-10', forma_pagamento: 'Pix' } });
+      ok('recibo sem dono aparece para quem esta na conta', (await listarRecibos()).some((x) => x.rid === 'SEMDONO0000001'));
+      await marcarDonoDosRecibos();
+      const antigoMarcado = (await todosOsRecibos()).find((x) => x.rid === 'SEMDONO0000001');
+      ok('e ganha o dono atual', antigoMarcado && antigoMarcado.dono === 'outro', JSON.stringify(antigoMarcado && antigoMarcado.dono));
+      await limparRecibosLocais();
+      ok('excluir a conta apaga so os recibos de quem excluiu', !(await todosOsRecibos()).some((x) => x.rid === 'SEMDONO0000001')
+         && (await todosOsRecibos()).some((x) => x.dados.origem === 'Servidor caido'));
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      localStorage.setItem('motorista', JSON.stringify({ full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' }));
+      ok('o motorista de volta encontra a sua fila', (await pendentes()).some((x) => x.dados.origem === 'Servidor caido'));
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
     }
@@ -341,11 +440,36 @@ window.addEventListener('load', async () => {
        numeroDe('4 50') === null && numeroDe(' R$ 4,50 ') === 4.5 && numeroDe('1.234,56') === 1234.56);
 
     clicar('btn-ir-emitir'); await espera(200);
+    // Valor que o servidor recusaria para aqui, com o motivo, antes de virar recibo.
+    for (const [valor, trecho] of [['abc', 'Informe o valor'], ['0', 'maior que zero'], ['0,00', 'maior que zero'], ['12abc34', 'só o número'], ['100000', 'acima do limite']]) {
+      q('passageiro').value = 'Valor ruim'; q('origem').value = 'A'; q('destino').value = 'B'; q('valor').value = valor;
+      q('form-recibo').requestSubmit(); await espera(150);
+      ok(`valor "${valor}" nao vira recibo e explica`, !q('erro-recibo').hidden && q('erro-recibo').textContent.includes(trecho) && !q('tela-emitir').hidden
+         && !(await listarRecibos()).some((x) => x.dados.passageiro === 'Valor ruim'), q('erro-recibo').textContent);
+    }
+    ok('motivoValorInvalido aceita o que o servidor aceita', ['45', '45,5', '1.500', 'R$ 45,00', '1.234,56', '99999,99'].every((v) => motivoValorInvalido(v) === '')
+       && motivoValorInvalido('100000', 'CLP') === '' && motivoValorInvalido('-5') !== '' && motivoValorInvalido('').includes('Informe o valor'));
     q('passageiro').value = 'Avulso'; q('origem').value = 'A'; q('destino').value = 'B'; q('valor').value = '10';
-    q('form-recibo').requestSubmit(); await espera(900);
+    // Dois toques seguidos em Gerar recibo: um recibo so.
+    q('form-recibo').requestSubmit(); q('form-recibo').requestSubmit(); await espera(900);
     recibos = await listarRecibos();
     const avulso = recibos.find((x) => x.dados.passageiro === 'Avulso');
     ok('recibo avulso sai sem a marca', recibos.length === 2 && avulso && avulso.dados.via_corrida === undefined, JSON.stringify(avulso && avulso.dados));
+    ok('duplo toque em Gerar recibo nao duplica', recibos.filter((x) => x.dados.passageiro === 'Avulso').length === 1, String(recibos.length));
+    ok('o recibo nasce com created_at e dono', avulso && avulso.dados.created_at === avulso.criado_em && avulso.dono === 'web-motorista', JSON.stringify(avulso && [avulso.dados.created_at, avulso.dono]));
+    ok('o link do recibo e no dominio proprio', linkDoRecibo(avulso) === 'https://www.recibotaxi.com.br/recibo/' + avulso.rid, linkDoRecibo(avulso));
+    localStorage.setItem('codigo_indicacao', JSON.stringify('ABC123'));
+    ok('o convite e no dominio proprio', mensagemDeIndicacao().includes('https://www.recibotaxi.com.br/i/ABC123'), mensagemDeIndicacao());
+    localStorage.removeItem('codigo_indicacao');
+    // PDF: endereco longo quebra em linhas, e o que passa de duas termina em reticencias.
+    ok('quebrarLinhas: cabe em uma', JSON.stringify(quebrarLinhas('Rua Augusta, 100', 12)) === JSON.stringify(['Rua Augusta, 100']));
+    const longo = 'Avenida Brigadeiro Faria Lima, 3477, Torre Sul, 14o andar, Itaim Bibi, Sao Paulo, SP, CEP 04538-133, portaria principal';
+    const quebrado = quebrarLinhas(longo, 12);
+    ok('quebrarLinhas: por palavra, sem estourar a margem', quebrado.length === 2 && quebrado.every((l) => l.length <= caracteresPorLinha(12)) && quebrado.join(' ') === longo, JSON.stringify(quebrado));
+    const tresLinhas = quebrarLinhas(longo + ' ' + longo, 12, 2);
+    ok('quebrarLinhas: com teto, a ultima termina em reticencias', tresLinhas.length === 2 && tresLinhas[1].endsWith('…'), JSON.stringify(tresLinhas));
+    const pdfLongo = atob(pdfDoRecibo({ ...avulso, dados: { ...avulso.dados, origem: longo } }));
+    ok('o PDF escreve o endereco longo em duas linhas', pdfLongo.includes('(' + quebrado[0] + ')') && pdfLongo.includes('(' + quebrado[1] + ')') && !pdfLongo.includes('(' + longo + ')'));
 
     // Sem nome, sem telefone e sem e-mail (2026-10): o recibo chega ao
     // passageiro pelo QR, lido com a camera do celular dele.

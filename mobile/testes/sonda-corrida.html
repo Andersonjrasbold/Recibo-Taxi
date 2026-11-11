@@ -70,7 +70,11 @@ window.fetch = async (url, op) => {
   if (REDE && String(url).endsWith('/api/refresh')) {
     window.__refreshes++;
     if (!window.__refresh) throw new TypeError('sonda: sem rede');
+    await new Promise((ok) => setTimeout(ok, window.__refresh.atraso || 0));
     return json(window.__refresh.corpo || {}, window.__refresh.status);
+  }
+  if (REDE && /\/api\/recibos\/[A-Z0-9]+\/email$/.test(String(url))) {
+    return json({}, window.__email_status || 200);
   }
   throw new TypeError('sonda: sem rede');
 };
@@ -290,6 +294,142 @@ window.addEventListener('load', async () => {
       localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
       localStorage.setItem('motorista', JSON.stringify({ full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' }));
       ok('o motorista de volta encontra a sua fila', (await pendentes()).some((x) => x.dados.origem === 'Servidor caido'));
+
+      // Geracao da sessao: "Sair" com a renovacao em voo nao volta a sessao.
+      window.__regra = () => ({ status: 401, corpo: { erro: 'nao_autenticado' } });
+      Guardado.set('refresh_token', 'refresh-a');
+      window.__refresh = { status: 200, corpo: { access_token: 'token-novo', refresh_token: 'refresh-novo' }, atraso: 700 };
+      let passada = sincronizar();
+      await espera(150);
+      encerrarSessao();
+      await passada;
+      ok('sair durante a renovacao: os tokens nao voltam', !localStorage.getItem('access_token') && !localStorage.getItem('refresh_token') && !q('tela-login').hidden,
+         `${localStorage.getItem('access_token')} ${localStorage.getItem('refresh_token')}`);
+      ok('sair durante a renovacao: o recibo segue na fila do dono', (await todosOsRecibos()).some((x) => x.dados.origem === 'Servidor caido' && x.pendente && x.dono === 'web-motorista'));
+
+      // Login de B no meio da passada de A: o resto da fila de A nao sobe com o token de B.
+      localStorage.setItem('access_token', JSON.stringify('token-a'));
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      localStorage.setItem('motorista', JSON.stringify({ full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' }));
+      window.__refresh = null;
+      redeDoAparelho.getStatus = async () => ({ connected: false });
+      await emitir('Segundo de A', '9'); await espera(300);
+      redeDoAparelho.getStatus = async () => ({ connected: true });
+      const postados = [];
+      window.__regra = (c) => { postados.push(c.origem); return { atraso: 600 }; };
+      passada = sincronizar();
+      await espera(150);
+      encerrarSessao();
+      entrarNaSessao({ access_token: 'token-b', refresh_token: 'refresh-b' }, 'B@Teste.invalid');
+      await passada;
+      ok('troca de conta no meio da passada: so o 1o recibo saiu, o resto ficou', postados.length === 1, JSON.stringify(postados));
+      ok('a fila de A continua inteira e e de A', (await todosOsRecibos()).filter((x) => x.dono === 'web-motorista' && x.pendente).length === 2);
+      ok('B entra com o e-mail como identidade, antes da sessao', donoAtual() === 'b@teste.invalid' && !localStorage.getItem('motorista_id'), donoAtual());
+      ok('B nao ve nada de A', (await listarRecibos()).length === 0);
+      // B emite com a sessao fora do ar: o recibo leva o e-mail; quando a sessao chega, o id.
+      window.__sessao = null;
+      await emitir('De B sem sessao', '7'); await espera(300);
+      let deB = (await todosOsRecibos()).find((x) => x.dados.origem === 'De B sem sessao');
+      ok('sem sessao, o recibo de B leva o e-mail como dono', deB && deB.dono === 'b@teste.invalid', JSON.stringify(deB && deB.dono));
+      window.__sessao = { id: 'id-b', plano: 'free', limite_mensal: 6, usados_no_mes: 0, passageiro_opcional: true,
+                          motorista: { full_name: 'B Teste', email: 'b@teste.invalid', plate: 'BBB1B23' } };
+      await atualizarSessao();
+      deB = (await todosOsRecibos()).find((x) => x.dados.origem === 'De B sem sessao');
+      ok('com a sessao, o dono vira o id de B', deB && deB.dono === 'id-b' && (await listarRecibos()).some((x) => x.rid === deB.rid), JSON.stringify(deB && deB.dono));
+      // Recibo antigo (sem dono) de OUTRO e-mail nao e adotado por B; sem e-mail nenhum, e.
+      await salvarRecibo({ rid: 'ANTIGODEA00001', criado_em: new Date().toISOString(), pendente: true,
+                           motorista: { full_name: 'Teste Navegador', email: 'web@teste.invalid' },
+                           dados: { rid: 'ANTIGODEA00001', origem: 'Antigo de A', destino: 'Centro', valor: '1', valor_exibido: '1,00', data: '2026-11-10', forma_pagamento: 'Pix' } });
+      await salvarRecibo({ rid: 'ANTIGOSEMEMAIL', criado_em: new Date().toISOString(), pendente: false, url: 'x',
+                           motorista: {}, dados: { rid: 'ANTIGOSEMEMAIL', origem: 'Antigo sem e-mail', destino: 'Centro', valor: '1', valor_exibido: '1,00', data: '2026-11-10', forma_pagamento: 'Pix' } });
+      await marcarDonoDosRecibos();
+      const antigoDeA = (await todosOsRecibos()).find((x) => x.rid === 'ANTIGODEA00001');
+      const antigoSemEmail = (await todosOsRecibos()).find((x) => x.rid === 'ANTIGOSEMEMAIL');
+      ok('recibo antigo com o e-mail de A nao vira de B', antigoDeA && !antigoDeA.dono && !(await listarRecibos()).some((x) => x.rid === 'ANTIGODEA00001'), JSON.stringify(antigoDeA && antigoDeA.dono));
+      ok('recibo antigo sem e-mail fica com quem esta na conta', antigoSemEmail && antigoSemEmail.dono === 'id-b', JSON.stringify(antigoSemEmail && antigoSemEmail.dono));
+      // 403 na renovacao e bloqueio de borda, nao sessao morta.
+      window.__regra = () => ({ status: 401, corpo: { erro: 'nao_autenticado' } });
+      window.__refresh = { status: 403, corpo: {} };
+      if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      await sincronizar();
+      ok('403 na renovacao nao derruba a sessao', !!localStorage.getItem('access_token') && q('tela-login').hidden);
+      ok('passada adiada por servidor: a proxima tentativa fica agendada', !!sincronizacaoAgendada);
+      clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null;
+      // E-mail com sessao morta de verdade: vai para o login.
+      window.__refresh = { status: 401, corpo: { erro: 'refresh_invalido' } };
+      window.__email_status = 401;
+      abrirRecibo(deB);
+      clicar('btn-email'); await espera(600);
+      ok('enviar e-mail com sessao morta leva ao login', !q('tela-login').hidden && !localStorage.getItem('access_token'));
+      window.__email_status = 0;
+      // A volta: encontra os dois recibos dela e o antigo com o e-mail dela.
+      localStorage.setItem('access_token', JSON.stringify('token-a'));
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      localStorage.setItem('motorista', JSON.stringify({ full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' }));
+      await marcarDonoDosRecibos();
+      ok('A de volta ve a propria fila e adota o recibo antigo com o e-mail dela', (await pendentes()).length === 3
+         && ((await todosOsRecibos()).find((x) => x.rid === 'ANTIGODEA00001') || {}).dono === 'web-motorista', String((await pendentes()).length));
+
+      // 401 de A que chega depois do login de B: nao renova nem repete com o token de B.
+      window.__sessao = { id: 'web-motorista', plano: 'free', limite_mensal: 6, usados_no_mes: 0, passageiro_opcional: true,
+                          motorista: { full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' } };
+      await atualizarSessao();   // registra (web-motorista, web@teste.invalid) neste aparelho
+      const posts401 = [];
+      window.__regra = (c) => { posts401.push(c.origem); return { atraso: 600, status: 401, corpo: { erro: 'nao_autenticado' } }; };
+      window.__refresh = { status: 200, corpo: { access_token: 'token-b-novo', refresh_token: 'refresh-b-novo' } };
+      const antesDosRefreshes = __refreshes;
+      passada = sincronizar();
+      await espera(150);
+      encerrarSessao();
+      entrarNaSessao({ access_token: 'token-b', refresh_token: 'refresh-b' }, 'b@teste.invalid');
+      await passada;
+      ok('401 atrasado de A: nenhuma renovacao com o refresh de B', __refreshes === antesDosRefreshes, String(__refreshes - antesDosRefreshes));
+      ok('401 atrasado de A: so um POST, nenhum reenvio com o token de B', posts401.length === 1, JSON.stringify(posts401));
+      ok('401 atrasado de A: os tokens de B ficam como estavam', JSON.parse(localStorage.getItem('access_token')) === 'token-b'
+         && JSON.parse(localStorage.getItem('refresh_token')) === 'refresh-b');
+      ok('401 atrasado de A: a fila de A continua pendente e dela', (await todosOsRecibos()).filter((x) => x.dono === 'web-motorista' && x.pendente).length === 3);
+
+      // Corrida: entrar de novo (identidade = e-mail ate a sessao chegar) nao apaga a corrida do proprio motorista.
+      encerrarSessao();
+      entrarNaSessao({ access_token: 'token-a', refresh_token: 'refresh-a' }, 'Web@Teste.invalid');
+      guardarCorrida({ motorista: 'web-motorista', destino: 'Aeroporto', inicio: new Date().toISOString() });
+      ok('corrida gravada com o id sobrevive ao login so com o e-mail', !!corridaAtual() && corridaAtual().destino === 'Aeroporto');
+      ok('o e-mail do login vale como identidade do mesmo id', identidades().includes('web-motorista') && identidades().includes('web@teste.invalid'), JSON.stringify(identidades()));
+      // Corrida iniciada antes da sessao (dono = e-mail) continua quando o id chega, e passa a levar o id.
+      guardarCorrida({ motorista: 'web@teste.invalid', destino: 'Rodoviária', inicio: new Date().toISOString() });
+      window.__regra = () => ({});
+      await atualizarSessao();
+      ok('corrida iniciada antes da sessao continua quando o id chega, com o id', !!corridaAtual() && corridaAtual().destino === 'Rodoviária' && corridaAtual().motorista === 'web-motorista', JSON.stringify(corridaAtual()));
+      apagarCorrida();
+      // Retrato do motorista: recibo emitido antes da sessao chegar ganha nome e placa depois.
+      encerrarSessao();
+      entrarNaSessao({ access_token: 'token-a', refresh_token: 'refresh-a' }, 'web@teste.invalid');
+      redeDoAparelho.getStatus = async () => ({ connected: false });
+      await emitir('Antes da sessao', '11'); await espera(300);
+      redeDoAparelho.getStatus = async () => ({ connected: true });
+      let semRetrato = (await todosOsRecibos()).find((x) => x.dados.origem === 'Antes da sessao');
+      ok('antes da sessao o recibo leva o e-mail como dono e sem retrato', semRetrato && semRetrato.dono === 'web@teste.invalid' && !semRetrato.motorista.full_name, JSON.stringify(semRetrato && [semRetrato.dono, semRetrato.motorista]));
+      await atualizarSessao();
+      semRetrato = (await todosOsRecibos()).find((x) => x.dados.origem === 'Antes da sessao');
+      ok('com a sessao, o recibo ganha o id e o retrato (nome e placa)', semRetrato && semRetrato.dono === 'web-motorista' && semRetrato.motorista.plate === 'WEB1A23'
+         && atob(pdfDoRecibo(semRetrato)).includes('(Placa WEB1A23)'), JSON.stringify(semRetrato && [semRetrato.dono, semRetrato.motorista.plate]));
+      // Troca de e-mail no site: os recibos antigos com o e-mail velho continuam dele.
+      window.__sessao = { ...window.__sessao, motorista: { full_name: 'Teste Navegador', email: 'novo@teste.invalid', plate: 'WEB1A23' } };
+      await atualizarSessao();
+      await salvarRecibo({ rid: 'ANTIGOEMAILVEL', criado_em: new Date().toISOString(), pendente: true,
+                           motorista: { full_name: 'Teste Navegador', email: 'web@teste.invalid' },
+                           dados: { rid: 'ANTIGOEMAILVEL', origem: 'Antigo e-mail velho', destino: 'Centro', valor: '1', valor_exibido: '1,00', data: '2026-11-10', forma_pagamento: 'Pix' } });
+      await marcarDonoDosRecibos();
+      ok('depois de trocar o e-mail, o recibo antigo com o e-mail velho continua do motorista',
+         ((await todosOsRecibos()).find((x) => x.rid === 'ANTIGOEMAILVEL') || {}).dono === 'web-motorista' && (await pendentes()).some((x) => x.rid === 'ANTIGOEMAILVEL'));
+      // Vagas descontam o que ja esta na fila: 1 vaga e 1 pendente -> nenhum recusado reaberto.
+      await salvarRecibo({ rid: 'RECUSADOCOTA01', criado_em: '2026-11-01T10:00:00.000Z', pendente: false, recusado: 'limite_mensal', dono: 'web-motorista',
+                           motorista: {}, dados: { rid: 'RECUSADOCOTA01', origem: 'Recusado antigo', destino: 'Centro', valor: '1', valor_exibido: '1,00', data: '2026-11-01', forma_pagamento: 'Pix' } });
+      const pendentesAntes = (await pendentes()).length;
+      await reabrirRecusadosPorCota({ limite_mensal: pendentesAntes + 0, usados_no_mes: 0 });
+      ok('reabertura desconta os pendentes da fila (sem vaga sobrando, nada reabre)', ((await todosOsRecibos()).find((x) => x.rid === 'RECUSADOCOTA01') || {}).recusado === 'limite_mensal');
+      await reabrirRecusadosPorCota({ limite_mensal: pendentesAntes + 1, usados_no_mes: 0 });
+      ok('com uma vaga alem da fila, o recusado volta', ((await todosOsRecibos()).find((x) => x.rid === 'RECUSADOCOTA01') || {}).pendente === true);
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
     }
@@ -448,7 +588,12 @@ window.addEventListener('load', async () => {
          && !(await listarRecibos()).some((x) => x.dados.passageiro === 'Valor ruim'), q('erro-recibo').textContent);
     }
     ok('motivoValorInvalido aceita o que o servidor aceita', ['45', '45,5', '1.500', 'R$ 45,00', '1.234,56', '99999,99'].every((v) => motivoValorInvalido(v) === '')
-       && motivoValorInvalido('100000', 'CLP') === '' && motivoValorInvalido('-5') !== '' && motivoValorInvalido('').includes('Informe o valor'));
+       && motivoValorInvalido('100000', 'CLP', 0) === '' && motivoValorInvalido('-5') !== '' && motivoValorInvalido('').includes('Informe o valor'));
+    ok('valor com casas demais nao passa (o servidor arredondaria e recusaria)', motivoValorInvalido('0,005').includes('2 casas') && motivoValorInvalido('45,0051').includes('2 casas') && motivoValorInvalido('45,005') === ''
+       && motivoValorInvalido('100,5', 'CLP', 0).includes('inteiro') && motivoValorInvalido('99999999,99', 'CLP', 0).includes('inteiro'));
+    ok('km nas bordas segue a regra do servidor', kmNormalizado('0,04') === null && kmNormalizado('9999,99') === null && kmNormalizado('0,05') === '0,1' && kmNormalizado('12,44') === '12,4',
+       JSON.stringify([kmNormalizado('0,04'), kmNormalizado('9999,99'), kmNormalizado('0,05')]));
+    ok('quebrarLinhas em CAIXA ALTA respeita a margem', quebrarLinhas('AVENIDA BRIGADEIRO FARIA LIMA, 3477, TORRE SUL, 14O ANDAR, ITAIM BIBI, SAO PAULO, SP, CEP 04538-133, PORTARIA PRINCIPAL', 12).every((l) => larguraDe(l, 12) <= 483));
     q('passageiro').value = 'Avulso'; q('origem').value = 'A'; q('destino').value = 'B'; q('valor').value = '10';
     // Dois toques seguidos em Gerar recibo: um recibo so.
     q('form-recibo').requestSubmit(); q('form-recibo').requestSubmit(); await espera(900);
@@ -465,7 +610,7 @@ window.addEventListener('load', async () => {
     ok('quebrarLinhas: cabe em uma', JSON.stringify(quebrarLinhas('Rua Augusta, 100', 12)) === JSON.stringify(['Rua Augusta, 100']));
     const longo = 'Avenida Brigadeiro Faria Lima, 3477, Torre Sul, 14o andar, Itaim Bibi, Sao Paulo, SP, CEP 04538-133, portaria principal';
     const quebrado = quebrarLinhas(longo, 12);
-    ok('quebrarLinhas: por palavra, sem estourar a margem', quebrado.length === 2 && quebrado.every((l) => l.length <= caracteresPorLinha(12)) && quebrado.join(' ') === longo, JSON.stringify(quebrado));
+    ok('quebrarLinhas: por palavra, sem estourar a margem', quebrado.length === 2 && quebrado.every((l) => larguraDe(l, 12) <= 483) && quebrado.join(' ') === longo, JSON.stringify(quebrado));
     const tresLinhas = quebrarLinhas(longo + ' ' + longo, 12, 2);
     ok('quebrarLinhas: com teto, a ultima termina em reticencias', tresLinhas.length === 2 && tresLinhas[1].endsWith('…'), JSON.stringify(tresLinhas));
     const pdfLongo = atob(pdfDoRecibo({ ...avulso, dados: { ...avulso.dados, origem: longo } }));

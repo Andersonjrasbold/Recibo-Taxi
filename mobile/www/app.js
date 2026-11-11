@@ -88,11 +88,54 @@ async function todosOsRecibos() {
 // Cada recibo leva o dono (id do motorista; o e-mail antes da primeira
 // /api/sessao). Dois motoristas no mesmo aparelho: "Sair" nao apaga a fila
 // de proposito, e sem o dono a fila de quem saiu subia na conta de quem
-// entrou depois, e o historico misturava os dois. Recibo sem dono e de
-// antes desta versao: fica com quem estiver na conta e e marcado de vez.
-const identidades = () => [Guardado.get('motorista_id'), (Guardado.get('motorista') || {}).email]
-  .filter(Boolean).map(String);
-const ehMeu = (r) => !r.dono || identidades().includes(r.dono);
+// entrou depois, e o historico misturava os dois.
+//
+// Identidades do motorista atual: o id, o e-mail de agora e os e-mails que
+// este aparelho ja viu com o mesmo id (quem trocou o e-mail no site nao
+// perde o que emitiu com o antigo). O aparelho guarda os pares (id, e-mail)
+// de todo mundo que ja entrou nele: e com isso que um recibo de antes desta
+// versao (sem dono, so com o e-mail no retrato do motorista) e reconhecido
+// como de outro motorista, e nao adotado por engano.
+const IDENTIDADES_VISTAS = 'identidades_vistas';
+const vistas = () => (Guardado.get(IDENTIDADES_VISTAS) || []).filter((p) => Array.isArray(p) && p[0] && p[1]);
+
+function registrarIdentidade(id, email) {
+  const e = emailLimpo(email);
+  if (!id || !e) return;
+  const lista = vistas();
+  if (lista.some(([i, em]) => String(i) === String(id) && em === e)) return;
+  Guardado.set(IDENTIDADES_VISTAS, [...lista, [String(id), e]].slice(-30));
+}
+
+function identidades() {
+  const id = Guardado.get('motorista_id');
+  const email = emailLimpo((Guardado.get('motorista') || {}).email);
+  const minhas = [id, email].filter(Boolean).map(String);
+  // Pelo id, os e-mails antigos; pelo e-mail (logo apos o login, antes de a
+  // sessao chegar), o id — e com ele a corrida e os recibos gravados com o id.
+  vistas().forEach(([i, e]) => {
+    if ((id && String(i) === String(id)) || (email && e === email)) {
+      [String(i), e].forEach((x) => { if (!minhas.includes(x)) minhas.push(x); });
+    }
+  });
+  return minhas;
+}
+
+// E-mail que este aparelho ja viu com OUTRO id: recibo antigo com ele e de
+// outra pessoa. E-mail que ninguem conhece aqui e, muito provavelmente, um
+// e-mail antigo de quem esta na conta.
+function emailDeOutro(email) {
+  const id = Guardado.get('motorista_id');
+  return vistas().some(([i, e]) => e === email && (!id || String(i) !== String(id)));
+}
+
+function ehMeu(r) {
+  const eu = identidades();
+  if (r.dono) return eu.includes(String(r.dono));
+  const emitiu = emailLimpo((r.motorista || {}).email);
+  if (!emitiu || eu.includes(emitiu)) return true;
+  return !emailDeOutro(emitiu);
+}
 
 async function listarRecibos() {
   return (await todosOsRecibos()).filter(ehMeu);
@@ -101,12 +144,25 @@ async function listarRecibos() {
 const pendentes = async () => (await listarRecibos()).filter((r) => r.pendente);
 
 // Recibo sem dono (versao anterior) ou com o e-mail como dono ganha o id do
-// motorista assim que ele existe: o id nao muda, o e-mail pode.
+// motorista assim que ele existe: o id nao muda, o e-mail pode. O recibo
+// antigo com e-mail que ninguem neste aparelho conhece fica sem marca: ele
+// aparece para quem esta na conta, mas, se o dono de verdade entrar um dia,
+// passa para ele. Aproveita para completar o retrato do motorista (nome,
+// placa) no recibo emitido antes de a sessao chegar: senao o PDF saia com
+// "Placa -" para sempre.
 async function marcarDonoDosRecibos() {
   const id = Guardado.get('motorista_id');
   if (!id) return;
+  const eu = identidades();
+  const perfil = Guardado.get('motorista') || {};
   for (const r of await todosOsRecibos()) {
-    if (ehMeu(r) && r.dono !== String(id)) await salvarRecibo({ ...r, dono: String(id) });
+    if (!ehMeu(r)) continue;
+    const emitiu = emailLimpo((r.motorista || {}).email);
+    const certo = r.dono ? eu.includes(String(r.dono)) : (!emitiu || eu.includes(emitiu));
+    const novo = { ...r };
+    if (certo && r.dono !== String(id)) novo.dono = String(id);
+    if (certo && perfil.full_name && !(r.motorista || {}).full_name) novo.motorista = { ...perfil };
+    if (novo.dono !== r.dono || novo.motorista !== r.motorista) await salvarRecibo(novo);
   }
 }
 
@@ -145,25 +201,49 @@ const tokenRenovacao = () => Guardado.get('refresh_token');
 // funcionar. So o botao "Sair", manual, destravava.
 let renovando = null;      // uma renovacao por vez, mesmo com varios 401 juntos
 
+// Geracao da sessao: sobe a cada "Sair" e a cada login. Resposta de uma
+// chamada que comecou numa geracao anterior nao vale mais: a renovacao de A
+// que chega depois de A sair (e de B entrar) nao pode regravar os tokens de A
+// por cima dos de B, e a passada da fila de A nao pode seguir com o token de
+// B. Sem isto, "Sair" durante uma renovacao em voo nao saia.
+let geracaoDaSessao = 0;
+const novaGeracaoDaSessao = () => { geracaoDaSessao++; };
+
 // Tres respostas, e nao duas: 'renovada', 'morta' (o servidor recusou o
-// refresh token: 401) e 'indisponivel' (rede caida, 429, 5xx). Antes,
-// qualquer falha valia "morta", e um Supabase fora do ar por um minuto
-// derrubava a sessao de todo mundo — com a fila de recibos presa atras do
-// login. Sessao so morre quando o servidor diz que morreu.
+// refresh token: 401) e 'indisponivel' (rede caida, 429, 5xx, bloqueio de
+// borda). Antes, qualquer falha valia "morta", e um Supabase fora do ar por
+// um minuto derrubava a sessao de todo mundo — com a fila de recibos presa
+// atras do login. Sessao so morre quando o servidor diz que morreu, e so o
+// 401 diz isso (a rota nunca devolve 403; um 403 e o firewall da borda).
 async function renovarSessao() {
   if (!tokenRenovacao()) return 'morta';
   if (!renovando) {
     renovando = (async () => {
+      const geracao = geracaoDaSessao;
+      const usado = tokenRenovacao();
+      const pedir = () => fetch(API + '/api/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: usado }),
+      });
       try {
-        const resp = await fetch(API + '/api/refresh', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: tokenRenovacao() }),
-        });
-        if (resp.status === 401 || resp.status === 403) return 'morta';
+        let resp;
+        try {
+          resp = await pedir();
+        } catch {
+          // A resposta pode ter se perdido DEPOIS de o servidor girar o
+          // refresh token; o Supabase aceita o anterior por uns 10 s e devolve
+          // a mesma sessao nova. Uma repeticao imediata aproveita essa janela;
+          // sem ela, a proxima renovacao seria recusada e a sessao cairia.
+          await new Promise((ok) => setTimeout(ok, 1000));
+          resp = await pedir();
+        }
+        if (geracao !== geracaoDaSessao) return 'indisponivel';   // a sessao ja e outra
+        if (resp.status === 401) return 'morta';
         if (!resp.ok) return 'indisponivel';
         const t = await resp.json();
         if (!t.access_token || !t.refresh_token) return 'indisponivel';
+        if (geracao !== geracaoDaSessao || tokenRenovacao() !== usado) return 'indisponivel';
         Guardado.set('access_token', t.access_token);
         Guardado.set('refresh_token', t.refresh_token);
         return 'renovada';
@@ -192,10 +272,18 @@ async function api(caminho, opcoes = {}) {
       ...(opcoes.headers || {}),
     },
   });
+  const geracao = geracaoDaSessao;
   let resp = await enviar();
+  // Resposta de uma sessao que ja acabou ("Sair" ou outro login enquanto o
+  // pedido viajava): nao e deste motorista. Vale "indisponivel" para quem
+  // chamou — nunca um 401 (derrubaria a sessao nova) nem uma renovacao e
+  // repeticao com o token do motorista seguinte (gravaria o recibo de um na
+  // conta do outro).
+  if (geracao !== geracaoDaSessao) return respostaIndisponivel();
   // 401 quase sempre e so token vencido. Renova por baixo e repete uma vez.
   if (resp.status === 401 && caminho !== '/api/refresh' && tokenRenovacao()) {
     const renovacao = await renovarSessao();
+    if (geracao !== geracaoDaSessao) return respostaIndisponivel();
     if (renovacao === 'renovada') resp = await enviar();
     else if (renovacao === 'indisponivel') resp = respostaIndisponivel();
   }
@@ -206,23 +294,48 @@ async function api(caminho, opcoes = {}) {
 // (ver btn-fechar-pro).
 let voltarDaAssinaturaParaRecibo = false;
 
+// Passada que parou por servidor fora do ar, 429 ou rede caida: tenta de novo
+// sozinha, em 30 s, depois 1 min, 2, ate 5 min, enquanto houver fila. Sem
+// isto a fila ficava parada com sinal cheio ate outro evento (emitir de novo,
+// mudar de rede, reabrir o app), e o passageiro abria o QR num 404.
+let tentativasAdiadas = 0;
+let sincronizacaoAgendada = null;
+
+function reagendarSincronizacao() {
+  if (sincronizacaoAgendada) return;
+  const atraso = Math.min(30e3 * 2 ** tentativasAdiadas, 5 * 60e3);
+  tentativasAdiadas++;
+  sincronizacaoAgendada = setTimeout(async () => {
+    sincronizacaoAgendada = null;
+    await sincronizar();
+    atualizarAvisoFila();
+    redesenharReciboAberto();
+  }, atraso);
+}
+
 async function sincronizar() {
   if (!(await temRede()) || !token()) {
     return { enviados: 0, restantes: (await pendentes()).length };
   }
 
+  const geracao = geracaoDaSessao;   // a passada e desta sessao; outra, para
   let enviados = 0;
   let avisouLimite = false;
+  let adiada = false;
   // Do mais antigo para o mais novo: se a cota do mes acabar no meio da fila,
   // quem fica de fora e o recibo mais recente, nao o que o passageiro ja
   // espera desde antes. Aconteceu ao contrario num teste: o ultimo emitido
   // subiu e o anterior ficou recusado.
   for (const recibo of (await pendentes()).reverse()) {
+    // "Sair" (e outro login) no meio da passada: o resto da fila e de quem
+    // saiu e subiria com o token de quem entrou. Para aqui; a fila fica.
+    if (geracao !== geracaoDaSessao) break;
     try {
       const resp = await api('/api/recibos', {
         method: 'POST',
         body: JSON.stringify(recibo.dados),
       });
+      if (geracao !== geracaoDaSessao) break;
       if (resp.status === 201 || resp.status === 200) {
         // 200 = o servidor já tinha este rid. Reenvio, não recibo novo.
         const corpo = await resp.json();
@@ -256,13 +369,18 @@ async function sincronizar() {
       } else if (resp.status === 429 || resp.status >= 500) {
         // Servidor fora do ar ou pedindo calma: os outros da fila levariam a
         // mesma resposta. Ficam pendentes para a proxima passada.
+        adiada = true;
         break;
       }
     } catch {
+      adiada = true;
       break; // sem rede de verdade: tenta na próxima
     }
   }
-  return { enviados, restantes: (await pendentes()).length };
+  const restantes = (await pendentes()).length;
+  if (adiada && restantes && geracao === geracaoDaSessao) reagendarSincronizacao();
+  else if (!adiada) tentativasAdiadas = 0;
+  return { enviados, restantes };
 }
 
 // ── Telas ──────────────────────────────────────────────────────────────────
@@ -883,17 +1001,26 @@ $('form-login').addEventListener('submit', async (ev) => {
       erro.hidden = false; return;
     }
     const t = await resp.json();
-    Guardado.set('access_token', t.access_token);
-    Guardado.set('refresh_token', t.refresh_token);
-    const sessao = await (await api('/api/sessao')).json();
-    Guardado.set('motorista', sessao.motorista);
-    Guardado.set('motorista_id', sessao.id);   // dono da corrida, ja no login
+    entrarNaSessao(t, $('email').value);
     await iniciar();
   } catch {
     erro.textContent = 'Sem conexão. Tente de novo quando tiver sinal.';
     erro.hidden = false;
   }
 });
+
+// Tokens novos e, ANTES de qualquer /api/sessao, a identidade minima: o
+// e-mail digitado. Se a /api/sessao falhar logo depois (login fora do ar por
+// um minuto), o motorista entra mesmo assim e o recibo que ele emitir leva o
+// e-mail como dono — nunca fica sem dono, que e o que o entregaria ao proximo
+// motorista deste aparelho. O id substitui o e-mail quando a sessao chega.
+function entrarNaSessao(tokens, email) {
+  novaGeracaoDaSessao();
+  Guardado.set('access_token', tokens.access_token);
+  Guardado.set('refresh_token', tokens.refresh_token);
+  Guardado.del('motorista_id');
+  Guardado.set('motorista', { email: emailLimpo(email) });
+}
 
 $('btn-ir-cadastro').addEventListener('click', () => { mostrar('tela-cadastro'); carregarPaises(); });
 $('btn-ir-login').addEventListener('click', () => mostrar('tela-login'));
@@ -984,11 +1111,7 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
       return;
     }
     const novo = await resp.json();
-    Guardado.set('access_token', novo.access_token);
-    Guardado.set('refresh_token', novo.refresh_token);
-    const sessao = await (await api('/api/sessao')).json();
-    Guardado.set('motorista', sessao.motorista);
-    Guardado.set('motorista_id', sessao.id);   // dono da corrida, ja no login
+    entrarNaSessao(novo, corpo.email);
     vibrar('HEAVY');
     await iniciar();
   } catch {
@@ -1005,7 +1128,12 @@ function kmNormalizado(valor) {
   const bruto = String(valor || '').trim().toLowerCase().replace(/\s|km/g, '');
   if (!bruto) return '';
   if (!/^\d{1,4}([.,]\d{1,2})?$/.test(bruto) || Number(bruto.replace(',', '.')) <= 0) return null;
-  return Number(bruto.replace(',', '.')).toFixed(1).replace('.', ',');
+  // O que vai ao servidor e o arredondado a uma casa: "0,04" viraria "0,0" e
+  // "9999,99" viraria "10000,0", os dois recusados la (km_invalido) com o
+  // recibo ja emitido. Confere o arredondado, nao o digitado.
+  const km = Number(Number(bruto.replace(',', '.')).toFixed(1));
+  if (!(km > 0) || km > 9999.9) return null;
+  return km.toFixed(1).replace('.', ',');
 }
 const kmTexto = (km) => (km ? `${km} km` : '');
 function horarioDe(d) {
@@ -1025,11 +1153,19 @@ const tetoDoValor = (moeda) => (MOEDAS_GRANDES.includes(moeda) ? 99999999.99 : 9
 // que o servidor recusa ficava recusado para sempre, sem como editar, com o
 // passageiro ja de posse de um link que nunca abriria. Devolve o motivo em
 // palavras, ou '' quando o valor serve.
-function motivoValorInvalido(texto, moeda = moedaAtual().codigo) {
+function motivoValorInvalido(texto, moeda = moedaAtual().codigo, casas = moedaAtual().casas) {
   const bruto = String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
   if (!bruto) return 'Informe o valor da corrida.';
   const limpo = separadoresDoValor(bruto);
   if (!/^\d+(\.\d+)?$/.test(limpo)) return 'Valor: só o número, ex.: 45,00.';
+  // Mais casas do que a moeda tem: o servidor arredonda antes de conferir
+  // (0,005 vira 0,00 e e recusado), e o arredondamento dele e outro. Aqui
+  // nem entra: o valor tem de ser o que o passageiro pagou.
+  const decimais = (limpo.split('.')[1] || '').length;
+  if (decimais > casas) {
+    return casas ? `Use no máximo ${casas} casas depois da vírgula, ex.: 45,00.`
+      : 'Esta moeda não usa centavos: digite só o número inteiro.';
+  }
   const n = Number(limpo);
   if (!(n > 0)) return 'O valor precisa ser maior que zero.';
   if (n > tetoDoValor(moeda)) return 'Valor acima do limite para um recibo de corrida.';
@@ -1107,23 +1243,25 @@ $('form-recibo').addEventListener('submit', async (ev) => {
   };
 
   try {
-    await salvarRecibo(recibo);        // primeiro guarda, depois tenta enviar
-  } catch (e) {
-    emitindo = false;
-    erroRecibo.textContent = 'Não foi possível guardar o recibo no aparelho. Tente de novo.';
-    erroRecibo.hidden = false;
-    return;
-  }
-  vibrar('HEAVY');
-  $('form-recibo').reset();
-  atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
-  revisarWhats(); revisarEmail();
-  // A corrida acabou de virar recibo: some do início junto com a dica.
-  if (reciboDaCorrida) { apagarCorrida(); limparCorridaDoFormulario(); }
-  preencherDataEHora();     // o próximo recibo já nasce com a hora certa
+    try {
+      await salvarRecibo(recibo);        // primeiro guarda, depois tenta enviar
+    } catch (e) {
+      erroRecibo.textContent = 'Não foi possível guardar o recibo no aparelho. Tente de novo.';
+      erroRecibo.hidden = false;
+      return;
+    }
+    vibrar('HEAVY');
+    $('form-recibo').reset();
+    atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
+    revisarWhats(); revisarEmail();
+    // A corrida acabou de virar recibo: some do início junto com a dica.
+    if (reciboDaCorrida) { apagarCorrida(); limparCorridaDoFormulario(); }
+    preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
-  abrirRecibo(recibo);
-  emitindo = false;
+    abrirRecibo(recibo);
+  } finally {
+    emitindo = false;   // aconteca o que acontecer, o botao nao fica morto
+  }
 
   await esperarSubir(rid);
   await atualizarAvisoFila();
@@ -1187,12 +1325,16 @@ $('btn-email').addEventListener('click', async () => {
       vibrar('HEAVY');
       return;
     }
+    // 401 aqui e sessao morta de verdade (o api() ja tentou renovar): o
+    // caminho e o login, como nos outros chamadores, e nao um aviso que o
+    // motorista nao tem como resolver nesta tela.
+    if (resp.status === 401) { encerrarSessao(); return; }
     dizer({
       404: 'Este recibo ainda não chegou ao servidor.',
       400: 'Este recibo não tem e-mail do passageiro.',
-      401: 'Sua sessão expirou. Entre de novo.',
       429: 'Você atingiu o limite de e-mails de hoje.',
       502: 'O provedor de e-mail recusou. Tente de novo em instantes.',
+      503: 'O serviço está fora do ar agora. Tente de novo em instantes.',
     }[resp.status] || 'Não foi possível enviar agora.', true);
   } catch {
     dizer('Sem conexão. Tente quando tiver sinal.', true);
@@ -1582,6 +1724,9 @@ $('btn-restaurar').addEventListener('click', async () => {
 // Antes, sessao morta nao levava a lugar nenhum: o app ficava na tela de
 // emitir aceitando recibo que nunca subiria.
 function encerrarSessao() {
+  novaGeracaoDaSessao();   // renovacao ou passada em voo nao regrava nada daqui em diante
+  tentativasAdiadas = 0;
+  if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
@@ -1611,9 +1756,14 @@ async function reabrirRecusadosPorCota(sessao) {
   // mandava os cinco, quatro voltavam com 402 e a tela do Pro abria de novo
   // sem o motorista ter feito nada. Do mais antigo para o mais novo, como a
   // fila; o resto espera a proxima vaga.
-  const vagas = sessao.limite_mensal == null ? Infinity : sessao.limite_mensal - sessao.usados_no_mes;
-  const recusados = (await listarRecibos()).filter((r) => r.recusado === 'limite_mensal')
-    .reverse().slice(0, vagas);
+  // Descontando o que ja esta na fila: o servidor so conta o que gravou, e
+  // os pendentes (emitidos sem sinal, ou reabertos por uma chamada anterior
+  // desta mesma funcao) vao ocupar vaga antes dos recusados antigos.
+  const lista = await listarRecibos();
+  const naFila = lista.filter((r) => r.pendente).length;
+  const vagas = sessao.limite_mensal == null ? Infinity
+    : Math.max(0, sessao.limite_mensal - sessao.usados_no_mes - naFila);
+  const recusados = lista.filter((r) => r.recusado === 'limite_mensal').reverse().slice(0, vagas);
   for (const r of recusados) {
     const { recusado, ...resto } = r;
     await salvarRecibo({ ...resto, pendente: true });
@@ -1636,13 +1786,22 @@ async function reabrirRecusadosSemNome(sessao) {
 }
 
 async function atualizarSessao() {
+  const geracao = geracaoDaSessao;
   try {
     const r = await api('/api/sessao');
+    // "Sair" (ou outro login) enquanto a resposta vinha: ela e de outra sessao.
+    if (geracao !== geracaoDaSessao) return null;
     if (r.status === 401) { encerrarSessao(); return null; }
     if (!r.ok) return null;
     const s = await r.json();
+    if (geracao !== geracaoDaSessao) return null;
+    // Os dois e-mails valem para este id: o digitado no login (pode ser o
+    // antigo, se ele trocou no site) e o que o servidor diz agora.
+    registrarIdentidade(s.id, (Guardado.get('motorista') || {}).email);
+    registrarIdentidade(s.id, (s.motorista || {}).email);
     Guardado.set('motorista', s.motorista);
     Guardado.set('motorista_id', s.id);
+    marcarDonoDaCorrida();
     Guardado.set('plano', s.plano);
     Guardado.set('limite', s.limite_mensal);
     Guardado.set('usados', s.usados_no_mes);
@@ -1654,7 +1813,8 @@ async function atualizarSessao() {
     Guardado.set('origem_assinatura', s.origem_assinatura || '');
     // O id acabou de chegar (ou mudou de e-mail para id): os recibos deste
     // motorista, inclusive os de antes desta versao, passam a levar o dono.
-    await marcarDonoDosRecibos();
+    // Banco local com defeito nao pode derrubar o resto da sessao.
+    try { await marcarDonoDosRecibos(); } catch { /* fica para a proxima */ }
     if (s.moeda) {
       Guardado.set('moeda', s.moeda);
       Guardado.set('moeda_simbolo', s.moeda_simbolo || 'R$');
@@ -1896,6 +2056,18 @@ if (P().Network) {
   });
 }
 
+// Voltar ao app (do WhatsApp, do Waze, de uma ligacao) e um bom momento para
+// a fila tentar de novo: o sinal pode ter voltado sem o aparelho avisar, e o
+// servidor que estava fora do ar pode ter voltado.
+if (P().App) {
+  P().App.addListener('resume', async () => {
+    if (!token() || !(await pendentes()).length) return;
+    await sincronizar();
+    atualizarAvisoFila();
+    redesenharReciboAberto();
+  });
+}
+
 // ── Tela inicial ───────────────────────────────────────────────────────────
 function primeiroNome(nome) {
   return String(nome || '').trim().split(/\s+/)[0] || '';
@@ -2003,15 +2175,26 @@ $('btn-copiar-indicacao').addEventListener('click', async () => {
 // Leva o id do motorista: em aparelho dividido, quem entra depois nao herda a
 // corrida de quem saiu.
 // O dono e o id do motorista; antes da primeira /api/sessao, o e-mail serve.
-const donoAtual = () => Guardado.get('motorista_id') || (Guardado.get('motorista') || {}).email || '';
+const donoAtual = () => Guardado.get('motorista_id') || emailLimpo((Guardado.get('motorista') || {}).email) || '';
 
+// Mesmo criterio dos recibos (identidades): o dono pode estar gravado como
+// id ou como e-mail. Comparar so com donoAtual() apagava a corrida do
+// proprio motorista ao entrar de novo (a identidade logo apos o login e o
+// e-mail, e a corrida tinha o id).
 function corridaAtual() {
   const c = Guardado.get('corrida');
-  const eu = donoAtual();
-  if (c && c.motorista && eu && c.motorista !== eu) { Guardado.del('corrida'); return null; }
+  const eu = identidades();
+  if (c && c.motorista && eu.length && !eu.includes(String(c.motorista))) { Guardado.del('corrida'); return null; }
   return c;
 }
 const guardarCorrida = (c) => Guardado.set('corrida', c);
+
+// A corrida aberta com o e-mail como dono passa a levar o id quando ele chega.
+function marcarDonoDaCorrida() {
+  const id = Guardado.get('motorista_id');
+  const c = corridaAtual();
+  if (id && c && c.motorista !== String(id)) guardarCorrida({ ...c, motorista: String(id) });
+}
 
 // O rascunho (campos, posicao, estimativa) vive na memoria enquanto a corrida
 // nao comecou. Apagar a corrida apaga o rascunho junto: a proxima nasce vazia.
@@ -2366,7 +2549,9 @@ const MOTIVOS_DA_ESTIMATIVA = {
   limite_diario: 'Você chegou ao limite de estimativas de hoje.',
   indisponivel_hoje: 'A estimativa atingiu o limite de hoje para todos os motoristas. Volta amanhã.',
   falha_na_consulta: 'O serviço de rotas não respondeu. Tente de novo em instantes.',
-  indisponivel: 'A estimativa ainda não está disponível.',
+  // Vale para a estimativa sem chave no servidor e para o login fora do ar
+  // (503 de /api/* e o 503 que o api() inventa quando nao da para renovar).
+  indisponivel: 'A estimativa não está disponível agora. Tente de novo em instantes.',
   nao_autenticado: 'Sua sessão expirou. Entre de novo.',
 };
 
@@ -2519,7 +2704,8 @@ async function iniciar() {
   irParaInicio();
   // Antes de qualquer envio: recibos de antes desta versao ganham o dono, com
   // ou sem sinal, para a fila deste motorista nao se misturar com a de outro.
-  await marcarDonoDosRecibos();
+  // Se o banco local falhar, o app segue (a corrida ja vive sem ele).
+  try { await marcarDonoDosRecibos(); } catch { /* fica para a proxima */ }
   await atualizarSessao();
   // O nome da saudacao e o dono da corrida aberta chegam com a sessao.
   if (!$('tela-inicio').hidden) irParaInicio();

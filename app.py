@@ -3678,9 +3678,14 @@ def api_sessao():
             "limite_mensal": None if plano in PAID_PLANS else FREE_MONTHLY_LIMIT,
             # O app precisa saber a origem: quem assinou pela Stripe no site
             # gerencia lá; quem assinou pelo app gerencia na loja.
+            # Pela assinatura viva, e nao pelo cliente da Stripe: o cliente nasce
+            # ao abrir o checkout no site e fica para sempre, e quem desistiu ali e
+            # assinou pela loja lia no app que a assinatura era do site.
             "origem_assinatura": (
-                "stripe" if g.user.get("stripe_customer_id")
-                else "loja" if plano in PAID_PLANS
+                "stripe" if g.user.get("stripe_subscription_id")
+                and g.user.get("subscription_status") in ACTIVE_SUBSCRIPTION_STATUSES
+                else "loja" if assina_pela_loja(g.user)
+                else "prepago" if plano in PAID_PLANS
                 else None
             ),
             "usados_no_mes": get_store().count_receipts_in_range(
@@ -3817,6 +3822,13 @@ def api_criar_recibo():
         # Ou a cota acabou, ou o rid pertence a outro motorista.
         existente = get_store().get_receipt(rid)
         if existente:
+            # O mesmo motorista mandando o mesmo rid duas vezes ao mesmo tempo
+            # (a fila e o "voltar ao app" do aparelho), no ultimo recibo da
+            # cota: o primeiro pedido gravou, o segundo nao achou nada antes e
+            # ficou sem vaga. E um reenvio como outro qualquer, nao um rid de
+            # outra pessoa — o app marcaria "codigo ja usado" para sempre.
+            if existente.get("driver_id") == g.user["_id"]:
+                return jsonify({"rid": rid, "url": public_receipt_url(rid), "criado_agora": False}), 200
             return jsonify({"erro": "rid_de_outro_motorista"}), 409
         return jsonify({"erro": "limite_mensal", "limite": FREE_MONTHLY_LIMIT}), 402
 

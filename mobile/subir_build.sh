@@ -35,8 +35,10 @@ xcodebuild -project App.xcodeproj -scheme App -configuration Release \
   -authenticationKeyID Z53W4BVFVV -authenticationKeyIssuerID "$ISSUER" archive 2>&1 | tail -2
 
 PUB="$SAIDA/ReciboTaxi.xcarchive/Products/Applications/App.app/public"
-SONDAS=$(grep -rl "SONDA" "$PUB" 2>/dev/null | wc -l | tr -d ' ')
-DUPES=$(find "$PUB" -name "* [0-9].*" 2>/dev/null | wc -l | tr -d ' ')
+# O "|| true" e por causa do pipefail: grep sem resultado (o caso normal)
+# devolve 1 e derrubaria o script antes do envio.
+SONDAS=$({ grep -rl "SONDA" "$PUB" 2>/dev/null || true; } | wc -l | tr -d ' ')
+DUPES=$({ find "$PUB" -name "* [0-9].*" 2>/dev/null || true; } | wc -l | tr -d ' ')
 echo "-- arquivos: $(ls "$PUB" | tr '\n' ' ')"
 echo "-- sondas: $SONDAS   duplicados: $DUPES"
 if [ "$SONDAS" != "0" ] || [ "$DUPES" != "0" ]; then
@@ -49,7 +51,7 @@ fi
 # ficou fora do commit, como o qrcode.js) nao da erro em lugar nenhum: o app
 # sobe e a funcao some calada. Aqui ele trava.
 FALTANDO=""
-for S in $(grep -o '<script src="[^"]*"' "$PUB/index.html" | sed -e 's/^<script src="//' -e 's/"$//'); do
+for S in $({ grep -o '<script src="[^"]*"' "$PUB/index.html" || true; } | sed -e 's/^<script src="//' -e 's/"$//'); do
   [ -f "$PUB/$S" ] || FALTANDO="$FALTANDO $S"
 done
 if [ -n "$FALTANDO" ]; then

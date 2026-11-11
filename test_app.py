@@ -954,6 +954,25 @@ if A.get_store().kind == "postgres":
     # Campo gigante e recusado, nao truncado.
     _r = _emitir_doc("DD" + "3" * 12, "12345678000190", "E" * 500)
     check("razao social gigante e recusada", _r.status_code == 400, str(_r.status_code))
+
+    # Dois POSTs do mesmo rid ao mesmo tempo, no ultimo recibo da cota: o
+    # segundo nao acha o rid antes e fica sem vaga (a criacao devolve None),
+    # mas o rid ja esta gravado por ESTE motorista. E reenvio (200), nao
+    # "rid de outro motorista" (409), que o app marcaria como recusado para
+    # sempre. Simulado trocando a criacao por uma que nao grava nem acha.
+    _loja = A.get_store()
+    _cri_original = _loja.create_receipt_idempotente
+    _loja.create_receipt_idempotente = lambda payload, quota_limit: (None, False)
+    try:
+        _r = _emitir_doc("DA" + "0" * 12, "12345678000190", "Taxi Central Ltda")
+        check("mesmo rid do mesmo motorista sem vaga e reenvio: 200 com a url",
+              _r.status_code == 200 and (_r.get_json() or {}).get("url", "").endswith("/recibo/DA000000000000")
+              and (_r.get_json() or {}).get("criado_agora") is False, f"{_r.status_code} {str(_r.get_json())[:90]}")
+        _r = _emitir_doc("DE" + "4" * 12, "12345678000190", "Taxi Central Ltda")
+        check("rid novo sem vaga continua 402 limite_mensal",
+              _r.status_code == 402 and (_r.get_json() or {}).get("erro") == "limite_mensal", str(_r.status_code))
+    finally:
+        _loja.create_receipt_idempotente = _cri_original
 else:
     print("  (pulado: precisa do Postgres)")
 
@@ -1214,10 +1233,24 @@ _sess_del = _cdel.get("/api/sessao", headers=_cabd).get_json() or {}
 check("sessao do pre-pago traz o pro_until", bool(_sess_del.get("pro_until")), str(_sess_del.get("pro_until")))
 A.get_store().update_user(_uid_del, {"plan": "pro", "subscription_status": "active",
                                      "stripe_customer_id": "cus_del", "stripe_subscription_id": "sub_del"})
-check("sessao de quem assina nao traz o pro_until (o app diria 'vale ate')",
-      (_cdel.get("/api/sessao", headers=_cabd).get_json() or {}).get("pro_until") is None)
+_sess_del = _cdel.get("/api/sessao", headers=_cabd).get_json() or {}
+check("sessao de quem assina nao traz o pro_until (o app diria 'vale ate')", _sess_del.get("pro_until") is None)
+check("origem_assinatura: assinatura viva na Stripe e 'stripe'", _sess_del.get("origem_assinatura") == "stripe",
+      str(_sess_del.get("origem_assinatura")))
+# Cliente da Stripe nasce ao abrir o checkout e fica; quem desistiu ali e
+# assinou pela loja nao pode ler no app que a assinatura e do site.
+A.get_store().update_user(_uid_del, {"plan": "pro", "subscription_status": "active",
+                                     "stripe_customer_id": "cus_del", "stripe_subscription_id": None})
+check("origem_assinatura: Pro da loja com cliente antigo da Stripe e 'loja'",
+      (_cdel.get("/api/sessao", headers=_cabd).get_json() or {}).get("origem_assinatura") == "loja")
+A.get_store().update_user(_uid_del, {"plan": "free", "subscription_status": None,
+                                     "stripe_customer_id": "cus_del", "stripe_subscription_id": None})
+check("origem_assinatura: Gratis com cliente da Stripe e nula",
+      (_cdel.get("/api/sessao", headers=_cabd).get_json() or {}).get("origem_assinatura") is None)
 A.get_store().update_user(_uid_del, {"plan": "pro", "subscription_status": "cortesia",
                                      "stripe_customer_id": None, "stripe_subscription_id": None})
+check("origem_assinatura: Pro pre-pago e 'prepago'",
+      (_cdel.get("/api/sessao", headers=_cabd).get_json() or {}).get("origem_assinatura") == "prepago")
 # Supabase Auth fora do ar: 503, e nao 401 (o app apagaria a sessao).
 _adm_real = A.supabase_admin
 class _AuthForaDoAr:
@@ -1337,11 +1370,13 @@ check("o cadastro do app manda o codigo de indicacao",
 check("nenhuma tela do app aponta para o site para comprar (3.1.1)",
       _tela_ind and "recibotaxi.com.br/indicar" not in _tela_ind and "no site" not in _tela_ind.lower()
       and "stripe" not in (_tela_ind + _tela_pro2).lower())
-check("o desconto no app vem da loja: codigo da Apple e oferta do Google",
-      'id="cupom-pro"' in _tela_pro2 and "presentCodeRedemptionSheet" in _appjs
-      and "purchaseSubscriptionOption" in _appjs and "tag_google" in _appjs)
-check("o app guarda o codigo, o pro_until e o cupom da sessao",
-      "'codigo_indicacao'" in _appjs and "'pro_until'" in _appjs and "'cupom_indicacao'" in _appjs)
+check("o desconto de indicacao saiu do app (encerrado em 2026-11-10)",
+      'id="cupom-pro"' not in _tela_pro2 and "presentCodeRedemptionSheet" not in _appjs
+      and "purchaseSubscriptionOption" not in _appjs and "70%" not in _tela_ind)
+check("o app guarda o codigo, o pro_until e a origem da assinatura da sessao",
+      "'codigo_indicacao'" in _appjs and "'pro_until'" in _appjs and "'origem_assinatura'" in _appjs)
+check("o app nao aponta o site para o assinante do site (so o aviso, sem link)",
+      "entre no site com a sua conta" in _appjs and "recibotaxi.com.br/dashboard" not in _appjs)
 check("nenhum preco do anual escrito no app",
       not _re.search(r"119[,.]\d", _html_app + _appjs))
 check("o preco do anual vem da loja", "anual.priceString" in _appjs)

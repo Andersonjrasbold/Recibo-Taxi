@@ -665,6 +665,14 @@ window.addEventListener('load', async () => {
       const p = atob(pdfDoRecibo({ ...semNome, dados: { ...semNome.dados, moeda: 'EUR', moeda_simbolo: '€', origem: 'D’Ávila – “Centro”' } }));
       return p.includes('(\x80 23,50)') && p.includes('(D\x92Ávila \x96 \x93Centro\x94)');
     })());
+    // Cooperativa do motorista (perfil do site): cartao, WhatsApp e PDF.
+    const comCoop = { ...semNome, motorista: { ...semNome.motorista, full_name: 'Teste Navegador', plate: 'WEB1A23', coop_name: 'Coopertáxi Cascavel', coop_cnpj: '11.222.333/0001-81' } };
+    mostrarRecibo(comCoop);
+    ok('o cartao mostra a cooperativa com o CNPJ', [...q('recibo').querySelectorAll('dd')].some((dd) => dd.textContent === 'Coopertáxi Cascavel · CNPJ 11.222.333/0001-81'));
+    ok('o WhatsApp leva a cooperativa', textoParaCompartilhar(comCoop).includes('🚖 Cooperativa: Coopertáxi Cascavel · CNPJ 11.222.333/0001-81'));
+    ok('o PDF leva a cooperativa', atob(pdfDoRecibo(comCoop)).includes('(Cooperativa Coopertáxi Cascavel - CNPJ 11.222.333/0001-81)'));
+    mostrarRecibo(semNome);
+    ok('sem cooperativa, nada muda', !textoParaCompartilhar(semNome).includes('Cooperativa') && ![...q('recibo').querySelectorAll('dt')].some((dt) => dt.textContent === 'Cooperativa'));
     clicar('btn-historico'); await espera(200);
     ok('no historico, sem nome, a rota vira o titulo',
        q('lista-historico').textContent.includes('Praça da Sé → Paulista') && q('lista-historico').textContent.includes('sem nome do passageiro'));

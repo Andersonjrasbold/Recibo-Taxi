@@ -657,6 +657,7 @@ function montarRecibo(recibo) {
       <dt>Pagamento</dt><dd>${d.forma_pagamento}</dd>
       <dt>Motorista</dt><dd>${m.full_name || ''}</dd>
       <dt>Placa</dt><dd>${m.plate || ''}</dd>
+      ${cooperativaDe(m) ? `<dt>Cooperativa</dt><dd>${cooperativaDe(m)}</dd>` : ''}
       ${m.whatsapp ? `<dt>WhatsApp</dt><dd>${m.whatsapp}</dd>` : ''}
     </dl>
     ${chamadaDoMotorista(m) ? `<p class="recibo-chamada">${chamadaDoMotorista(m)}</p>` : ''}
@@ -827,6 +828,13 @@ function blocoQr(recibo) {
     </div>`;
 }
 
+// Cooperativa ou associacao de taxi do motorista, com o CNPJ, quando ele
+// informou no perfil do site (build 24). Mesmo formato da pagina publica.
+function cooperativaDe(m) {
+  const nome = ((m || {}).coop_name || '').trim(), cnpj = ((m || {}).coop_cnpj || '').trim();
+  return [nome, cnpj ? `CNPJ ${cnpj}` : ''].filter(Boolean).join(' · ');
+}
+
 function documentoMascarado(d) {
   const texto = String(d.documento_passageiro || '');
   if ((d.pais || paisAtual()) !== 'BR') return texto;
@@ -850,6 +858,7 @@ function textoParaCompartilhar(recibo) {
     ...(d.km ? [`📏 Distância: ${kmTexto(d.km)}`] : []),
     `💰 Valor: ${simboloDe(d)} ${d.valor_exibido}`,
     `💳 Pagamento: ${d.forma_pagamento}`,
+    ...(cooperativaDe(recibo.motorista) ? [`🚖 Cooperativa: ${cooperativaDe(recibo.motorista)}`] : []),
   ];
   // Recibo recusado nao vai ao ar: o link levaria a uma pagina de espera sem
   // fim. Mesmo criterio do QR.

@@ -166,6 +166,18 @@
               <span class="detail-value mono">{{ dados.driver_snapshot.license_number }}</span>
             </div>
             {% endif %}
+            {% if dados.driver_snapshot.coop_name %}
+            <div class="detail-item">
+              <span class="detail-label">Cooperativa</span>
+              <span class="detail-value">{{ dados.driver_snapshot.coop_name }}</span>
+            </div>
+            {% endif %}
+            {% if dados.driver_snapshot.coop_cnpj %}
+            <div class="detail-item">
+              <span class="detail-label">CNPJ</span>
+              <span class="detail-value mono">{{ dados.driver_snapshot.coop_cnpj }}</span>
+            </div>
+            {% endif %}
           </div>
         </div>
 

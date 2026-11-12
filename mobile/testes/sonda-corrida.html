@@ -437,6 +437,21 @@ window.addEventListener('load', async () => {
     return;
   }
 
+  if (H.get('c') === 'pro') {
+    // Foto da tela de assinatura: motorista no plano Gratis, pacotes da loja
+    // como o RevenueCat devolve (preco escrito pela loja, nunca pelo app).
+    localStorage.setItem('access_token', JSON.stringify('token-foto'));
+    localStorage.setItem('plano', JSON.stringify('free'));
+    localStorage.setItem('limite', JSON.stringify(6));
+    localStorage.setItem('usados', JSON.stringify(2));
+    pacotesPro = {
+      '$rc_annual': { identifier: '$rc_annual', product: { priceString: 'R$ 59,90', price: 59.9, currencyCode: 'BRL', pricePerMonthString: 'R$ 4,99' } },
+      '$rc_monthly': { identifier: '$rc_monthly', product: { priceString: 'R$ 9,90', price: 9.9, currencyCode: 'BRL' } },
+    };
+    abrirAssinatura('');
+    return;
+  }
+
   if (H.get('c') !== 'asserts') {
     // Fotos: roda os passos ate o pedido e para ali.
     const passos = [

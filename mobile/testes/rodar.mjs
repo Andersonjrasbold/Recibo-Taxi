@@ -120,6 +120,10 @@ if (modo === 'fotos') {
     ['passo=3', '3-estimativa'], ['passo=4', '4-em-andamento'], ['passo=5', '5-inicio-com-corrida'],
     ['passo=6', '6-encerrada'], ['passo=7', '7-recibo-preenchido'], ['passo=8', '8-recibo-com-qr'],
     ['c=negado&passo=1', '9-sem-permissao'],
+    // Tela de assinatura com os precos de 2026-11 (captura para a revisao da
+    // assinatura na App Store Connect; a loja nao responde no Chrome, entao a
+    // sonda poe os pacotes na mao).
+    ['c=pro', '10-assinatura'],
   ];
   for (const [hash, nome] of casos) {
     await abrir(hash);

@@ -162,6 +162,11 @@ function pdfDoRecibo(recibo, { link = '', qr = null } = {}) {
   paragrafo(m.full_name || '-', { maximo: 1 });
   paragrafo(`Placa ${m.plate || '-'}${m.city ? ' - ' + m.city : ''}`, { tam: 10, maximo: 1 });
   if (m.license_number) texto(`Alvará ${m.license_number}`, { tam: 10, dy: 13 });
+  // Cooperativa com o CNPJ (perfil do site): o que a empresa do passageiro
+  // procura para aceitar o reembolso.
+  if (m.coop_name || m.coop_cnpj) {
+    paragrafo(`Cooperativa ${[m.coop_name, m.coop_cnpj ? 'CNPJ ' + m.coop_cnpj : ''].filter(Boolean).join(' - ')}`, { tam: 10, dy: 13, maximo: 1 });
+  }
   if (m.whatsapp) texto(`WhatsApp ${m.whatsapp}`, { tam: 10, dy: 13 });
 
   // O recibo circula entre passageiros; o telefone impresso traz corrida nova.

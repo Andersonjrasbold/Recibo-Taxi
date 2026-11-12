@@ -575,6 +575,40 @@ check("cidade atualizada", u["city"] == "Santos", u["city"])
 check("placa normalizada para maiuscula", u["plate"] == "XYZ9K88", u["plate"])
 check("nome atualizado", u["full_name"] == "Ana Souza Lima")
 
+# Cooperativa ou associacao de taxi, com o CNPJ (pedido de um taxista, 2026-11-12).
+check("CNPJ valido passa e invalido nao",
+      A.cnpj_valido("11.222.333/0001-81") and A.cnpj_valido("12345678000195")
+      and not A.cnpj_valido("12.345.678/0001-90") and not A.cnpj_valido("00000000000000"))
+r = cpf_.post("/perfil", data={**base, "cooperativa": "Coopertáxi", "cnpj_cooperativa": "", "senha_atual": "senha12345"})
+check("cooperativa sem CNPJ e recusada", r.status_code == 400, r.status_code)
+r = cpf_.post("/perfil", data={**base, "cooperativa": "Coopertáxi", "cnpj_cooperativa": "12.345.678/0001-90", "senha_atual": "senha12345"})
+check("CNPJ com digito errado e recusado", r.status_code == 400 and "CNPJ" in r.get_data(as_text=True), r.status_code)
+r = cpf_.post("/perfil", data={**base, "cooperativa": "  Coopertáxi   Cascavel ", "cnpj_cooperativa": "11222333000181", "senha_atual": "senha12345"})
+check("cooperativa com CNPJ valido e salva", r.status_code == 302, r.status_code)
+u = A.get_store().get_user_by_email("perfil@teste.invalid")
+check("nome limpo e CNPJ pontuado no banco",
+      u.get("coop_name") == "Coopertáxi Cascavel" and u.get("coop_cnpj") == "11.222.333/0001-81", f"{u.get('coop_name')} | {u.get('coop_cnpj')}")
+r = cpf_.get("/perfil")
+check("o perfil volta com a cooperativa preenchida", "Coopertáxi Cascavel" in r.get_data(as_text=True) and "11.222.333/0001-81" in r.get_data(as_text=True))
+r = cpf_.post("/recibo", data={"passageiro": "Empresa X", "data": "2026-11-12", "origem": "Rodoviária", "destino": "Centro", "valor": "30"})
+_m_coop = _re.search(r"/recibo/([0-9A-Fa-f]+)", r.headers.get("Location", ""))   # o redirect leva ?novo=1
+_rid_coop = _m_coop.group(1) if _m_coop else ""
+_rec_coop = A.get_store().get_receipt(_rid_coop) if _rid_coop else None
+check("o recibo novo leva a cooperativa no retrato do motorista",
+      _rec_coop and _rec_coop["driver_snapshot"].get("coop_name") == "Coopertáxi Cascavel"
+      and _rec_coop["driver_snapshot"].get("coop_cnpj") == "11.222.333/0001-81", str(_rec_coop and _rec_coop.get("driver_snapshot")))
+_html_coop = A.app.test_client().get(f"/recibo/{_rid_coop}").get_data(as_text=True)
+check("a pagina publica mostra a cooperativa e o CNPJ", "Coopertáxi Cascavel" in _html_coop and "11.222.333/0001-81" in _html_coop)
+check("a mensagem do recibo (e-mail e WhatsApp) leva a cooperativa",
+      "🚖 Cooperativa: Coopertáxi Cascavel · CNPJ 11.222.333/0001-81" in A.compose_receipt_message(_rec_coop, "https://x.invalid/r"))
+r = cpf_.post("/perfil", data={**base, "cooperativa": "", "cnpj_cooperativa": "", "senha_atual": "senha12345"})
+u = A.get_store().get_user_by_email("perfil@teste.invalid")
+check("apagar os dois campos limpa a cooperativa", r.status_code == 302 and u.get("coop_name") == "" and u.get("coop_cnpj") == "")
+check("o recibo ja emitido continua com a cooperativa (retrato da epoca)",
+      A.get_store().get_receipt(_rid_coop)["driver_snapshot"].get("coop_name") == "Coopertáxi Cascavel")
+check("recibo sem cooperativa nao ganha a linha",
+      "Cooperativa" not in A.compose_receipt_message(A.get_store().get_receipt(_rid_coop) | {"driver_snapshot": {}}, "https://x.invalid/r"))
+
 # e-mail duplicado
 outro = novo_cliente("ocupado@teste.invalid")
 r = cpf_.post("/perfil", data={**base, "email":"ocupado@teste.invalid", "senha_atual":"senha12345"})
@@ -2473,6 +2507,8 @@ check("perfil sem os campos nao volta para o Brasil",
       store.get_user_by_email("moeda-cr@teste.invalid")["currency"] == "CRC")
 _ses = _cm.get("/api/sessao").get_json() or {}
 check("/api/sessao traz a moeda", (_ses.get("moeda"), _ses.get("moeda_simbolo")) == ("CRC", "₡"), str(_ses.get("moeda")))
+check("/api/sessao traz a cooperativa no retrato (vazia quando nao ha)",
+      "coop_name" in (_ses.get("motorista") or {}) and "coop_cnpj" in (_ses.get("motorista") or {}))
 check("/api/sessao traz o codigo de discagem do pais", _ses.get("ddi") == "506", str(_ses.get("ddi")))
 _rid_app = os.urandom(7).hex().upper()
 r = _cm.post("/api/recibos", json={"rid": _rid_app, "passageiro": "Maria Jose", "data": "2026-10-11",

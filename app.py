@@ -246,6 +246,9 @@ SIGNUP_FIELD_LIMITS = {
     "prefixo_taxi": ("O prefixo do táxi", 20),
     "numero_alvara": ("O número do alvará", 40),
     "indicacao": ("O código de indicação", 12),
+    # Cooperativa ou associação de táxi (só no perfil; opcional).
+    "cooperativa": ("O nome da cooperativa", 120),
+    "cnpj_cooperativa": ("O CNPJ da cooperativa", 18),
 }
 
 # Teto por lote na limpeza, para a rotina não estourar o tempo da função
@@ -730,8 +733,21 @@ def snapshot_do_motorista(user: dict) -> dict:
         "vehicle_model": user.get("vehicle_model", ""),
         "taxi_prefix": user.get("taxi_prefix", ""),
         "license_number": user.get("license_number", ""),
+        # Cooperativa ou associação de táxi, com o CNPJ: é o que a empresa do
+        # passageiro procura no recibo para aceitar o reembolso (2026-11-12).
+        "coop_name": user.get("coop_name") or "",
+        "coop_cnpj": user.get("coop_cnpj") or "",
         "country": user.get("country") or PAIS_PADRAO,
     }
+
+
+def cooperativa_do_recibo(receipt: dict) -> str:
+    """'Nome · CNPJ 00.000.000/0001-00', ou vazio quando o motorista não informou."""
+    retrato = receipt.get("driver_snapshot") or {}
+    nome, cnpj = (retrato.get("coop_name") or "").strip(), (retrato.get("coop_cnpj") or "").strip()
+    if not nome and not cnpj:
+        return ""
+    return " · ".join(p for p in (nome, f"CNPJ {cnpj}" if cnpj else "") if p)
 
 
 def pais_do_recibo(receipt: dict) -> str:
@@ -781,6 +797,8 @@ def compose_receipt_message(receipt: dict, public_url: str) -> str:
         *([f"📏 Distância: {receipt['km_display']}"] if receipt.get("km_display") else []),
         f"💰 Valor: {valor}",
         f"💳 Pagamento: {receipt.get('payment_method') or '-'}",
+        # Cooperativa do motorista, com o CNPJ, quando ele informou no perfil.
+        *([f"🚖 Cooperativa: {cooperativa_do_recibo(receipt)}"] if cooperativa_do_recibo(receipt) else []),
         "",
         f"🔗 Acesse o recibo: {public_url}",
     ]
@@ -944,6 +962,20 @@ def cpf_valido(texto: str) -> bool:
     for tamanho in (9, 10):
         soma = sum(int(d) * peso for d, peso in zip(digitos[:tamanho], range(tamanho + 1, 1, -1)))
         esperado = (soma * 10) % 11 % 10
+        if esperado != int(digitos[tamanho]):
+            return False
+    return True
+
+
+def cnpj_valido(texto: str) -> bool:
+    """Dígitos verificadores do CNPJ (os 14 numéricos de sempre)."""
+    digitos = re.sub(r"\D", "", texto or "")
+    if len(digitos) != 14 or digitos == digitos[0] * 14:
+        return False
+    for tamanho in (12, 13):
+        pesos = list(range(tamanho - 7, 1, -1)) + list(range(9, 1, -1))
+        soma = sum(int(d) * p for d, p in zip(digitos[:tamanho], pesos))
+        esperado = 0 if soma % 11 < 2 else 11 - soma % 11
         if esperado != int(digitos[tamanho]):
             return False
     return True
@@ -1144,6 +1176,7 @@ class PostgresStore:
     _DRIVER_COLS = """
         id as _id, email, password_changed_at, full_name, cpf,
         whatsapp, city, plate, vehicle_model, taxi_prefix, license_number,
+        coop_name, coop_cnpj,
         plan, stripe_customer_id, stripe_subscription_id, subscription_status,
         country, currency, referral_code, referred_by, pro_until, pro_reminder_sent_at,
         referral_coupon_granted_at, referral_coupon_used_at, created_at, updated_at
@@ -1225,7 +1258,7 @@ class PostgresStore:
         permitidas = {
             "email", "password_changed_at", "full_name", "cpf",
             "whatsapp", "city", "plate", "vehicle_model", "taxi_prefix",
-            "license_number", "plan", "stripe_customer_id",
+            "license_number", "coop_name", "coop_cnpj", "plan", "stripe_customer_id",
             "stripe_subscription_id", "subscription_status",
             "country", "currency", "referral_code", "referred_by", "pro_until",
             "pro_reminder_sent_at", "referral_coupon_granted_at", "referral_coupon_used_at",
@@ -2483,6 +2516,19 @@ def perfil():
             flash("Confira o CPF: os dígitos não conferem.", "danger")
             return render_template("perfil.html", form=request.form), 400
 
+        # Cooperativa: os dois juntos ou nenhum; CNPJ conferido pelos dígitos e
+        # guardado pontuado. Fora do Brasil não há CNPJ: fica o que foi digitado.
+        coop_name = " ".join(request.form.get("cooperativa", "").split())
+        coop_cnpj = request.form.get("cnpj_cooperativa", "").strip()
+        if bool(coop_name) != bool(coop_cnpj):
+            flash("Cooperativa: preencha o nome e o CNPJ, ou deixe os dois em branco.", "danger")
+            return render_template("perfil.html", form=request.form), 400
+        if coop_cnpj and pais == PAIS_PADRAO:
+            if not cnpj_valido(coop_cnpj):
+                flash("Confira o CNPJ da cooperativa: os dígitos não conferem.", "danger")
+                return render_template("perfil.html", form=request.form), 400
+            coop_cnpj = format_document_br(coop_cnpj)
+
         if email != g.user["email"]:
             if not email_valido(email):
                 flash("Confira o e-mail: ele não parece válido.", "danger")
@@ -2512,6 +2558,8 @@ def perfil():
                 "vehicle_model": request.form.get("modelo_veiculo", "").strip(),
                 "taxi_prefix": request.form.get("prefixo_taxi", "").strip(),
                 "license_number": request.form.get("numero_alvara", "").strip(),
+                "coop_name": coop_name,
+                "coop_cnpj": coop_cnpj,
                 "country": pais,
                 "currency": moeda,
                 "updated_at": now_iso(),
@@ -3700,6 +3748,8 @@ def api_sessao():
                 "vehicle_model": g.user.get("vehicle_model", ""),
                 "taxi_prefix": g.user.get("taxi_prefix", ""),
                 "license_number": g.user.get("license_number", ""),
+                "coop_name": g.user.get("coop_name") or "",
+                "coop_cnpj": g.user.get("coop_cnpj") or "",
             },
         }
     )
@@ -4960,12 +5010,12 @@ def email_descadastro(token: str):
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="11 de novembro de 2026")
+    return render_template("privacidade.html", updated_at="12 de novembro de 2026")
 
 
 @app.get("/termos")
 def termos():
-    return render_template("termos.html", updated_at="11 de novembro de 2026")
+    return render_template("termos.html", updated_at="12 de novembro de 2026")
 
 
 @app.get("/excluir-conta")
@@ -4981,7 +5031,7 @@ def pagina_excluir_conta():
 
     Mesma URL do POST logo abaixo, que e quem realmente apaga: aqui e GET.
     """
-    return render_template("excluir_conta.html", updated_at="11 de novembro de 2026")
+    return render_template("excluir_conta.html", updated_at="12 de novembro de 2026")
 
 
 # ── Receipt view ──────────────────────────────────────────────────────────────

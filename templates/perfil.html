@@ -81,6 +81,26 @@
                      class="form-control form-control-db" value="{{ form.license_number or form.get('numero_alvara', '') }}">
             </div>
 
+            <!-- Cooperativa ou associação de táxi (pedido de um taxista, 2026-11):
+                 vai no retrato do motorista dos próximos recibos, com o CNPJ. -->
+            <div class="col-md-7">
+              <label class="form-label-db" for="cooperativa">Cooperativa ou associação de táxi <span class="text-secondary">(opcional)</span></label>
+              <input type="text" id="cooperativa" name="cooperativa" maxlength="120"
+                     class="form-control form-control-db" value="{{ form.coop_name or form.get('cooperativa', '') }}">
+            </div>
+            <div class="col-md-5">
+              <label class="form-label-db" for="cnpj_cooperativa">CNPJ da cooperativa</label>
+              <input type="text" id="cnpj_cooperativa" name="cnpj_cooperativa" maxlength="18" inputmode="numeric"
+                     placeholder="00.000.000/0001-00"
+                     class="form-control form-control-db" value="{{ form.coop_cnpj or form.get('cnpj_cooperativa', '') }}">
+            </div>
+            <div class="col-12">
+              <p class="text-secondary small mb-0">
+                Preenchidos, saem nos próximos recibos como "Cooperativa: nome · CNPJ". Use só com
+                autorização da cooperativa; quem tem o próprio CNPJ (MEI) pode informá-lo aqui.
+              </p>
+            </div>
+
             {{ pm.campos(form.country or form.get('pais'), form.currency or form.get('moeda'),
                          'form-label-db', 'form-control-db', 'col-md-6') }}
             <div class="col-12">

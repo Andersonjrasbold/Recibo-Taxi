@@ -107,6 +107,22 @@
                     placeholder="Ex: ALV-00123"
                     value="{{ (form or {}).get('numero_alvara', '') }}">
                 </div>
+                <!-- Cooperativa (opcional): sai nos recibos como "Cooperativa: nome · CNPJ". -->
+                <div class="col-md-7">
+                  <label for="cooperativa" class="form-label-auth">Cooperativa ou associação de táxi</label>
+                  <input type="text" id="cooperativa" name="cooperativa" class="form-control form-control-auth"
+                    maxlength="120" placeholder="Opcional"
+                    value="{{ (form or {}).get('cooperativa', '') }}">
+                </div>
+                <div class="col-md-5">
+                  <label for="cnpj_cooperativa" class="form-label-auth">CNPJ da cooperativa</label>
+                  <input type="text" id="cnpj_cooperativa" name="cnpj_cooperativa" class="form-control form-control-auth"
+                    maxlength="18" inputmode="numeric" placeholder="00.000.000/0001-00"
+                    value="{{ (form or {}).get('cnpj_cooperativa', '') }}">
+                </div>
+                <div class="col-12">
+                  <p class="text-secondary small mb-0">Se preencher, o recibo sai com "Cooperativa: nome · CNPJ". Dá para mudar depois em Meu perfil.</p>
+                </div>
               </div>
             </div>
 

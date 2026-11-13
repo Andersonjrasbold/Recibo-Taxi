@@ -19,6 +19,8 @@ window.__regra = () => ({});
 window.__sessao = null;                 // corpo do GET /api/sessao; null = 503
 window.__refresh = null;                // {status, corpo} do POST /api/refresh; null = sem rede
 window.__refreshes = 0;                 // quantas vezes o app tentou renovar
+window.__perfil = null;                 // {status, corpo, atraso} do POST /api/perfil
+window.__perfis = [];                   // corpos que o app mandou para /api/perfil
 window.__pedidos = [];
 window.__avaliacoes = 0;                // quantas vezes o app pediu avaliacao a loja
 window.__ouvintes = {};                 // eventos do plugin App ('resume', 'backButton')
@@ -72,6 +74,12 @@ window.fetch = async (url, op) => {
     if (!window.__refresh) throw new TypeError('sonda: sem rede');
     await new Promise((ok) => setTimeout(ok, window.__refresh.atraso || 0));
     return json(window.__refresh.corpo || {}, window.__refresh.status);
+  }
+  if (REDE && String(url).endsWith('/api/perfil')) {
+    window.__perfis.push(JSON.parse(op.body));
+    const p = window.__perfil || { status: 503, corpo: {} };
+    await new Promise((ok) => setTimeout(ok, p.atraso || 0));
+    return json(p.corpo || {}, p.status);
   }
   if (REDE && /\/api\/recibos\/[A-Z0-9]+\/email$/.test(String(url))) {
     return json({}, window.__email_status || 200);
@@ -430,6 +438,87 @@ window.addEventListener('load', async () => {
       ok('reabertura desconta os pendentes da fila (sem vaga sobrando, nada reabre)', ((await todosOsRecibos()).find((x) => x.rid === 'RECUSADOCOTA01') || {}).recusado === 'limite_mensal');
       await reabrirRecusadosPorCota({ limite_mensal: pendentesAntes + 1, usados_no_mes: 0 });
       ok('com uma vaga alem da fila, o recusado volta', ((await todosOsRecibos()).find((x) => x.rid === 'RECUSADOCOTA01') || {}).pendente === true);
+
+      // ── Meus dados (1.6): editar no app o que sai no recibo ──
+      localStorage.setItem('access_token', JSON.stringify('token-a'));
+      localStorage.setItem('refresh_token', JSON.stringify('refresh-a'));
+      window.__refresh = null;
+      window.__regra = () => ({});
+      const retratoA = { full_name: 'Teste Navegador', email: 'web@teste.invalid', whatsapp: '45999990000', city: 'Cascavel',
+                         plate: 'WEB1A23', vehicle_model: 'Spin', taxi_prefix: '12', license_number: 'ALV-1', coop_name: '', coop_cnpj: '' };
+      window.__sessao = { id: 'web-motorista', plano: 'free', limite_mensal: 6, usados_no_mes: 0, passageiro_opcional: true, motorista: retratoA };
+      clicar('btn-perfil'); await espera(100);
+      clicar('btn-meus-dados'); await espera(400);
+      ok('perfil: Meus dados abre pelo menu e fecha o menu', !q('tela-perfil').hidden && q('menu-perfil').hidden);
+      ok('perfil: os campos vem da sessao', q('p-nome').value === 'Teste Navegador' && q('p-placa').value === 'WEB1A23'
+         && q('p-alvara').value === 'ALV-1' && q('p-cidade').value === 'Cascavel' && q('p-modelo').value === 'Spin',
+         JSON.stringify([q('p-nome').value, q('p-placa').value, q('p-alvara').value]));
+      ok('perfil: mostra o e-mail da conta (que se troca no site)', q('perfil-email').textContent.includes('web@teste.invalid'));
+      // Cooperativa so com o nome: avisa sem gastar tentativa de senha.
+      __perfis.length = 0;
+      digitar('p-cooperativa', 'Coopertáxi'); digitar('p-cnpj-cooperativa', ''); q('p-senha').value = 'senha-certa';
+      q('form-perfil').requestSubmit(); await espera(150);
+      ok('perfil: cooperativa sem CNPJ avisa e nao envia', __perfis.length === 0 && q('aviso-perfil').textContent.includes('Cooperativa'));
+      digitar('p-cooperativa', '');
+      // Sem sinal: avisa, nao envia.
+      redeDoAparelho.getStatus = async () => ({ connected: false });
+      q('form-perfil').requestSubmit(); await espera(150);
+      ok('perfil: sem sinal avisa e nao envia', __perfis.length === 0 && q('aviso-perfil').textContent.includes('internet'));
+      redeDoAparelho.getStatus = async () => ({ connected: true });
+      // Senha errada (403): nada muda.
+      window.__perfil = { status: 403, corpo: { erro: 'senha_incorreta' } };
+      q('form-perfil').requestSubmit(); await espera(300);
+      ok('perfil: senha errada avisa e nao muda nada', q('aviso-perfil').textContent.includes('Senha incorreta')
+         && JSON.parse(localStorage.getItem('motorista')).plate === 'WEB1A23' && !q('tela-perfil').hidden);
+      ok('perfil: 403 nao tentou renovar a sessao nem derrubou', __perfis.length === 1 && !!localStorage.getItem('access_token') && q('tela-login').hidden);
+      // Sucesso: o app manda os campos certos e guarda o retrato que voltou.
+      __perfis.length = 0;
+      digitar('p-nome', 'Novo Nome Teste'); digitar('p-placa', 'nov4a12');
+      digitar('p-cooperativa', 'Coopertáxi Cascavel'); digitar('p-cnpj-cooperativa', '11222333000181');
+      q('p-senha').value = 'senha-certa';
+      const retratoNovo = { ...retratoA, full_name: 'Novo Nome Teste', plate: 'NOV4A12', coop_name: 'Coopertáxi Cascavel', coop_cnpj: '11.222.333/0001-81' };
+      window.__perfil = { status: 200, atraso: 300, corpo: { motorista: retratoNovo } };
+      q('form-perfil').requestSubmit(); q('form-perfil').requestSubmit(); await espera(700);
+      const enviado = __perfis[0] || {};
+      ok('perfil: toque duplo em Salvar manda um pedido so', __perfis.length === 1, String(__perfis.length));
+      ok('perfil: manda os campos do formulario, placa em maiusculas e a senha',
+         enviado.nome_completo === 'Novo Nome Teste' && enviado.placa === 'NOV4A12' && enviado.senha_atual === 'senha-certa'
+         && enviado.cnpj_cooperativa === '11222333000181' && enviado.numero_alvara === 'ALV-1', JSON.stringify(enviado));
+      ok('perfil: nao manda e-mail, CPF, pais nem moeda', !('email' in enviado) && !('cpf' in enviado) && !('pais' in enviado) && !('moeda' in enviado));
+      ok('perfil: guarda o retrato novo e limpa a senha', JSON.parse(localStorage.getItem('motorista')).plate === 'NOV4A12'
+         && q('p-senha').value === '' && q('aviso-perfil').textContent.includes('Dados salvos'));
+      ok('perfil: o cabecalho e a saudacao mudam', q('perfil-iniciais').textContent === 'NT' && q('menu-nome').textContent === 'Novo Nome Teste',
+         `${q('perfil-iniciais').textContent} ${q('menu-nome').textContent}`);
+      redeDoAparelho.getStatus = async () => ({ connected: false });
+      await emitir('Depois do perfil', '18'); await espera(300);
+      redeDoAparelho.getStatus = async () => ({ connected: true });
+      const depois = await achar('Depois do perfil');
+      ok('perfil: o recibo seguinte (mesmo sem sinal) sai com a placa e a cooperativa novas',
+         depois && depois.motorista.plate === 'NOV4A12' && cooperativaDe(depois.motorista).includes('11.222.333/0001-81'),
+         JSON.stringify(depois && depois.motorista));
+      // A sessao que chega depois de abrir a tela nao apaga o que ele digitou.
+      window.__sessao = { ...window.__sessao, motorista: { ...retratoNovo, full_name: 'Nome Do Servidor' } };
+      const abrindo = abrirPerfil();
+      // Como o teclado: o evento de digitar sobe ate o formulario.
+      q('p-nome').value = 'Digitado Agora';
+      q('p-nome').dispatchEvent(new Event('input', { bubbles: true }));
+      await abrindo;
+      ok('perfil: a sessao atrasada nao sobrescreve o que foi digitado', q('p-nome').value === 'Digitado Agora', q('p-nome').value);
+      // Servidor fora do ar.
+      window.__perfil = { status: 503, corpo: { erro: 'indisponivel' } };
+      q('p-senha').value = 'senha-certa';
+      q('form-perfil').requestSubmit(); await espera(300);
+      ok('perfil: servidor fora do ar avisa', q('aviso-perfil').textContent.includes('fora do ar'), q('aviso-perfil').textContent);
+      // Voltar do Android sai da tela.
+      ok('perfil: voltar do Android volta para a tela de base', voltarUmNivel() === true && q('tela-perfil').hidden);
+      // Sessao morta de verdade (401 e o refresh recusado): vai para o login.
+      await abrirPerfil();
+      window.__perfil = { status: 401, corpo: { erro: 'nao_autenticado' } };
+      window.__refresh = { status: 401, corpo: { erro: 'refresh_invalido' } };
+      q('p-senha').value = 'senha-certa';
+      q('form-perfil').requestSubmit(); await espera(400);
+      ok('perfil: 401 com a sessao morta leva ao login', !q('tela-login').hidden && !localStorage.getItem('access_token'));
+      window.__refresh = null;
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
     }

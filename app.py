@@ -3790,20 +3790,91 @@ def api_sessao():
             "usados_no_mes": get_store().count_receipts_in_range(
                 g.user["_id"], mes_inicio, mes_fim, 10_000
             ),
-            "motorista": {
-                "full_name": g.user.get("full_name", ""),
-                "email": g.user.get("email", ""),
-                "whatsapp": g.user.get("whatsapp", ""),
-                "city": g.user.get("city", ""),
-                "plate": g.user.get("plate", ""),
-                "vehicle_model": g.user.get("vehicle_model", ""),
-                "taxi_prefix": g.user.get("taxi_prefix", ""),
-                "license_number": g.user.get("license_number", ""),
-                "coop_name": g.user.get("coop_name") or "",
-                "coop_cnpj": g.user.get("coop_cnpj") or "",
-            },
+            "motorista": motorista_do_app(g.user),
         }
     )
+
+
+def motorista_do_app(user: dict) -> dict:
+    """Os dados do motorista que o app guarda e imprime no recibo offline.
+    Mesmo formato na /api/sessao e na resposta de /api/perfil."""
+    return {
+        "full_name": user.get("full_name", ""),
+        "email": user.get("email", ""),
+        "whatsapp": user.get("whatsapp", ""),
+        "city": user.get("city", ""),
+        "plate": user.get("plate", ""),
+        "vehicle_model": user.get("vehicle_model", ""),
+        "taxi_prefix": user.get("taxi_prefix", ""),
+        "license_number": user.get("license_number", ""),
+        "coop_name": user.get("coop_name") or "",
+        "coop_cnpj": user.get("coop_cnpj") or "",
+    }
+
+
+# Campos que o app edita (versão 1.6). E-mail, CPF, país e moeda ficam no
+# site: o e-mail é o login no Supabase Auth, e país e moeda mudam o jeito de
+# escrever o valor dos recibos que ainda estão na fila do aparelho.
+PERFIL_DO_APP = ("nome_completo", "whatsapp", "cidade", "placa", "modelo_veiculo",
+                 "prefixo_taxi", "numero_alvara", "cooperativa", "cnpj_cooperativa")
+PERFIL_OBRIGATORIOS = ("nome_completo", "whatsapp", "cidade", "placa")
+
+
+@app.post("/api/perfil")
+@api_login_required
+def api_perfil():
+    """Correção dos dados do motorista pelo app (a mesma de Meu perfil no site).
+
+    Pede a senha atual, como o site: um token esquecido num aparelho
+    emprestado não pode trocar o nome e o telefone que saem nos recibos de
+    alguém. Senha errada é 403, e não 401: o app trata 401 como token
+    vencido e tentaria renovar a sessão. Conta como falha de login (mesmo
+    teto do /api/login), e a validação dos campos vem antes, para um CNPJ
+    digitado errado não gastar tentativa de senha.
+    """
+    dados = corpo_json()
+    campos = {k: str(dados.get(k, "") or "").strip() for k in PERFIL_DO_APP}
+    campos["placa"] = campos["placa"].upper()
+
+    for nome in PERFIL_DO_APP:
+        rotulo, maximo = SIGNUP_FIELD_LIMITS[nome]
+        if len(campos[nome]) > maximo:
+            return jsonify({"erro": "campo_longo", "campo": nome, "maximo": maximo,
+                            "mensagem": f"{rotulo} passa do limite de {maximo} caracteres."}), 400
+
+    faltando = [c for c in PERFIL_OBRIGATORIOS if not campos[c]]
+    if faltando:
+        return jsonify({"erro": "campos_obrigatorios", "campos": faltando}), 400
+
+    try:
+        coop_name, coop_cnpj = cooperativa_informada(
+            campos["cooperativa"], campos["cnpj_cooperativa"], g.user.get("country") or PAIS_PADRAO)
+    except CooperativaInvalida as exc:
+        return jsonify({"erro": exc.codigo, "mensagem": str(exc)}), 400
+
+    email = g.user["email"]
+    if login_bloqueado(email):
+        return jsonify({"erro": "muitas_tentativas",
+                        "mensagem": "Muitas tentativas com a senha errada hoje. Tente amanhã."}), 429
+    if not auth_conferir_senha(email, str(dados.get("senha_atual", ""))):
+        registrar_falha_de_login(email)
+        return jsonify({"erro": "senha_incorreta"}), 403
+    zerar_falhas_de_login(email)
+
+    get_store().update_user(g.user["_id"], {
+        "full_name": campos["nome_completo"],
+        "whatsapp": campos["whatsapp"],
+        "city": campos["cidade"],
+        "plate": campos["placa"],
+        "vehicle_model": campos["modelo_veiculo"],
+        "taxi_prefix": campos["prefixo_taxi"],
+        "license_number": campos["numero_alvara"],
+        "coop_name": coop_name,
+        "coop_cnpj": coop_cnpj,
+        "updated_at": now_iso(),
+    })
+    atualizado = get_store().get_user_by_id(g.user["_id"]) or g.user
+    return jsonify({"motorista": motorista_do_app(atualizado)})
 
 
 @app.get("/api/paises")

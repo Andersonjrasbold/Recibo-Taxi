@@ -85,7 +85,8 @@ def limpar_contas_de_teste():
             # faz centenas de logins e o contador de ontem nao pode barrar o de hoje.
             conn.execute("""delete from public.rate_limits
                              where key like 'login:ip:127.0.0.1:%%' or key like 'cadastro:ip:127.0.0.1:%%'
-                                or key like 'convite:203.0.113.77:%%' or key like 'login:e:%%'""")
+                                or key like 'convite:203.0.113.77:%%' or key like 'login:e:%%'
+                                or key like 'login:ei:%%'""")
             # Automacao de e-mails: modelos da suite que sobraram de uma execucao
             # interrompida. Os envios das contas de teste ja sairam no cascade.
             try:
@@ -1344,6 +1345,66 @@ check("site: cadastro com cooperativa grava os dois campos",
 check("site: o formulario de cadastro tem os campos da cooperativa",
       'name="cooperativa"' in A.app.test_client().get("/cadastro").get_data(as_text=True))
 
+# Meus dados pelo app (POST /api/perfil, versao 1.6).
+_cp = A.app.test_client()
+_r = _cp.post("/api/cadastro", json={**_base_coop, "email": "perfil-app@teste.invalid"})
+_cab_p = {"Authorization": f"Bearer {(_r.get_json() or {}).get('access_token', '')}"}
+_novo_p = {"nome_completo": "Perfil App Novo", "whatsapp": "45988887777", "cidade": "Toledo", "placa": "pap1a23",
+           "modelo_veiculo": "Cobalt", "prefixo_taxi": "77", "numero_alvara": "ALV-77",
+           "cooperativa": " Coopertáxi  Toledo ", "cnpj_cooperativa": "11222333000181", "senha_atual": "senha12345"}
+_chave_falhas = f"login:e:{A.chave_de_contador('perfil-app@teste.invalid')}:{A.today_br()}"
+check("perfil: sem token e 401", _cp.post("/api/perfil", json=_novo_p).status_code == 401)
+_falhas_antes = A.get_store().get_counter(_chave_falhas)
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "senha_atual": "errada"})
+check("perfil: senha errada e 403 senha_incorreta (401 faria o app renovar a sessao)",
+      _r.status_code == 403 and (_r.get_json() or {}).get("erro") == "senha_incorreta", f"{_r.status_code} {_r.get_json()}")
+_u = A.get_store().get_user_by_email("perfil-app@teste.invalid")
+check("perfil: senha errada nao muda nada", _u["city"] == "Cascavel" and _u["plate"] == "COO1P23", f"{_u['city']} {_u['plate']}")
+check("perfil: senha errada conta como falha de login", A.get_store().get_counter(_chave_falhas) == _falhas_antes + 1)
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "cidade": "  "})
+check("perfil: obrigatorio vazio e 400 com o campo",
+      _r.status_code == 400 and _r.get_json().get("erro") == "campos_obrigatorios" and "cidade" in _r.get_json().get("campos", []))
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "numero_alvara": "A" * 41})
+check("perfil: campo longo e 400 com a mensagem",
+      _r.status_code == 400 and _r.get_json().get("erro") == "campo_longo" and "alvará" in _r.get_json().get("mensagem", ""))
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "cnpj_cooperativa": ""})
+check("perfil: cooperativa sem CNPJ e 400", _r.status_code == 400 and _r.get_json().get("erro") == "cooperativa_incompleta")
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "cnpj_cooperativa": "12.345.678/0001-90", "senha_atual": "errada"})
+check("perfil: CNPJ errado e 400 antes de conferir a senha (nao gasta tentativa)",
+      _r.status_code == 400 and _r.get_json().get("erro") == "cnpj_invalido"
+      and A.get_store().get_counter(_chave_falhas) == _falhas_antes + 1)
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "email": "outro@teste.invalid", "cpf": "11144477735"})
+_m = (_r.get_json() or {}).get("motorista") or {}
+check("perfil: salva e devolve o retrato do motorista",
+      _r.status_code == 200 and _m.get("full_name") == "Perfil App Novo" and _m.get("plate") == "PAP1A23"
+      and _m.get("coop_name") == "Coopertáxi Toledo" and _m.get("coop_cnpj") == "11.222.333/0001-81", f"{_r.status_code} {_m}")
+_u = A.get_store().get_user_by_email("perfil-app@teste.invalid")
+check("perfil: o banco tem os dados novos",
+      _u and (_u["city"], _u["whatsapp"], _u["vehicle_model"], _u["taxi_prefix"], _u["license_number"])
+      == ("Toledo", "45988887777", "Cobalt", "77", "ALV-77"), str(_u and (_u["city"], _u["license_number"])))
+check("perfil: e-mail e CPF nao mudam pelo app",
+      _u and _u["email"] == "perfil-app@teste.invalid" and _u["cpf"] == "52998224725"
+      and A.get_store().get_user_by_email("outro@teste.invalid") is None)
+check("perfil: senha certa zera as falhas da conta", A.get_store().get_counter(_chave_falhas) == 0)
+check("perfil: a sessao seguinte ja traz o retrato novo",
+      (_cp.get("/api/sessao", headers=_cab_p).get_json() or {}).get("motorista", {}).get("plate") == "PAP1A23")
+_r = _cp.post("/api/recibos", headers=_cab_p, json={"rid": "AF" + "2" * 12, "data": "2026-11-13", "origem": "A",
+                                                    "destino": "B", "valor": "10", "forma_pagamento": "Pix"})
+_rec_p = A.get_store().get_receipt("AF" + "2" * 12)
+check("perfil: o recibo seguinte sai com a placa e a cooperativa novas",
+      _r.status_code == 201 and _rec_p and _rec_p["driver_snapshot"].get("plate") == "PAP1A23"
+      and _rec_p["driver_snapshot"].get("coop_cnpj") == "11.222.333/0001-81", f"{_r.status_code}")
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "cooperativa": "", "cnpj_cooperativa": ""})
+check("perfil: apagar a cooperativa pelo app",
+      _r.status_code == 200 and _r.get_json()["motorista"]["coop_name"] == "" and _r.get_json()["motorista"]["coop_cnpj"] == "")
+# Teto de falhas (o mesmo do login): passou, nem a senha certa salva hoje.
+_chave_ei = f"login:ei:{A.chave_de_contador('perfil-app@teste.invalid')}:127.0.0.1:{A.today_br()}"
+for _ in range(A.LOGIN_DAILY_LIMIT_EMAIL):
+    A.get_store().bump_counter(_chave_ei)
+_r = _cp.post("/api/perfil", headers=_cab_p, json=_novo_p)
+check("perfil: passou do teto de senha errada, 429", _r.status_code == 429 and _r.get_json().get("erro") == "muitas_tentativas")
+A.get_store().reset_counter(_chave_ei)
+
 # Login: senha errada da 401; teto por conta da 429; CPF e e-mail invalidos no cadastro.
 _cl = A.app.test_client()
 check("cadastro com CPF invalido e recusado",
@@ -1434,6 +1495,9 @@ check("nenhuma tela do app aponta para o site para comprar (3.1.1)",
 check("o desconto de indicacao saiu do app (encerrado em 2026-11-10)",
       'id="cupom-pro"' not in _tela_pro2 and "presentCodeRedemptionSheet" not in _appjs
       and "purchaseSubscriptionOption" not in _appjs and "70%" not in _tela_ind)
+check("o app tem a tela Meus dados e salva em /api/perfil (sem e-mail nem CPF)",
+      'id="tela-perfil"' in _html_app and 'id="btn-meus-dados"' in _html_app and "'/api/perfil'" in _appjs
+      and 'id="p-email"' not in _html_app and 'id="p-cpf"' not in _html_app)
 check("o cadastro do app tem os campos da cooperativa e os manda na API",
       'id="c-cooperativa"' in _html_app and 'id="c-cnpj-cooperativa"' in _html_app
       and "cnpj_cooperativa:" in _appjs and "cooperativa_incompleta" in _appjs)
@@ -3088,7 +3152,10 @@ check("o recibo leva a moeda e o simbolo de quando saiu", "moeda: moedaAtual().c
 check("nenhum R$ fixo no valor do recibo, do historico, do WhatsApp ou do PDF",
       "R$ ${" not in _pdfjs and _appjs.count("R$ ${") <= 1)   # sobra so o fallback do preco da loja
 check("o valor digitado segue a mesma regra do servidor (1.500 e milhar)", "separadoresDoValor" in _appjs)
-check("iPhone e Android na 1.4", _ver_ios == {"1.4"} and _ver_and and _ver_and.group(1) == "1.4")
+# Sem numero fixo: o teste quebrava a cada versao nova. O que importa e as
+# duas lojas receberem a mesma versao (e o Android nunca repetir um codigo).
+check("iPhone e Android na mesma versao", len(_ver_ios) == 1 and _ver_and and _ver_and.group(1) in _ver_ios,
+      f"{_ver_ios} x {_ver_and and _ver_and.group(1)}")
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

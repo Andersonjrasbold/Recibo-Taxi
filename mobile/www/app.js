@@ -387,7 +387,8 @@ async function sincronizar() {
 const $ = (id) => document.getElementById(id);
 const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-inicio',
                'tela-corrida', 'tela-tarifa', 'tela-emitir', 'tela-recibo',
-               'tela-assinatura', 'tela-indicar', 'tela-historico', 'tela-excluir'];
+               'tela-assinatura', 'tela-indicar', 'tela-historico', 'tela-excluir',
+               'tela-perfil'];
 
 // Telas de onde o motorista sai para o menu. Fechar o historico, a assinatura,
 // a exclusao ou a tarifa volta para a ultima delas, e nao sempre para o
@@ -1916,7 +1917,7 @@ function voltarUmNivel() {
     return true;
   }
 
-  if (!$('tela-historico').hidden || !$('tela-assinatura').hidden
+  if (!$('tela-historico').hidden || !$('tela-assinatura').hidden || !$('tela-perfil').hidden
       || !$('tela-excluir').hidden || !$('tela-tarifa').hidden || !$('tela-indicar').hidden) {
     voltarParaBase();
     return true;
@@ -1940,6 +1941,120 @@ if (P().App) {
     if (!voltarUmNivel()) P().App.exitApp();
   });
 }
+
+// ── Meus dados ─────────────────────────────────────────────────────────────
+//
+// Os dados que saem no recibo, editados no proprio app: antes so o site
+// tinha essa tela, e quem se cadastrou pelo app nao tinha como corrigir a
+// placa nem pôr a cooperativa. Salvar pede a senha, como no site. E-mail,
+// CPF, pais e moeda continuam so no site (ver tela-perfil no index.html).
+// [id do campo, chave no retrato do motorista, nome no POST /api/perfil]
+const CAMPOS_DO_PERFIL = [
+  ['p-nome', 'full_name', 'nome_completo'],
+  ['p-whats', 'whatsapp', 'whatsapp'],
+  ['p-cidade', 'city', 'cidade'],
+  ['p-placa', 'plate', 'placa'],
+  ['p-modelo', 'vehicle_model', 'modelo_veiculo'],
+  ['p-prefixo', 'taxi_prefix', 'prefixo_taxi'],
+  ['p-alvara', 'license_number', 'numero_alvara'],
+  ['p-cooperativa', 'coop_name', 'cooperativa'],
+  ['p-cnpj-cooperativa', 'coop_cnpj', 'cnpj_cooperativa'],
+];
+
+const MENSAGENS_DO_PERFIL = {
+  senha_incorreta: 'Senha incorreta. Nada foi alterado.',
+  muitas_tentativas: 'Muitas tentativas com a senha errada hoje. Tente amanhã ou use "Esqueci minha senha" no login.',
+  campos_obrigatorios: 'Preencha nome, WhatsApp, cidade e placa.',
+  cooperativa_incompleta: 'Cooperativa: preencha o nome e o CNPJ, ou deixe os dois em branco.',
+  cnpj_invalido: 'Confira o CNPJ da cooperativa: os dígitos não conferem.',
+};
+
+// O motorista ja digitou: a sessao que chega depois da tela aberta nao
+// sobrescreve o que ele mudou.
+let perfilMexido = false;
+let salvandoPerfil = false;
+
+function preencherPerfil(m) {
+  CAMPOS_DO_PERFIL.forEach(([id, chave]) => { $(id).value = (m && m[chave]) || ''; });
+  $('perfil-email').textContent = m && m.email ? `E-mail da conta: ${m.email}` : '';
+}
+
+function avisoPerfil(texto, ehErro = false) {
+  const aviso = $('aviso-perfil');
+  aviso.textContent = texto;
+  aviso.classList.toggle('erro', ehErro);
+  aviso.hidden = !texto;
+}
+
+async function abrirPerfil() {
+  $('p-senha').value = '';
+  avisoPerfil('');
+  perfilMexido = false;
+  preencherPerfil(Guardado.get('motorista') || {});
+  mostrar('tela-perfil');
+  // Os dados de agora (podem ter mudado no site). Chegam depois de a tela
+  // abrir; sem sinal, fica o que estava guardado.
+  const s = await atualizarSessao();
+  if ($('tela-perfil').hidden) return;
+  if (s && !perfilMexido) preencherPerfil(Guardado.get('motorista') || {});
+  if (!(Guardado.get('motorista') || {}).full_name && !perfilMexido) {
+    avisoPerfil('Conecte à internet uma vez para o app buscar os seus dados.', true);
+  }
+}
+
+$('btn-meus-dados').addEventListener('click', () => { vibrar('LIGHT'); abrirPerfil(); });
+$('btn-fechar-perfil').addEventListener('click', voltarParaBase);
+$('form-perfil').addEventListener('input', () => { perfilMexido = true; });
+
+$('form-perfil').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  // A trava liga ANTES do primeiro await: o segundo toque chegava enquanto o
+  // app conferia a rede e mandava o pedido duas vezes.
+  if (salvandoPerfil) return;
+  salvandoPerfil = true;
+  const botao = $('btn-salvar-perfil');
+  botao.disabled = true;
+  try {
+    const corpo = Object.fromEntries(CAMPOS_DO_PERFIL.map(([id, , campo]) => [campo, $(id).value.trim()]));
+    corpo.placa = corpo.placa.toUpperCase();
+    corpo.senha_atual = $('p-senha').value;
+    // A mesma regra do servidor, antes de gastar uma tentativa de senha.
+    if (!corpo.cooperativa !== !corpo.cnpj_cooperativa) {
+      avisoPerfil(MENSAGENS_DO_PERFIL.cooperativa_incompleta, true);
+      return;
+    }
+    if (!(await temRede())) {
+      avisoPerfil('Salvar precisa de internet. O resto do app funciona sem sinal.', true);
+      return;
+    }
+    avisoPerfil('Salvando…');
+    const resp = await api('/api/perfil', { method: 'POST', body: JSON.stringify(corpo) });
+    const r = await resp.json().catch(() => ({}));
+    if (resp.ok && r.motorista) {
+      // Os proximos recibos, inclusive os emitidos sem sinal, ja saem com os
+      // dados novos: o recibo copia o retrato guardado na hora em que nasce.
+      Guardado.set('motorista', r.motorista);
+      atualizarCabecalho();
+      atualizarSaudacao();
+      $('p-senha').value = '';
+      perfilMexido = false;
+      preencherPerfil(r.motorista);
+      vibrar('HEAVY');
+      avisoPerfil('Dados salvos. Os próximos recibos já saem com eles.');
+      return;
+    }
+    // O api() ja tentou renovar a sessao: 401 aqui e sessao morta de verdade.
+    if (resp.status === 401) { encerrarSessao(); return; }
+    avisoPerfil(MENSAGENS_DO_PERFIL[r.erro] || r.mensagem
+      || (resp.status >= 500 ? 'O serviço está fora do ar agora. Tente de novo em instantes.'
+        : 'Não foi possível salvar agora. Tente de novo.'), true);
+  } catch {
+    avisoPerfil('Sem conexão. Salvar precisa de internet.', true);
+  } finally {
+    salvandoPerfil = false;
+    botao.disabled = false;
+  }
+});
 
 // As duas lojas exigem que quem cria conta dentro do app consiga apagar dentro
 // do app: Apple na 5.1.1(v), Google na politica de exclusao de dados. Mandar

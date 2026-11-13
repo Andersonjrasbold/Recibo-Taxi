@@ -32,6 +32,7 @@
           <small id="menu-email"></small>
           <small id="menu-plano" class="menu-plano"></small>
         </div>
+        <button id="btn-meus-dados" class="menu-item">Meus dados</button>
         <button id="btn-pro" class="menu-item">Recibo Táxi Pro</button>
         <button id="btn-indicar" class="menu-item">Indicar um colega</button>
         <button id="btn-historico" class="menu-item">Ver histórico</button>
@@ -521,6 +522,76 @@
       <li>Quem já assina o Pro não recebe o mês grátis.</li>
     </ul>
   </div>
+</section>
+
+<!-- ── Meus dados ──────────────────────────────────────────────────────── -->
+<!-- Os dados que saem no recibo, editados no proprio app (antes so no site).
+     E-mail, CPF, pais e moeda ficam no site: o e-mail e o login, e pais e
+     moeda mudam o jeito de escrever o valor dos recibos que estao na fila. -->
+<section id="tela-perfil" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Meus dados</h1>
+    <button id="btn-fechar-perfil" class="texto">Voltar</button>
+  </div>
+
+  <p class="ajuda">Estes dados saem nos próximos recibos. Os já emitidos ficam como estavam.</p>
+
+  <form id="form-perfil">
+    <label for="p-nome">Nome completo *</label>
+    <input type="text" id="p-nome" maxlength="120" autocomplete="name" required>
+
+    <div class="linha">
+      <div>
+        <label for="p-whats">WhatsApp *</label>
+        <input type="tel" id="p-whats" inputmode="numeric" maxlength="20" required>
+      </div>
+      <div>
+        <label for="p-cidade">Cidade *</label>
+        <input type="text" id="p-cidade" maxlength="80" required>
+      </div>
+    </div>
+
+    <div class="linha">
+      <div>
+        <label for="p-placa">Placa *</label>
+        <input type="text" id="p-placa" maxlength="10" autocapitalize="characters" required>
+      </div>
+      <div>
+        <label for="p-modelo">Modelo do veículo</label>
+        <input type="text" id="p-modelo" maxlength="80">
+      </div>
+    </div>
+
+    <div class="linha">
+      <div>
+        <label for="p-prefixo">Prefixo</label>
+        <input type="text" id="p-prefixo" maxlength="20">
+      </div>
+      <div>
+        <label for="p-alvara">Alvará</label>
+        <input type="text" id="p-alvara" maxlength="40">
+      </div>
+    </div>
+
+    <label for="p-cooperativa">Cooperativa ou associação de táxi <span class="ajuda">(opcional)</span></label>
+    <input type="text" id="p-cooperativa" maxlength="120" autocomplete="organization">
+
+    <label for="p-cnpj-cooperativa">CNPJ da cooperativa</label>
+    <input type="text" id="p-cnpj-cooperativa" inputmode="numeric" maxlength="18" placeholder="00.000.000/0001-00">
+
+    <label for="p-senha">Sua senha *</label>
+    <input type="password" id="p-senha" autocomplete="current-password" required>
+    <p class="ajuda">Para proteger a conta, salvar pede a senha.</p>
+
+    <button type="submit" id="btn-salvar-perfil" class="primario">Salvar</button>
+    <p id="aviso-perfil" class="aviso-email" hidden></p>
+  </form>
+
+  <p class="ajuda" id="perfil-email"></p>
+  <p class="ajuda">
+    E-mail, CPF, país e moeda se alteram no site, em
+    <a href="https://www.recibotaxi.com.br/perfil" class="ligacao">Meu perfil</a>.
+  </p>
 </section>
 
 <!-- ── Excluir conta ───────────────────────────────────────────────────── -->

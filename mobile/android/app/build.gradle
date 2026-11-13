@@ -18,8 +18,8 @@ android {
         applicationId "br.com.recibotaxi.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 23
-        versionName "1.4"
+        versionCode 24
+        versionName "1.5"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -40,8 +40,14 @@ android {
     buildTypes {
         release {
             signingConfig temChave ? signingConfigs.release : null
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // R8 ligado (pedido do Play Console em 2026-11: "otimizacao de codigo
+            // DEX abaixo do limite", prazo fev/2027): tira o codigo que ninguem
+            // usa das bibliotecas e ofusca o resto. Os plugins ficam inteiros
+            // pelas regras do proprio Capacitor (consumer rules) e pelas de
+            // proguard-rules.pro, que mantem os pacotes dos plugins pelo nome.
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }

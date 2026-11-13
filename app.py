@@ -981,6 +981,43 @@ def cnpj_valido(texto: str) -> bool:
     return True
 
 
+class CooperativaInvalida(ValueError):
+    """Nome e CNPJ da cooperativa não fecham; `codigo` é o erro da API."""
+
+    def __init__(self, codigo: str, mensagem: str) -> None:
+        super().__init__(mensagem)
+        self.codigo = codigo
+
+
+def cooperativa_informada(nome: str, cnpj: str, pais: str) -> tuple[str, str]:
+    """Normaliza a cooperativa do perfil ou do cadastro: os dois juntos ou
+    nenhum; CNPJ conferido pelos dígitos e devolvido pontuado. Fora do Brasil
+    não há CNPJ: o documento fica como veio."""
+    nome = " ".join((nome or "").split())
+    cnpj = (cnpj or "").strip()
+    if bool(nome) != bool(cnpj):
+        raise CooperativaInvalida("cooperativa_incompleta",
+                                  "Cooperativa: preencha o nome e o CNPJ, ou deixe os dois em branco.")
+    if cnpj and pais == PAIS_PADRAO:
+        if not cnpj_valido(cnpj):
+            raise CooperativaInvalida("cnpj_invalido", "Confira o CNPJ da cooperativa: os dígitos não conferem.")
+        cnpj = format_document_br(cnpj)
+    return nome, cnpj
+
+
+def guardar_cooperativa(user_id: str, coop_name: str, coop_cnpj: str) -> None:
+    """Grava a cooperativa de um cadastro recém-criado. A linha em `drivers`
+    nasce pelo trigger do Auth, que só conhece os campos antigos; sem nada
+    informado, não toca no banco. Falha aqui não derruba o cadastro: o
+    motorista completa em Meu perfil."""
+    if not coop_name and not coop_cnpj:
+        return
+    try:
+        get_store().update_user(user_id, {"coop_name": coop_name, "coop_cnpj": coop_cnpj})
+    except Exception as exc:
+        app.logger.warning("cooperativa do cadastro %s não gravada: %s", user_id, exc)
+
+
 def enviar_link_de_redefinicao(user: dict) -> bool:
     """Manda o link de nova senha. Usado pelo site e pelo app.
 
@@ -2338,6 +2375,16 @@ def cadastro():
             flash("Confira o e-mail: ele não parece válido.", "danger")
             return render_template("register.html", form=request.form), 400
 
+        # Cooperativa (opcional, pedido de um taxista): conferida aqui, gravada
+        # depois de a conta nascer — o trigger do Auth não conhece os campos.
+        try:
+            coop_name, coop_cnpj = cooperativa_informada(
+                request.form.get("cooperativa", ""), request.form.get("cnpj_cooperativa", ""),
+                request.form.get("pais") or PAIS_PADRAO)
+        except CooperativaInvalida as exc:
+            flash(str(exc), "danger")
+            return render_template("register.html", form=request.form), 400
+
         if len(password) < 8:
             flash("A senha precisa ter pelo menos 8 caracteres.", "danger")
             return render_template("register.html", form=request.form), 400
@@ -2390,6 +2437,7 @@ def cadastro():
             flash(str(exc), "danger")
             return render_template("register.html", form=request.form), 503
 
+        guardar_cooperativa(user_id, coop_name, coop_cnpj)
         registrar_indicacao(indicador, user_id)
         avisar_novo_cadastro(user_id, {
             "email": email, "full_name": full_name, "whatsapp": whatsapp, "city": city,
@@ -2516,18 +2564,13 @@ def perfil():
             flash("Confira o CPF: os dígitos não conferem.", "danger")
             return render_template("perfil.html", form=request.form), 400
 
-        # Cooperativa: os dois juntos ou nenhum; CNPJ conferido pelos dígitos e
-        # guardado pontuado. Fora do Brasil não há CNPJ: fica o que foi digitado.
-        coop_name = " ".join(request.form.get("cooperativa", "").split())
-        coop_cnpj = request.form.get("cnpj_cooperativa", "").strip()
-        if bool(coop_name) != bool(coop_cnpj):
-            flash("Cooperativa: preencha o nome e o CNPJ, ou deixe os dois em branco.", "danger")
+        # Cooperativa: os dois juntos ou nenhum; CNPJ conferido e pontuado.
+        try:
+            coop_name, coop_cnpj = cooperativa_informada(
+                request.form.get("cooperativa", ""), request.form.get("cnpj_cooperativa", ""), pais)
+        except CooperativaInvalida as exc:
+            flash(str(exc), "danger")
             return render_template("perfil.html", form=request.form), 400
-        if coop_cnpj and pais == PAIS_PADRAO:
-            if not cnpj_valido(coop_cnpj):
-                flash("Confira o CNPJ da cooperativa: os dígitos não conferem.", "danger")
-                return render_template("perfil.html", form=request.form), 400
-            coop_cnpj = format_document_br(coop_cnpj)
 
         if email != g.user["email"]:
             if not email_valido(email):
@@ -3620,7 +3663,8 @@ def api_cadastro():
 
     campos = {k: str(dados.get(k, "") or "").strip() for k in (
         "nome_completo", "email", "senha", "whatsapp", "cpf", "cidade",
-        "placa", "modelo_veiculo", "prefixo_taxi", "numero_alvara")}
+        "placa", "modelo_veiculo", "prefixo_taxi", "numero_alvara",
+        "cooperativa", "cnpj_cooperativa")}
     campos["email"] = normalize_email(campos["email"])
     campos["placa"] = campos["placa"].upper()
 
@@ -3647,6 +3691,12 @@ def api_cadastro():
 
     if pais == PAIS_PADRAO and not cpf_valido(campos["cpf"]):
         return jsonify({"erro": "cpf_invalido", "mensagem": "Confira o CPF: os dígitos não conferem."}), 400
+
+    # Cooperativa (opcional; o app 1.5 manda os dois campos).
+    try:
+        coop_name, coop_cnpj = cooperativa_informada(campos["cooperativa"], campos["cnpj_cooperativa"], pais)
+    except CooperativaInvalida as exc:
+        return jsonify({"erro": exc.codigo, "mensagem": str(exc)}), 400
 
     if passou_do_teto("cadastro:ip", client_ip(), CADASTRO_DAILY_LIMIT_IP):
         return jsonify({"erro": "muitas_tentativas",
@@ -3675,6 +3725,7 @@ def api_cadastro():
     except RuntimeError:
         return jsonify({"erro": "indisponivel"}), 503
 
+    guardar_cooperativa(user_id, coop_name, coop_cnpj)
     registrar_indicacao(indicador, user_id)
     avisar_novo_cadastro(user_id, {
         "email": campos["email"], "full_name": campos["nome_completo"], "whatsapp": campos["whatsapp"],

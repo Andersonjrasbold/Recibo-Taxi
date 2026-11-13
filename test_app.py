@@ -1317,6 +1317,33 @@ A.get_store().update_user(_uid_loja, {"plan": "pro", "subscription_status": "ind
 _r = _cloja.post("/excluir-conta", data={"senha": "senha12345", "confirmacao": "EXCLUIR"})
 check("site apaga quem tem Pro de indicacao", A.get_store().get_user_by_email("loja-del@teste.invalid") is None)
 
+# Cooperativa no cadastro (site e app): opcional, os dois juntos, CNPJ conferido.
+_base_coop = {"nome_completo": "Coop Teste", "senha": "senha12345", "whatsapp": "45998238620",
+              "cpf": "52998224725", "cidade": "Cascavel", "placa": "COO1P23"}
+_cc = A.app.test_client()
+_r = _cc.post("/api/cadastro", json={**_base_coop, "email": "coop-api-1@teste.invalid", "cooperativa": "Coopertáxi", "cnpj_cooperativa": ""})
+check("app: cooperativa sem CNPJ e recusada", _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "cooperativa_incompleta", f"{_r.status_code} {_r.get_json()}")
+_r = _cc.post("/api/cadastro", json={**_base_coop, "email": "coop-api-1@teste.invalid", "cooperativa": "Coopertáxi", "cnpj_cooperativa": "12.345.678/0001-90"})
+check("app: CNPJ errado e recusado", _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "cnpj_invalido", f"{_r.status_code} {_r.get_json()}")
+_r = _cc.post("/api/cadastro", json={**_base_coop, "email": "coop-api-1@teste.invalid", "cooperativa": " Coopertáxi  Cascavel ", "cnpj_cooperativa": "11222333000181"})
+_u_coop = A.get_store().get_user_by_email("coop-api-1@teste.invalid")
+check("app: cadastro com cooperativa grava nome limpo e CNPJ pontuado",
+      _r.status_code == 201 and _u_coop and _u_coop.get("coop_name") == "Coopertáxi Cascavel" and _u_coop.get("coop_cnpj") == "11.222.333/0001-81",
+      f"{_r.status_code} {_u_coop and (_u_coop.get('coop_name'), _u_coop.get('coop_cnpj'))}")
+_r = _cc.post("/api/cadastro", json={**_base_coop, "email": "coop-api-2@teste.invalid"})
+check("app: cadastro sem os campos continua igual (app antigo)",
+      _r.status_code == 201 and A.get_store().get_user_by_email("coop-api-2@teste.invalid").get("coop_name") == "")
+_cs = A.app.test_client()
+_r = _cs.post("/cadastro", data={**_base_coop, "email": "coop-site-1@teste.invalid", "cooperativa": "Coopertáxi", "cnpj_cooperativa": "123"})
+check("site: CNPJ errado no cadastro e recusado", _r.status_code == 400 and "CNPJ" in _r.get_data(as_text=True), str(_r.status_code))
+_r = _cs.post("/cadastro", data={**_base_coop, "email": "coop-site-1@teste.invalid", "cooperativa": "Coopertáxi", "cnpj_cooperativa": "11.222.333/0001-81"})
+_u_site = A.get_store().get_user_by_email("coop-site-1@teste.invalid")
+check("site: cadastro com cooperativa grava os dois campos",
+      _r.status_code == 302 and _u_site and _u_site.get("coop_name") == "Coopertáxi" and _u_site.get("coop_cnpj") == "11.222.333/0001-81",
+      f"{_r.status_code} {_u_site and (_u_site.get('coop_name'), _u_site.get('coop_cnpj'))}")
+check("site: o formulario de cadastro tem os campos da cooperativa",
+      'name="cooperativa"' in A.app.test_client().get("/cadastro").get_data(as_text=True))
+
 # Login: senha errada da 401; teto por conta da 429; CPF e e-mail invalidos no cadastro.
 _cl = A.app.test_client()
 check("cadastro com CPF invalido e recusado",
@@ -1407,6 +1434,9 @@ check("nenhuma tela do app aponta para o site para comprar (3.1.1)",
 check("o desconto de indicacao saiu do app (encerrado em 2026-11-10)",
       'id="cupom-pro"' not in _tela_pro2 and "presentCodeRedemptionSheet" not in _appjs
       and "purchaseSubscriptionOption" not in _appjs and "70%" not in _tela_ind)
+check("o cadastro do app tem os campos da cooperativa e os manda na API",
+      'id="c-cooperativa"' in _html_app and 'id="c-cnpj-cooperativa"' in _html_app
+      and "cnpj_cooperativa:" in _appjs and "cooperativa_incompleta" in _appjs)
 check("o app guarda o codigo, o pro_until e a origem da assinatura da sessao",
       "'codigo_indicacao'" in _appjs and "'pro_until'" in _appjs and "'origem_assinatura'" in _appjs)
 check("o app nao aponta o site para o assinante do site (so o aviso, sem link)",

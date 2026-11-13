@@ -1096,6 +1096,8 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
     indicacao: $('c-indicacao').value.trim().toUpperCase(),
     pais: $('c-pais').value,
     moeda: $('c-moeda').value,
+    cooperativa: $('c-cooperativa').value.trim(),
+    cnpj_cooperativa: $('c-cnpj-cooperativa').value.trim(),
   };
 
   const mensagens = {
@@ -1107,6 +1109,8 @@ $('form-cadastro').addEventListener('submit', async (ev) => {
     campo_longo: 'Um dos campos ficou longo demais.',
     email_invalido: 'Confira o e-mail: ele não parece válido.',
     cpf_invalido: 'Confira o CPF: os dígitos não conferem.',
+    cooperativa_incompleta: 'Cooperativa: preencha o nome e o CNPJ, ou deixe os dois em branco.',
+    cnpj_invalido: 'Confira o CNPJ da cooperativa: os dígitos não conferem.',
     muitas_tentativas: 'Muitos cadastros a partir desta rede hoje. Tente amanhã ou fale com o suporte.',
     indisponivel: 'Serviço indisponível agora. Tente em instantes.',
   };

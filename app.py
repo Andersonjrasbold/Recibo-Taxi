@@ -967,18 +967,36 @@ def cpf_valido(texto: str) -> bool:
     return True
 
 
+def cnpj_limpo(texto: str) -> str:
+    """Só letras e números, em maiúsculas: '12.abc.345/01de-35' → '12ABC34501DE35'."""
+    return re.sub(r"[^0-9A-Za-z]", "", texto or "").upper()
+
+
 def cnpj_valido(texto: str) -> bool:
-    """Dígitos verificadores do CNPJ (os 14 numéricos de sempre)."""
-    digitos = re.sub(r"\D", "", texto or "")
-    if len(digitos) != 14 or digitos == digitos[0] * 14:
+    """Dígitos verificadores do CNPJ, numérico ou alfanumérico.
+
+    Desde julho de 2026 a Receita dá às novas inscrições um CNPJ com letras
+    nas 12 primeiras posições (os 2 verificadores seguem números). A conta é
+    a mesma de sempre, com cada caractere valendo o código ASCII menos 48 —
+    para um dígito, o próprio dígito. Exemplo oficial: 12.ABC.345/01DE-35.
+    """
+    s = cnpj_limpo(texto)
+    if not re.fullmatch(r"[0-9A-Z]{12}\d{2}", s) or s == s[0] * 14:
         return False
+    valores = [ord(c) - 48 for c in s]
     for tamanho in (12, 13):
         pesos = list(range(tamanho - 7, 1, -1)) + list(range(9, 1, -1))
-        soma = sum(int(d) * p for d, p in zip(digitos[:tamanho], pesos))
+        soma = sum(v * p for v, p in zip(valores[:tamanho], pesos))
         esperado = 0 if soma % 11 < 2 else 11 - soma % 11
-        if esperado != int(digitos[tamanho]):
+        if esperado != valores[tamanho]:
             return False
     return True
+
+
+def cnpj_pontuado(texto: str) -> str:
+    """00.000.000/0000-00, também para o CNPJ alfanumérico."""
+    s = cnpj_limpo(texto)
+    return f"{s[:2]}.{s[2:5]}.{s[5:8]}/{s[8:12]}-{s[12:]}"
 
 
 class CooperativaInvalida(ValueError):
@@ -1001,7 +1019,7 @@ def cooperativa_informada(nome: str, cnpj: str, pais: str) -> tuple[str, str]:
     if cnpj and pais == PAIS_PADRAO:
         if not cnpj_valido(cnpj):
             raise CooperativaInvalida("cnpj_invalido", "Confira o CNPJ da cooperativa: os dígitos não conferem.")
-        cnpj = format_document_br(cnpj)
+        cnpj = cnpj_pontuado(cnpj)
     return nome, cnpj
 
 
@@ -1016,6 +1034,42 @@ def guardar_cooperativa(user_id: str, coop_name: str, coop_cnpj: str) -> None:
         get_store().update_user(user_id, {"coop_name": coop_name, "coop_cnpj": coop_cnpj})
     except Exception as exc:
         app.logger.warning("cooperativa do cadastro %s não gravada: %s", user_id, exc)
+
+
+def chave_de_reconfirmacao(user_id: str) -> str:
+    return f"reauth:{user_id}:{today_br()}"
+
+
+def conferir_senha_atual(user: dict, senha: str) -> str:
+    """Senha de quem já está logado (perfil e exclusão de conta, site e app).
+
+    'bloqueada': passou de 30 erros hoje nesta conta; 'errada': conta um
+    erro; 'certa': zera. O contador é só desta conta e só de quem já entrou
+    (reauth:<id>:<dia>), separado do teto do login: o do login conta também
+    por e-mail, e um estranho que só sabe o e-mail da pessoa trancaria a
+    exclusão da conta dela (a Apple exige que excluir seja sempre possível).
+    Sem teto nenhum, quem tem o token ou a sessão testava senhas à vontade.
+    """
+    chave = chave_de_reconfirmacao(user["_id"])
+    store = get_store()
+    # Conta a tentativa ANTES de conferir, num passo só: ler e somar depois
+    # deixava pedidos simultâneos passarem todos pelo teto. A senha certa zera.
+    try:
+        if store.bump_counter(chave) > LOGIN_DAILY_LIMIT_EMAIL:
+            return "bloqueada"
+    except Exception as exc:
+        app.logger.warning("teto de senha indisponível: %s", exc)
+    if not auth_conferir_senha(user["email"], senha):
+        return "errada"
+    try:
+        store.reset_counter(chave)
+    except Exception as exc:
+        app.logger.warning("contador de senha indisponível: %s", exc)
+    return "certa"
+
+
+MSG_MUITAS_TENTATIVAS = ("Muitas tentativas com a senha errada hoje. Tente amanhã ou redefina a senha "
+                         "em \"Esqueci minha senha\".")
 
 
 def enviar_link_de_redefinicao(user: dict) -> bool:
@@ -2085,10 +2139,29 @@ def api_login_required(view):
     return wrapped_view
 
 
+# Página que pediu o login, para voltar a ela depois de entrar (o link "Meu
+# perfil" do app abre o site sem sessão). Vale por meia hora: um destino de
+# ontem não sequestra o login de hoje.
+DESTINO_DO_LOGIN_VALIDADE = 30 * 60
+
+
+def destino_depois_do_login() -> str:
+    """O caminho guardado por login_required, se ainda vale; senão, vazio."""
+    guardado = session.pop("depois_do_login", None) or {}
+    caminho = guardado.get("caminho", "") if isinstance(guardado, dict) else ""
+    recente = isinstance(guardado, dict) and time.time() - float(guardado.get("em") or 0) < DESTINO_DO_LOGIN_VALIDADE
+    # Só caminho interno deste site: nada de "//outro.site" nem barra invertida.
+    if recente and caminho.startswith("/") and not caminho.startswith("//") and "\\" not in caminho:
+        return caminho
+    return ""
+
+
 def login_required(view):
     @wraps(view)
     def wrapped_view(*args, **kwargs):
         if not g.user:
+            if request.method == "GET":
+                session["depois_do_login"] = {"caminho": request.path, "em": int(time.time())}
             flash("Entre com sua conta para continuar.", "warning")
             return redirect(url_for("login"))
         return view(*args, **kwargs)
@@ -2340,7 +2413,7 @@ def login():
             # Clicou em "Assinar" antes de entrar: segue direto para o pagamento.
             return iniciar_checkout(user, plano)
         flash("Bem-vindo de volta!", "success")
-        return redirect(url_for("dashboard"))
+        return redirect(destino_depois_do_login() or url_for("dashboard"))
 
     return render_template("login.html")
 
@@ -2468,8 +2541,9 @@ def sair():
 
 @app.route("/recuperar-senha", methods=["GET", "POST"])
 def recuperar_senha():
-    if g.user:
-        return redirect(url_for("dashboard"))
+    # Quem está logado também pode pedir o link: é a saída que a mensagem do
+    # teto de senha e o "Use o link de redefinição" do /perfil indicam. Antes
+    # o site o mandava ao painel, e a saída não existia.
 
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
@@ -2487,9 +2561,9 @@ def recuperar_senha():
             "O link vale por 1 hora.",
             "info",
         )
-        return redirect(url_for("login"))
+        return redirect(url_for("login") if not g.user else url_for("dashboard"))
 
-    return render_template("recuperar_senha.html")
+    return render_template("recuperar_senha.html", email_logado=(g.user or {}).get("email", ""))
 
 
 @app.route("/redefinir-senha/<token>", methods=["GET", "POST"])
@@ -2516,6 +2590,10 @@ def redefinir_senha(token: str):
         auth_definir_senha(user["_id"], password)
         get_store().update_user(user["_id"], {"password_changed_at": now_iso()})
         zerar_falhas_de_login(user["email"])  # a saída prometida pelo 429
+        try:
+            get_store().reset_counter(chave_de_reconfirmacao(user["_id"]))
+        except Exception as exc:
+            app.logger.warning("contador de senha indisponível: %s", exc)
         session.clear()
         flash("Senha redefinida! Entre com a nova senha.", "success")
         return redirect(url_for("login"))
@@ -2535,7 +2613,11 @@ def perfil():
 
         # Alterar dados da conta pede a senha atual: sem isso, uma sessão
         # sequestrada trocaria o e-mail e tomaria a conta em silêncio.
-        if not auth_conferir_senha(g.user["email"], request.form.get("senha_atual", "")):
+        senha = conferir_senha_atual(g.user, request.form.get("senha_atual", ""))
+        if senha == "bloqueada":
+            flash(MSG_MUITAS_TENTATIVAS, "danger")
+            return render_template("perfil.html", form=request.form), 429
+        if senha == "errada":
             flash("Senha incorreta. Nenhuma alteração foi salva.", "danger")
             return render_template("perfil.html", form=request.form), 401
 
@@ -2621,7 +2703,11 @@ def excluir_conta():
         flash('Digite EXCLUIR para confirmar a remoção da conta.', "danger")
         return redirect(url_for("dashboard"))
 
-    if not auth_conferir_senha(g.user["email"], request.form.get("senha", "")):
+    senha = conferir_senha_atual(g.user, request.form.get("senha", ""))
+    if senha == "bloqueada":
+        flash(MSG_MUITAS_TENTATIVAS, "danger")
+        return redirect(url_for("dashboard"))
+    if senha == "errada":
         flash("Senha incorreta. A conta não foi excluída.", "danger")
         return redirect(url_for("dashboard"))
 
@@ -3577,7 +3663,10 @@ def api_excluir_conta():
     pode apagar a conta e todos os recibos de alguem.
     """
     dados = corpo_json()
-    if not auth_conferir_senha(g.user["email"], str(dados.get("senha", ""))):
+    senha = conferir_senha_atual(g.user, str(dados.get("senha", "")))
+    if senha == "bloqueada":
+        return jsonify({"erro": "muitas_tentativas", "mensagem": MSG_MUITAS_TENTATIVAS}), 429
+    if senha == "errada":
         return jsonify({"erro": "senha_incorreta"}), 403
 
     # Apagar sem conseguir parar a cobranca deixaria assinatura orfa, cobrando
@@ -3790,20 +3879,89 @@ def api_sessao():
             "usados_no_mes": get_store().count_receipts_in_range(
                 g.user["_id"], mes_inicio, mes_fim, 10_000
             ),
-            "motorista": {
-                "full_name": g.user.get("full_name", ""),
-                "email": g.user.get("email", ""),
-                "whatsapp": g.user.get("whatsapp", ""),
-                "city": g.user.get("city", ""),
-                "plate": g.user.get("plate", ""),
-                "vehicle_model": g.user.get("vehicle_model", ""),
-                "taxi_prefix": g.user.get("taxi_prefix", ""),
-                "license_number": g.user.get("license_number", ""),
-                "coop_name": g.user.get("coop_name") or "",
-                "coop_cnpj": g.user.get("coop_cnpj") or "",
-            },
+            "motorista": motorista_do_app(g.user),
         }
     )
+
+
+def motorista_do_app(user: dict) -> dict:
+    """Os dados do motorista que o app guarda e imprime no recibo offline.
+    Mesmo formato na /api/sessao e na resposta de /api/perfil."""
+    return {
+        "full_name": user.get("full_name", ""),
+        "email": user.get("email", ""),
+        "whatsapp": user.get("whatsapp", ""),
+        "city": user.get("city", ""),
+        "plate": user.get("plate", ""),
+        "vehicle_model": user.get("vehicle_model", ""),
+        "taxi_prefix": user.get("taxi_prefix", ""),
+        "license_number": user.get("license_number", ""),
+        "coop_name": user.get("coop_name") or "",
+        "coop_cnpj": user.get("coop_cnpj") or "",
+    }
+
+
+# Campos que o app edita (versão 1.6). E-mail, CPF, país e moeda ficam no
+# site: o e-mail é o login no Supabase Auth, e país e moeda mudam o jeito de
+# escrever o valor dos recibos que ainda estão na fila do aparelho.
+PERFIL_DO_APP = ("nome_completo", "whatsapp", "cidade", "placa", "modelo_veiculo",
+                 "prefixo_taxi", "numero_alvara", "cooperativa", "cnpj_cooperativa")
+PERFIL_OBRIGATORIOS = ("nome_completo", "whatsapp", "cidade", "placa")
+
+
+@app.post("/api/perfil")
+@api_login_required
+def api_perfil():
+    """Correção dos dados do motorista pelo app (a mesma de Meu perfil no site).
+
+    Pede a senha atual, como o site: um token esquecido num aparelho
+    emprestado não pode trocar o nome e o telefone que saem nos recibos de
+    alguém. Senha errada é 403, e não 401: o app trata 401 como token
+    vencido e tentaria renovar a sessão. Conta no teto de quem já entrou
+    (conferir_senha_atual: 30 por dia nesta conta, separado do /api/login),
+    e a validação dos campos vem antes, para um CNPJ digitado errado não
+    gastar tentativa de senha.
+    """
+    dados = corpo_json()
+    campos = {k: str(dados.get(k, "") or "").strip() for k in PERFIL_DO_APP}
+    campos["placa"] = campos["placa"].upper()
+
+    for nome in PERFIL_DO_APP:
+        rotulo, maximo = SIGNUP_FIELD_LIMITS[nome]
+        if len(campos[nome]) > maximo:
+            return jsonify({"erro": "campo_longo", "campo": nome, "maximo": maximo,
+                            "mensagem": f"{rotulo} passa do limite de {maximo} caracteres."}), 400
+
+    faltando = [c for c in PERFIL_OBRIGATORIOS if not campos[c]]
+    if faltando:
+        return jsonify({"erro": "campos_obrigatorios", "campos": faltando}), 400
+
+    try:
+        coop_name, coop_cnpj = cooperativa_informada(
+            campos["cooperativa"], campos["cnpj_cooperativa"], g.user.get("country") or PAIS_PADRAO)
+    except CooperativaInvalida as exc:
+        return jsonify({"erro": exc.codigo, "mensagem": str(exc)}), 400
+
+    senha = conferir_senha_atual(g.user, str(dados.get("senha_atual", "")))
+    if senha == "bloqueada":
+        return jsonify({"erro": "muitas_tentativas", "mensagem": MSG_MUITAS_TENTATIVAS}), 429
+    if senha == "errada":
+        return jsonify({"erro": "senha_incorreta"}), 403
+
+    get_store().update_user(g.user["_id"], {
+        "full_name": campos["nome_completo"],
+        "whatsapp": campos["whatsapp"],
+        "city": campos["cidade"],
+        "plate": campos["placa"],
+        "vehicle_model": campos["modelo_veiculo"],
+        "taxi_prefix": campos["prefixo_taxi"],
+        "license_number": campos["numero_alvara"],
+        "coop_name": coop_name,
+        "coop_cnpj": coop_cnpj,
+        "updated_at": now_iso(),
+    })
+    atualizado = get_store().get_user_by_id(g.user["_id"]) or g.user
+    return jsonify({"motorista": motorista_do_app(atualizado)})
 
 
 @app.get("/api/paises")

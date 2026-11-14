@@ -1036,23 +1036,42 @@ def guardar_cooperativa(user_id: str, coop_name: str, coop_cnpj: str) -> None:
         app.logger.warning("cooperativa do cadastro %s não gravada: %s", user_id, exc)
 
 
-def conferir_senha_atual(email: str, senha: str) -> str:
-    """Senha de quem já está logado (perfil, exclusão de conta, site e app).
+def chave_de_reconfirmacao(user_id: str) -> str:
+    return f"reauth:{user_id}:{today_br()}"
 
-    'bloqueada': passou do teto de falhas do dia, o mesmo do login; 'errada':
-    conta uma falha; 'certa': zera as falhas da conta. Sem o teto, quem tem o
-    token ou a sessão de alguém testava senhas sem limite nessas rotas.
+
+def conferir_senha_atual(user: dict, senha: str) -> str:
+    """Senha de quem já está logado (perfil e exclusão de conta, site e app).
+
+    'bloqueada': passou de 30 erros hoje nesta conta; 'errada': conta um
+    erro; 'certa': zera. O contador é só desta conta e só de quem já entrou
+    (reauth:<id>:<dia>), separado do teto do login: o do login conta também
+    por e-mail, e um estranho que só sabe o e-mail da pessoa trancaria a
+    exclusão da conta dela (a Apple exige que excluir seja sempre possível).
+    Sem teto nenhum, quem tem o token ou a sessão testava senhas à vontade.
     """
-    if login_bloqueado(email):
-        return "bloqueada"
-    if not auth_conferir_senha(email, senha):
-        registrar_falha_de_login(email)
+    chave = chave_de_reconfirmacao(user["_id"])
+    store = get_store()
+    try:
+        if store.get_counter(chave) >= LOGIN_DAILY_LIMIT_EMAIL:
+            return "bloqueada"
+    except Exception as exc:
+        app.logger.warning("teto de senha indisponível: %s", exc)
+    if not auth_conferir_senha(user["email"], senha):
+        try:
+            store.bump_counter(chave)
+        except Exception as exc:
+            app.logger.warning("contador de senha indisponível: %s", exc)
         return "errada"
-    zerar_falhas_de_login(email)
+    try:
+        store.reset_counter(chave)
+    except Exception as exc:
+        app.logger.warning("contador de senha indisponível: %s", exc)
     return "certa"
 
 
-MSG_MUITAS_TENTATIVAS = "Muitas tentativas com a senha errada hoje. Tente amanhã ou use \"Esqueci minha senha\"."
+MSG_MUITAS_TENTATIVAS = ("Muitas tentativas com a senha errada hoje. Tente amanhã ou redefina a senha "
+                         "em \"Esqueci minha senha\".")
 
 
 def enviar_link_de_redefinicao(user: dict) -> bool:
@@ -2524,8 +2543,9 @@ def sair():
 
 @app.route("/recuperar-senha", methods=["GET", "POST"])
 def recuperar_senha():
-    if g.user:
-        return redirect(url_for("dashboard"))
+    # Quem está logado também pode pedir o link: é a saída que a mensagem do
+    # teto de senha e o "Use o link de redefinição" do /perfil indicam. Antes
+    # o site o mandava ao painel, e a saída não existia.
 
     if request.method == "POST":
         email = normalize_email(request.form.get("email", ""))
@@ -2543,9 +2563,9 @@ def recuperar_senha():
             "O link vale por 1 hora.",
             "info",
         )
-        return redirect(url_for("login"))
+        return redirect(url_for("login") if not g.user else url_for("dashboard"))
 
-    return render_template("recuperar_senha.html")
+    return render_template("recuperar_senha.html", email_logado=(g.user or {}).get("email", ""))
 
 
 @app.route("/redefinir-senha/<token>", methods=["GET", "POST"])
@@ -2572,6 +2592,10 @@ def redefinir_senha(token: str):
         auth_definir_senha(user["_id"], password)
         get_store().update_user(user["_id"], {"password_changed_at": now_iso()})
         zerar_falhas_de_login(user["email"])  # a saída prometida pelo 429
+        try:
+            get_store().reset_counter(chave_de_reconfirmacao(user["_id"]))
+        except Exception as exc:
+            app.logger.warning("contador de senha indisponível: %s", exc)
         session.clear()
         flash("Senha redefinida! Entre com a nova senha.", "success")
         return redirect(url_for("login"))
@@ -2591,7 +2615,7 @@ def perfil():
 
         # Alterar dados da conta pede a senha atual: sem isso, uma sessão
         # sequestrada trocaria o e-mail e tomaria a conta em silêncio.
-        senha = conferir_senha_atual(g.user["email"], request.form.get("senha_atual", ""))
+        senha = conferir_senha_atual(g.user, request.form.get("senha_atual", ""))
         if senha == "bloqueada":
             flash(MSG_MUITAS_TENTATIVAS, "danger")
             return render_template("perfil.html", form=request.form), 429
@@ -2681,7 +2705,7 @@ def excluir_conta():
         flash('Digite EXCLUIR para confirmar a remoção da conta.', "danger")
         return redirect(url_for("dashboard"))
 
-    senha = conferir_senha_atual(g.user["email"], request.form.get("senha", ""))
+    senha = conferir_senha_atual(g.user, request.form.get("senha", ""))
     if senha == "bloqueada":
         flash(MSG_MUITAS_TENTATIVAS, "danger")
         return redirect(url_for("dashboard"))
@@ -3641,7 +3665,7 @@ def api_excluir_conta():
     pode apagar a conta e todos os recibos de alguem.
     """
     dados = corpo_json()
-    senha = conferir_senha_atual(g.user["email"], str(dados.get("senha", "")))
+    senha = conferir_senha_atual(g.user, str(dados.get("senha", "")))
     if senha == "bloqueada":
         return jsonify({"erro": "muitas_tentativas", "mensagem": MSG_MUITAS_TENTATIVAS}), 429
     if senha == "errada":
@@ -3919,7 +3943,7 @@ def api_perfil():
     except CooperativaInvalida as exc:
         return jsonify({"erro": exc.codigo, "mensagem": str(exc)}), 400
 
-    senha = conferir_senha_atual(g.user["email"], str(dados.get("senha_atual", "")))
+    senha = conferir_senha_atual(g.user, str(dados.get("senha_atual", "")))
     if senha == "bloqueada":
         return jsonify({"erro": "muitas_tentativas", "mensagem": MSG_MUITAS_TENTATIVAS}), 429
     if senha == "errada":

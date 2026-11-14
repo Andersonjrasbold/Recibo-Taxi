@@ -22,6 +22,7 @@ window.__refreshes = 0;                 // quantas vezes o app tentou renovar
 window.__perfil = null;                 // {status, corpo, atraso} do POST /api/perfil
 window.__perfis = [];                   // corpos que o app mandou para /api/perfil
 window.__ordem = [];                    // 'recibo' e 'perfil', na ordem em que chegaram
+window.__sessaoAtraso = 0;              // ms ate o GET /api/sessao responder
 window.__pedidos = [];
 window.__avaliacoes = 0;                // quantas vezes o app pediu avaliacao a loja
 window.__ouvintes = {};                 // eventos do plugin App ('resume', 'backButton')
@@ -69,6 +70,7 @@ window.fetch = async (url, op) => {
                 regra.status || 201);
   }
   if (REDE && String(url).endsWith('/api/sessao')) {
+    await new Promise((ok) => setTimeout(ok, window.__sessaoAtraso || 0));
     return window.__sessao ? json(window.__sessao, 200) : json({}, 503);
   }
   if (REDE && String(url).endsWith('/api/refresh')) {
@@ -460,10 +462,10 @@ window.addEventListener('load', async () => {
       ok('perfil: mostra o e-mail da conta (que se troca no site)', q('perfil-email').textContent.includes('web@teste.invalid'));
       // Cooperativa so com o nome: avisa sem gastar tentativa de senha.
       __perfis.length = 0;
-      digitar('p-cooperativa', 'Coopertáxi'); digitar('p-cnpj-cooperativa', ''); q('p-senha').value = 'senha-certa';
+      teclar('p-cooperativa', 'Coopertáxi'); teclar('p-cnpj-cooperativa', ''); q('p-senha').value = 'senha-certa';
       q('form-perfil').requestSubmit(); await espera(150);
       ok('perfil: cooperativa sem CNPJ avisa e nao envia', __perfis.length === 0 && q('aviso-perfil').textContent.includes('Cooperativa'));
-      digitar('p-cooperativa', '');
+      teclar('p-cooperativa', '');
       // Sem sinal: avisa, nao envia.
       redeDoAparelho.getStatus = async () => ({ connected: false });
       q('form-perfil').requestSubmit(); await espera(150);
@@ -477,8 +479,8 @@ window.addEventListener('load', async () => {
       ok('perfil: 403 nao tentou renovar a sessao nem derrubou', __perfis.length === 1 && !!localStorage.getItem('access_token') && q('tela-login').hidden);
       // Sucesso: o app manda os campos certos e guarda o retrato que voltou.
       __perfis.length = 0;
-      digitar('p-nome', 'Novo Nome Teste'); digitar('p-placa', 'nov4a12');
-      digitar('p-cooperativa', 'Coopertáxi Cascavel'); digitar('p-cnpj-cooperativa', '11222333000181');
+      teclar('p-nome', 'Novo Nome Teste'); teclar('p-placa', 'nov4a12');
+      teclar('p-cooperativa', 'Coopertáxi Cascavel'); teclar('p-cnpj-cooperativa', '11222333000181');
       q('p-senha').value = 'senha-certa';
       const retratoNovo = { ...retratoA, full_name: 'Novo Nome Teste', plate: 'NOV4A12', coop_name: 'Coopertáxi Cascavel', coop_cnpj: '11.222.333/0001-81' };
       window.__perfil = { status: 200, atraso: 300, corpo: { motorista: retratoNovo } };
@@ -538,8 +540,8 @@ window.addEventListener('load', async () => {
       q('form-perfil').requestSubmit(); await espera(600);
       ok('perfil: a fila sobe antes do Salvar', window.__ordem[0] === 'recibo' && window.__ordem.includes('perfil'), JSON.stringify(window.__ordem));
       ok('perfil: 402 na fila nao abre a tela do Pro por cima', q('tela-assinatura').hidden && !q('tela-perfil').hidden);
-      ok('perfil: o aviso conta os recibos que ainda nao subiram', /\d+ recibo\(s\) que ainda não subiram/.test(q('aviso-perfil').textContent),
-         q('aviso-perfil').textContent);
+      ok('perfil: o 402 da fila nao some calado: o aviso diz que o recibo ficou sem link e sem QR',
+         /1 recibo\(s\) da fila ficaram sem link e sem QR/.test(q('aviso-perfil').textContent), q('aviso-perfil').textContent);
       window.__regra = () => ({});
       // Sair no meio do Salvar: nada do que voltar escreve na sessao seguinte.
       await abrirPerfil();
@@ -559,6 +561,64 @@ window.addEventListener('load', async () => {
       Guardado.set('motorista', retratoNovo);
       window.__sessao = { id: 'web-motorista', plano: 'free', limite_mensal: 6, usados_no_mes: 0, passageiro_opcional: true, motorista: retratoNovo };
       await abrirPerfil();   // o Sair levou ao login e limpou a tela
+      // Reabrir Meus dados no meio do Salvar nao zera a tela nem muda o que vai.
+      teclar('p-placa', 'NEW2B22'); q('p-senha').value = 'senha-certa';
+      __perfis.length = 0;
+      window.__sessaoAtraso = 700;
+      window.__perfil = { status: 200, corpo: { motorista: { ...retratoNovo, plate: 'NEW2B22' } } };
+      q('form-perfil').requestSubmit(); await espera(150);
+      clicar('btn-perfil'); await espera(50); clicar('btn-meus-dados'); await espera(50);
+      ok('perfil: reabrir durante o Salvar mostra a tela sem zerar a senha nem os campos',
+         !q('tela-perfil').hidden && q('p-senha').value === 'senha-certa' && q('p-placa').value === 'NEW2B22');
+      await espera(1600);
+      window.__sessaoAtraso = 0;
+      ok('perfil: o Salvar manda o que estava na tela no toque', __perfis.length === 1 && __perfis[0].placa === 'NEW2B22'
+         && __perfis[0].senha_atual === 'senha-certa', JSON.stringify(__perfis));
+      // Sem conseguir conferir os dados de agora, nao salva (mandaria o retrato velho).
+      await abrirPerfil();
+      const sessaoBoa = window.__sessao;
+      window.__sessao = null;
+      __perfis.length = 0;
+      teclar('p-cidade', 'Qualquer'); q('p-senha').value = 'senha-certa';
+      q('form-perfil').requestSubmit(); await espera(300);
+      ok('perfil: sem os dados de agora do servidor, nao salva e explica', __perfis.length === 0 && q('aviso-perfil').textContent.includes('conferir'),
+         q('aviso-perfil').textContent);
+      window.__sessao = sessaoBoa;
+      // Fila lenta: o Salvar espera no maximo ~8 s e avisa o que ficou na fila.
+      redeDoAparelho.getStatus = async () => ({ connected: false });
+      await emitir('Fila lenta', '13'); await espera(300);
+      redeDoAparelho.getStatus = async () => ({ connected: true });
+      await abrirPerfil();
+      window.__regra = (c) => (c.origem === 'Fila lenta' ? { atraso: 12000 } : {});
+      window.__perfil = { status: 200, corpo: { motorista: retratoNovo } };
+      __perfis.length = 0; q('p-senha').value = 'senha-certa';
+      const inicioFila = performance.now();
+      q('form-perfil').requestSubmit();
+      while (!__perfis.length && performance.now() - inicioFila < 11000) await espera(200);
+      const esperouFila = performance.now() - inicioFila;
+      ok('perfil: fila lenta nao prende o Salvar (no maximo ~8 s)', __perfis.length === 1 && esperouFila < 9500, `${Math.round(esperouFila)} ms`);
+      await espera(400);
+      ok('perfil: o aviso diz que o recibo ainda na fila sobe com os dados novos', q('aviso-perfil').textContent.includes('ainda na fila'),
+         q('aviso-perfil').textContent);
+      window.__regra = () => ({});
+      // Sair enquanto o Salvar confere os dados: nada sobe com o token do motorista seguinte.
+      await salvarRecibo({ rid: 'DEB00000000001', criado_em: new Date().toISOString(), pendente: true, dono: 'b@teste.invalid',
+                           motorista: { email: 'b@teste.invalid' }, dados: { rid: 'DEB00000000001', origem: 'Fila de B', destino: 'Centro',
+                           valor: '5', valor_exibido: '5,00', data: '2026-11-13', forma_pagamento: 'Pix' } });
+      await abrirPerfil();
+      window.__sessaoAtraso = 500; window.__ordem.length = 0; q('p-senha').value = 'senha-certa';
+      q('form-perfil').requestSubmit(); await espera(100);
+      encerrarSessao();
+      entrarNaSessao({ access_token: 'token-b', refresh_token: 'refresh-b' }, 'b@teste.invalid');
+      await espera(900);
+      window.__sessaoAtraso = 0;
+      ok('perfil: Sair enquanto o Salvar conferia os dados: nenhuma passada nem pedido depois da troca', window.__ordem.length === 0,
+         JSON.stringify(window.__ordem));
+      localStorage.setItem('access_token', JSON.stringify('token-a'));
+      localStorage.setItem('refresh_token', JSON.stringify('refresh-a'));
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      Guardado.set('motorista', retratoNovo);
+      await abrirPerfil();
       // Servidor fora do ar.
       window.__perfil = { status: 503, corpo: { erro: 'indisponivel' } };
       q('p-senha').value = 'senha-certa';

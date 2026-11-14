@@ -1352,7 +1352,8 @@ _cab_p = {"Authorization": f"Bearer {(_r.get_json() or {}).get('access_token', '
 _novo_p = {"nome_completo": "Perfil App Novo", "whatsapp": "45988887777", "cidade": "Toledo", "placa": "pap1a23",
            "modelo_veiculo": "Cobalt", "prefixo_taxi": "77", "numero_alvara": "ALV-77",
            "cooperativa": " Coopertáxi  Toledo ", "cnpj_cooperativa": "11222333000181", "senha_atual": "senha12345"}
-_chave_falhas = f"login:e:{A.chave_de_contador('perfil-app@teste.invalid')}:{A.today_br()}"
+_uid_p = A.get_store().get_user_by_email("perfil-app@teste.invalid")["_id"]
+_chave_falhas = A.chave_de_reconfirmacao(_uid_p)   # erros de senha de quem ja entrou, so desta conta
 check("perfil: sem token e 401", _cp.post("/api/perfil", json=_novo_p).status_code == 401)
 _falhas_antes = A.get_store().get_counter(_chave_falhas)
 _r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "senha_atual": "errada"})
@@ -1360,7 +1361,7 @@ check("perfil: senha errada e 403 senha_incorreta (401 faria o app renovar a ses
       _r.status_code == 403 and (_r.get_json() or {}).get("erro") == "senha_incorreta", f"{_r.status_code} {_r.get_json()}")
 _u = A.get_store().get_user_by_email("perfil-app@teste.invalid")
 check("perfil: senha errada nao muda nada", _u["city"] == "Cascavel" and _u["plate"] == "COO1P23", f"{_u['city']} {_u['plate']}")
-check("perfil: senha errada conta como falha de login", A.get_store().get_counter(_chave_falhas) == _falhas_antes + 1)
+check("perfil: senha errada conta um erro desta conta", A.get_store().get_counter(_chave_falhas) == _falhas_antes + 1)
 _r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "cidade": "  "})
 check("perfil: obrigatorio vazio e 400 com o campo",
       _r.status_code == 400 and _r.get_json().get("erro") == "campos_obrigatorios" and "cidade" in _r.get_json().get("campos", []))
@@ -1385,7 +1386,7 @@ check("perfil: o banco tem os dados novos",
 check("perfil: e-mail e CPF nao mudam pelo app",
       _u and _u["email"] == "perfil-app@teste.invalid" and _u["cpf"] == "52998224725"
       and A.get_store().get_user_by_email("outro@teste.invalid") is None)
-check("perfil: senha certa zera as falhas da conta", A.get_store().get_counter(_chave_falhas) == 0)
+check("perfil: senha certa zera os erros da conta", A.get_store().get_counter(_chave_falhas) == 0)
 check("perfil: a sessao seguinte ja traz o retrato novo",
       (_cp.get("/api/sessao", headers=_cab_p).get_json() or {}).get("motorista", {}).get("plate") == "PAP1A23")
 _r = _cp.post("/api/recibos", headers=_cab_p, json={"rid": "AF" + "2" * 12, "data": "2026-11-13", "origem": "A",
@@ -1419,10 +1420,19 @@ for _destino, _nome in (({"caminho": "/perfil", "em": 0}, "destino de ontem"), (
         _sess["depois_do_login"] = _destino
     _r = _cv3.post("/login", data={"email": "perfil-app@teste.invalid", "senha": "senha12345"})
     check(f"site: {_nome} e ignorado (vai ao painel)", _r.headers.get("Location", "").endswith("/dashboard"), _r.headers.get("Location", ""))
-# Teto de falhas (o mesmo do login) em toda rota que confere a senha de quem ja esta logado.
+# Um estranho que so sabe o e-mail e erra no /login (de varios IPs) nao tranca
+# o perfil nem a exclusao de quem ja esta logado: o teto de quem ja entrou e
+# so desta conta.
+_chave_e = f"login:e:{A.chave_de_contador('perfil-app@teste.invalid')}:{A.today_br()}"
+for _ in range(A.LOGIN_DAILY_LIMIT_EMAIL * 5):
+    A.get_store().bump_counter(_chave_e)
+_r = _cp.post("/api/perfil", headers=_cab_p, json=_novo_p)
+check("perfil: o teto do login (por e-mail) nao tranca quem ja esta logado", _r.status_code == 200, f"{_r.status_code} {_r.get_json()}")
+A.get_store().reset_counter(_chave_e)
+# Teto de quem ja esta logado (30 erros de senha hoje, nesta conta) em toda rota que confere a senha.
 _cs_p = A.app.test_client()
 _cs_p.post("/login", data={"email": "perfil-app@teste.invalid", "senha": "senha12345"})
-_chave_ei = f"login:ei:{A.chave_de_contador('perfil-app@teste.invalid')}:127.0.0.1:{A.today_br()}"
+_chave_ei = _chave_falhas
 for _ in range(A.LOGIN_DAILY_LIMIT_EMAIL):
     A.get_store().bump_counter(_chave_ei)
 _r = _cp.post("/api/perfil", headers=_cab_p, json=_novo_p)
@@ -1440,8 +1450,18 @@ check("excluir pelo site: passou do teto, a conta fica",
 A.get_store().reset_counter(_chave_ei)
 _falhas_e = A.get_store().get_counter(_chave_falhas)
 _r = _cp.post("/api/excluir-conta", headers=_cab_p, json={"senha": "errada"})
-check("excluir pelo app: senha errada conta como falha de login",
+check("excluir pelo app: senha errada conta um erro desta conta",
       _r.status_code == 403 and A.get_store().get_counter(_chave_falhas) == _falhas_e + 1)
+# "Esqueci minha senha" tambem para quem esta logado, e redefinir zera o teto de quem ja entrou.
+_r = _cs_p.get("/recuperar-senha")
+check("logado: /recuperar-senha abre com o e-mail preenchido",
+      _r.status_code == 200 and 'value="perfil-app@teste.invalid"' in _r.get_data(as_text=True), str(_r.status_code))
+for _ in range(A.LOGIN_DAILY_LIMIT_EMAIL):
+    A.get_store().bump_counter(_chave_falhas)
+_tok_p = A.build_reset_token(A.get_store().get_user_by_email("perfil-app@teste.invalid"))
+_r = A.app.test_client().post(f"/redefinir-senha/{_tok_p}", data={"senha": "senha12345", "confirmar_senha": "senha12345"})
+check("redefinir a senha zera o teto de quem ja entrou",
+      _r.status_code == 302 and A.get_store().get_counter(_chave_falhas) == 0, f"{_r.status_code} {A.get_store().get_counter(_chave_falhas)}")
 
 # Login: senha errada da 401; teto por conta da 429; CPF e e-mail invalidos no cadastro.
 _cl = A.app.test_client()

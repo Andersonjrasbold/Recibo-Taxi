@@ -117,7 +117,7 @@
                 <div class="col-md-5">
                   <label for="cnpj_cooperativa" class="form-label-auth">CNPJ da cooperativa</label>
                   <input type="text" id="cnpj_cooperativa" name="cnpj_cooperativa" class="form-control form-control-auth"
-                    maxlength="18" inputmode="numeric" placeholder="00.000.000/0001-00"
+                    maxlength="18" inputmode="text" autocapitalize="characters" placeholder="00.000.000/0001-00"
                     value="{{ (form or {}).get('cnpj_cooperativa', '') }}">
                 </div>
                 <div class="col-12">

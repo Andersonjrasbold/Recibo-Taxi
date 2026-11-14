@@ -149,7 +149,7 @@
     <input type="text" id="c-cooperativa" maxlength="120" autocomplete="organization">
 
     <label for="c-cnpj-cooperativa">CNPJ da cooperativa</label>
-    <input type="text" id="c-cnpj-cooperativa" inputmode="numeric" maxlength="18" placeholder="00.000.000/0001-00">
+    <input type="text" id="c-cnpj-cooperativa" inputmode="text" autocapitalize="characters" maxlength="18" placeholder="00.000.000/0001-00">
     <p class="ajuda">Se preencher, o recibo sai com "Cooperativa: nome · CNPJ". Dá para mudar depois no site, em Meu perfil.</p>
 
     <label for="c-indicacao">Código de indicação <span class="ajuda">(opcional)</span></label>
@@ -534,7 +534,10 @@
     <button id="btn-fechar-perfil" class="texto">Voltar</button>
   </div>
 
-  <p class="ajuda">Estes dados saem nos próximos recibos. Os já emitidos ficam como estavam.</p>
+  <p class="ajuda">
+    Estes dados saem nos próximos recibos. Os que já subiram ficam como estavam;
+    os que ainda estão na fila sobem com os dados novos.
+  </p>
 
   <form id="form-perfil">
     <label for="p-nome">Nome completo *</label>
@@ -577,7 +580,7 @@
     <input type="text" id="p-cooperativa" maxlength="120" autocomplete="organization">
 
     <label for="p-cnpj-cooperativa">CNPJ da cooperativa</label>
-    <input type="text" id="p-cnpj-cooperativa" inputmode="numeric" maxlength="18" placeholder="00.000.000/0001-00">
+    <input type="text" id="p-cnpj-cooperativa" inputmode="text" autocapitalize="characters" maxlength="18" placeholder="00.000.000/0001-00">
 
     <label for="p-senha">Sua senha *</label>
     <input type="password" id="p-senha" autocomplete="current-password" required>

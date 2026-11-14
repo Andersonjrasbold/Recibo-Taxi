@@ -86,7 +86,7 @@ def limpar_contas_de_teste():
             conn.execute("""delete from public.rate_limits
                              where key like 'login:ip:127.0.0.1:%%' or key like 'cadastro:ip:127.0.0.1:%%'
                                 or key like 'convite:203.0.113.77:%%' or key like 'login:e:%%'
-                                or key like 'login:ei:%%'""")
+                                or key like 'login:ei:%%:127.0.0.1:%%'""")
             # Automacao de e-mails: modelos da suite que sobraram de uma execucao
             # interrompida. Os envios das contas de teste ja sairam no cascade.
             try:
@@ -1397,13 +1397,51 @@ check("perfil: o recibo seguinte sai com a placa e a cooperativa novas",
 _r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "cooperativa": "", "cnpj_cooperativa": ""})
 check("perfil: apagar a cooperativa pelo app",
       _r.status_code == 200 and _r.get_json()["motorista"]["coop_name"] == "" and _r.get_json()["motorista"]["coop_cnpj"] == "")
-# Teto de falhas (o mesmo do login): passou, nem a senha certa salva hoje.
+# CNPJ alfanumerico (Receita, novas inscricoes desde 07/2026): aceito e pontuado.
+check("CNPJ alfanumerico: o exemplo oficial passa e o verificador errado nao",
+      A.cnpj_valido("12.ABC.345/01DE-35") and A.cnpj_valido("12abc34501de35") and not A.cnpj_valido("12.ABC.345/01DE-36")
+      and A.cnpj_valido("11.222.333/0001-81") and not A.cnpj_valido("AAAAAAAAAAAA00"))
+_r = _cp.post("/api/perfil", headers=_cab_p, json={**_novo_p, "cnpj_cooperativa": "12abc34501de35"})
+check("perfil: cooperativa com CNPJ alfanumerico e salva pontuada",
+      _r.status_code == 200 and _r.get_json()["motorista"]["coop_cnpj"] == "12.ABC.345/01DE-35", f"{_r.status_code} {_r.get_json()}")
+# Volta para a pagina pedida depois do login (o link "Meu perfil" do app abre o site sem sessao).
+_cv = A.app.test_client()
+check("site: /perfil sem sessao manda ao login", "/login" in _cv.get("/perfil").headers.get("Location", ""))
+_r = _cv.post("/login", data={"email": "perfil-app@teste.invalid", "senha": "senha12345"})
+check("site: depois do login, volta ao /perfil", _r.status_code == 302 and _r.headers.get("Location", "").endswith("/perfil"),
+      _r.headers.get("Location", ""))
+_cv2 = A.app.test_client()
+_r = _cv2.post("/login", data={"email": "perfil-app@teste.invalid", "senha": "senha12345"})
+check("site: login direto continua indo ao painel", _r.headers.get("Location", "").endswith("/dashboard"), _r.headers.get("Location", ""))
+for _destino, _nome in (({"caminho": "/perfil", "em": 0}, "destino de ontem"), ({"caminho": "//outro.site/x", "em": int(A.time.time())}, "destino de fora")):
+    _cv3 = A.app.test_client()
+    with _cv3.session_transaction() as _sess:
+        _sess["depois_do_login"] = _destino
+    _r = _cv3.post("/login", data={"email": "perfil-app@teste.invalid", "senha": "senha12345"})
+    check(f"site: {_nome} e ignorado (vai ao painel)", _r.headers.get("Location", "").endswith("/dashboard"), _r.headers.get("Location", ""))
+# Teto de falhas (o mesmo do login) em toda rota que confere a senha de quem ja esta logado.
+_cs_p = A.app.test_client()
+_cs_p.post("/login", data={"email": "perfil-app@teste.invalid", "senha": "senha12345"})
 _chave_ei = f"login:ei:{A.chave_de_contador('perfil-app@teste.invalid')}:127.0.0.1:{A.today_br()}"
 for _ in range(A.LOGIN_DAILY_LIMIT_EMAIL):
     A.get_store().bump_counter(_chave_ei)
 _r = _cp.post("/api/perfil", headers=_cab_p, json=_novo_p)
 check("perfil: passou do teto de senha errada, 429", _r.status_code == 429 and _r.get_json().get("erro") == "muitas_tentativas")
+_r = _cp.post("/api/excluir-conta", headers=_cab_p, json={"senha": "senha12345"})
+check("excluir pelo app: passou do teto, 429 e a conta fica",
+      _r.status_code == 429 and _r.get_json().get("erro") == "muitas_tentativas"
+      and A.get_store().get_user_by_email("perfil-app@teste.invalid") is not None, f"{_r.status_code}")
+_r = _cs_p.post("/perfil", data={"nome_completo": "X Y", "email": "perfil-app@teste.invalid", "whatsapp": "45988887777",
+                                 "cpf": "52998224725", "cidade": "Toledo", "placa": "PAP1A23", "senha_atual": "senha12345"})
+check("perfil do site: passou do teto, 429", _r.status_code == 429, str(_r.status_code))
+_r = _cs_p.post("/excluir-conta", data={"confirmacao": "EXCLUIR", "senha": "senha12345"})
+check("excluir pelo site: passou do teto, a conta fica",
+      _r.status_code == 302 and A.get_store().get_user_by_email("perfil-app@teste.invalid") is not None)
 A.get_store().reset_counter(_chave_ei)
+_falhas_e = A.get_store().get_counter(_chave_falhas)
+_r = _cp.post("/api/excluir-conta", headers=_cab_p, json={"senha": "errada"})
+check("excluir pelo app: senha errada conta como falha de login",
+      _r.status_code == 403 and A.get_store().get_counter(_chave_falhas) == _falhas_e + 1)
 
 # Login: senha errada da 401; teto por conta da 429; CPF e e-mail invalidos no cadastro.
 _cl = A.app.test_client()
@@ -3152,10 +3190,8 @@ check("o recibo leva a moeda e o simbolo de quando saiu", "moeda: moedaAtual().c
 check("nenhum R$ fixo no valor do recibo, do historico, do WhatsApp ou do PDF",
       "R$ ${" not in _pdfjs and _appjs.count("R$ ${") <= 1)   # sobra so o fallback do preco da loja
 check("o valor digitado segue a mesma regra do servidor (1.500 e milhar)", "separadoresDoValor" in _appjs)
-# Sem numero fixo: o teste quebrava a cada versao nova. O que importa e as
-# duas lojas receberem a mesma versao (e o Android nunca repetir um codigo).
-check("iPhone e Android na mesma versao", len(_ver_ios) == 1 and _ver_and and _ver_and.group(1) in _ver_ios,
-      f"{_ver_ios} x {_ver_and and _ver_and.group(1)}")
+# (A versao igual nas duas plataformas e conferida em "iPhone e Android com o
+# mesmo numero de versao"; aqui havia um numero fixo que quebrava a cada versao.)
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

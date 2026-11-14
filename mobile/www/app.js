@@ -313,7 +313,10 @@ function reagendarSincronizacao() {
   }, atraso);
 }
 
-async function sincronizar() {
+// `semTelaDoPro`: a passada que o Salvar de Meus dados dispara nao abre a
+// tela do Pro por cima do formulario num 402; o recibo fica recusado e o
+// aviso do Salvar conta quantos nao subiram.
+async function sincronizar({ semTelaDoPro = false } = {}) {
   if (!(await temRede()) || !token()) {
     return { enviados: 0, restantes: (await pendentes()).length };
   }
@@ -350,7 +353,7 @@ async function sincronizar() {
         // O limite vem na resposta: quem acabou de perder o Pro ainda tinha
         // "ilimitado" guardado, e a frase saia sem numero.
         const limite = corpo.limite ?? Guardado.get('limite') ?? '';
-        if (!avisouLimite) {
+        if (!avisouLimite && !semTelaDoPro) {
           avisouLimite = true;
           // Vindo da tela do recibo, "Agora não" volta para ela: e la que esta o
           // aviso de que este recibo ficou sem QR.
@@ -1740,6 +1743,7 @@ $('btn-restaurar').addEventListener('click', async () => {
 function encerrarSessao() {
   novaGeracaoDaSessao();   // renovacao ou passada em voo nao regrava nada daqui em diante
   tentativasAdiadas = 0;
+  limparPerfil();
   if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
@@ -1969,14 +1973,34 @@ const MENSAGENS_DO_PERFIL = {
   cnpj_invalido: 'Confira o CNPJ da cooperativa: os dígitos não conferem.',
 };
 
-// O motorista ja digitou: a sessao que chega depois da tela aberta nao
-// sobrescreve o que ele mudou.
-let perfilMexido = false;
+// Campos que o motorista mexeu nesta abertura da tela. A sessao que chega
+// depois atualiza so os outros: era tudo ou nada, e uma tecla (ate na senha)
+// fazia o Salvar mandar o retrato velho do aparelho por cima do que ele
+// tinha mudado no site.
+const camposTocados = new Set();
+// Esta abertura ja recebeu os dados de agora do servidor?
+let perfilAtualizado = false;
 let salvandoPerfil = false;
 
-function preencherPerfil(m) {
-  CAMPOS_DO_PERFIL.forEach(([id, chave]) => { $(id).value = (m && m[chave]) || ''; });
+function preencherPerfil(m, { soNaoTocados = false } = {}) {
+  CAMPOS_DO_PERFIL.forEach(([id, chave]) => {
+    if (!soNaoTocados || !camposTocados.has(id)) $(id).value = (m && m[chave]) || '';
+  });
   $('perfil-email').textContent = m && m.email ? `E-mail da conta: ${m.email}` : '';
+}
+
+// "Sair" e o login de outro motorista: a tela nao guarda nada de quem saiu
+// (os campos ficam no DOM, escondidos) e nao fica travada por um salvamento
+// que era da sessao anterior.
+function limparPerfil() {
+  camposTocados.clear();
+  perfilAtualizado = false;
+  salvandoPerfil = false;
+  CAMPOS_DO_PERFIL.forEach(([id]) => { $(id).value = ''; });
+  $('p-senha').value = '';
+  $('perfil-email').textContent = '';
+  $('btn-salvar-perfil').disabled = false;
+  avisoPerfil('');
 }
 
 function avisoPerfil(texto, ehErro = false) {
@@ -1989,22 +2013,29 @@ function avisoPerfil(texto, ehErro = false) {
 async function abrirPerfil() {
   $('p-senha').value = '';
   avisoPerfil('');
-  perfilMexido = false;
+  camposTocados.clear();
+  perfilAtualizado = false;
   preencherPerfil(Guardado.get('motorista') || {});
   mostrar('tela-perfil');
   // Os dados de agora (podem ter mudado no site). Chegam depois de a tela
-  // abrir; sem sinal, fica o que estava guardado.
+  // abrir; sem sinal, fica o que estava guardado, e o Salvar busca de novo.
   const s = await atualizarSessao();
   if ($('tela-perfil').hidden) return;
-  if (s && !perfilMexido) preencherPerfil(Guardado.get('motorista') || {});
-  if (!(Guardado.get('motorista') || {}).full_name && !perfilMexido) {
+  if (s) {
+    perfilAtualizado = true;
+    preencherPerfil(Guardado.get('motorista') || {}, { soNaoTocados: true });
+  }
+  if (!(Guardado.get('motorista') || {}).full_name) {
     avisoPerfil('Conecte à internet uma vez para o app buscar os seus dados.', true);
   }
 }
 
 $('btn-meus-dados').addEventListener('click', () => { vibrar('LIGHT'); abrirPerfil(); });
 $('btn-fechar-perfil').addEventListener('click', voltarParaBase);
-$('form-perfil').addEventListener('input', () => { perfilMexido = true; });
+// A senha nao conta: digitar so a senha nao e mudar os dados.
+$('form-perfil').addEventListener('input', (ev) => {
+  if (ev.target && ev.target.id && ev.target.id !== 'p-senha') camposTocados.add(ev.target.id);
+});
 
 $('form-perfil').addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -2012,14 +2043,15 @@ $('form-perfil').addEventListener('submit', async (ev) => {
   // app conferia a rede e mandava o pedido duas vezes.
   if (salvandoPerfil) return;
   salvandoPerfil = true;
+  // O salvamento e desta sessao: se ele sair (ou outro motorista entrar)
+  // enquanto o pedido viaja, nada do que voltar escreve na tela seguinte.
+  const geracao = geracaoDaSessao;
+  const daMesmaSessao = () => geracao === geracaoDaSessao;
   const botao = $('btn-salvar-perfil');
   botao.disabled = true;
   try {
-    const corpo = Object.fromEntries(CAMPOS_DO_PERFIL.map(([id, , campo]) => [campo, $(id).value.trim()]));
-    corpo.placa = corpo.placa.toUpperCase();
-    corpo.senha_atual = $('p-senha').value;
     // A mesma regra do servidor, antes de gastar uma tentativa de senha.
-    if (!corpo.cooperativa !== !corpo.cnpj_cooperativa) {
+    if (!$('p-cooperativa').value.trim() !== !$('p-cnpj-cooperativa').value.trim()) {
       avisoPerfil(MENSAGENS_DO_PERFIL.cooperativa_incompleta, true);
       return;
     }
@@ -2028,8 +2060,23 @@ $('form-perfil').addEventListener('submit', async (ev) => {
       return;
     }
     avisoPerfil('Salvando…');
+    // Tela aberta sem sinal: os campos que ele nao mexeu ainda tem o retrato
+    // velho do aparelho. Busca os de agora antes de mandar os nove campos.
+    if (!perfilAtualizado && await atualizarSessao()) {
+      if (!daMesmaSessao()) return;
+      perfilAtualizado = true;
+      preencherPerfil(Guardado.get('motorista') || {}, { soNaoTocados: true });
+    }
+    // Os recibos da fila sobem antes, com os dados de quando foram emitidos:
+    // o servidor grava no recibo o retrato da hora em que ele chega.
+    await sincronizar({ semTelaDoPro: true });
+    if (!daMesmaSessao()) return;
+    const corpo = Object.fromEntries(CAMPOS_DO_PERFIL.map(([id, , campo]) => [campo, $(id).value.trim()]));
+    corpo.placa = corpo.placa.toUpperCase();
+    corpo.senha_atual = $('p-senha').value;
     const resp = await api('/api/perfil', { method: 'POST', body: JSON.stringify(corpo) });
     const r = await resp.json().catch(() => ({}));
+    if (!daMesmaSessao()) return;
     if (resp.ok && r.motorista) {
       // Os proximos recibos, inclusive os emitidos sem sinal, ja saem com os
       // dados novos: o recibo copia o retrato guardado na hora em que nasce.
@@ -2037,10 +2084,16 @@ $('form-perfil').addEventListener('submit', async (ev) => {
       atualizarCabecalho();
       atualizarSaudacao();
       $('p-senha').value = '';
-      perfilMexido = false;
+      camposTocados.clear();
       preencherPerfil(r.motorista);
       vibrar('HEAVY');
-      avisoPerfil('Dados salvos. Os próximos recibos já saem com eles.');
+      // Recibo que ainda nao subiu (sem sinal, ou esperando vaga do plano)
+      // vai ao ar com os dados novos: avisa, em vez de prometer o contrario.
+      const naoSubiram = (await listarRecibos())
+        .filter((x) => x.pendente || x.recusado === 'limite_mensal').length;
+      avisoPerfil(naoSubiram
+        ? `Dados salvos. ${naoSubiram} recibo(s) que ainda não subiram vão ao ar com os dados novos.`
+        : 'Dados salvos. Os próximos recibos já saem com eles.');
       return;
     }
     // O api() ja tentou renovar a sessao: 401 aqui e sessao morta de verdade.
@@ -2049,10 +2102,14 @@ $('form-perfil').addEventListener('submit', async (ev) => {
       || (resp.status >= 500 ? 'O serviço está fora do ar agora. Tente de novo em instantes.'
         : 'Não foi possível salvar agora. Tente de novo.'), true);
   } catch {
-    avisoPerfil('Sem conexão. Salvar precisa de internet.', true);
+    if (daMesmaSessao()) avisoPerfil('Sem conexão. Salvar precisa de internet.', true);
   } finally {
-    salvandoPerfil = false;
-    botao.disabled = false;
+    // So destrava se ainda for a mesma sessao: o limparPerfil() do "Sair" ja
+    // destravou, e um salvamento antigo nao pode destravar o da sessao nova.
+    if (daMesmaSessao()) {
+      salvandoPerfil = false;
+      botao.disabled = false;
+    }
   }
 });
 
@@ -2107,6 +2164,7 @@ $('form-excluir').addEventListener('submit', async (ev) => {
         + 'conta não foi excluída — apagá-la deixaria a cobrança ativa. Tente de novo.',
       assinatura_na_loja: 'Cancele a assinatura nos Ajustes do aparelho primeiro. '
         + 'Só a loja pode parar essa cobrança; apagar a conta aqui não pararia.',
+      muitas_tentativas: 'Muitas tentativas com a senha errada hoje. Tente amanhã ou use "Esqueci minha senha" no login.',
     }[corpo.erro] || 'Não foi possível excluir agora. Tente de novo.';
     erro.hidden = false;
   } catch {

@@ -315,8 +315,9 @@ function reagendarSincronizacao() {
 
 // `semTelaDoPro`: a passada que o Salvar de Meus dados dispara nao abre a
 // tela do Pro por cima do formulario num 402; o recibo fica recusado e o
-// aviso do Salvar conta quantos nao subiram.
-async function sincronizar({ semTelaDoPro = false } = {}) {
+// aviso do Salvar conta quantos ficaram sem cota. `contador.semCota` sobe a
+// cada 402, na hora: o Salvar le o numero mesmo com a passada ainda andando.
+async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
   if (!(await temRede()) || !token()) {
     return { enviados: 0, restantes: (await pendentes()).length, semCota: 0 };
   }
@@ -352,6 +353,7 @@ async function sincronizar({ semTelaDoPro = false } = {}) {
         const corpo = await resp.json().catch(() => ({}));
         await salvarRecibo({ ...recibo, pendente: false, recusado: 'limite_mensal' });
         semCota++;
+        if (contador) contador.semCota++;
         // O limite vem na resposta: quem acabou de perder o Pro ainda tinha
         // "ilimitado" guardado, e a frase saia sem numero.
         const limite = corpo.limite ?? Guardado.get('limite') ?? '';
@@ -1989,6 +1991,17 @@ function preencherPerfil(m, { soNaoTocados = false } = {}) {
   $('perfil-email').textContent = m && m.email ? `E-mail da conta: ${m.email}` : '';
 }
 
+// Durante o Salvar os campos ficam so de leitura: o que vai e o que estava na
+// tela no toque, e uma correcao feita no meio seria apagada no sucesso.
+function travarCamposDoPerfil(travar) {
+  CAMPOS_DO_PERFIL.forEach(([id]) => { $(id).readOnly = travar; });
+  $('p-senha').readOnly = travar;
+}
+
+// Cada Salvar e cada abertura da tela ganham um numero: o aviso atrasado de um
+// Salvar antigo (a fila que terminou depois dos 8 s) nao escreve por cima.
+let ultimoSalvar = 0;
+
 // "Sair" e o login de outro motorista: a tela nao guarda nada de quem saiu
 // (os campos ficam no DOM, escondidos) e nao fica travada por um salvamento
 // que era da sessao anterior.
@@ -1999,6 +2012,8 @@ function limparPerfil() {
   $('p-senha').value = '';
   $('perfil-email').textContent = '';
   $('btn-salvar-perfil').disabled = false;
+  travarCamposDoPerfil(false);
+  ultimoSalvar++;
   avisoPerfil('');
 }
 
@@ -2013,6 +2028,7 @@ async function abrirPerfil() {
   // Salvamento em curso: so mostra a tela como esta. Zerar a senha e os
   // campos aqui mudava o que o Salvar ia mandar.
   if (salvandoPerfil) { mostrar('tela-perfil'); return; }
+  ultimoSalvar++;
   $('p-senha').value = '';
   avisoPerfil('');
   camposTocados.clear();
@@ -2052,11 +2068,16 @@ $('form-perfil').addEventListener('submit', async (ev) => {
   const digitados = new Map(CAMPOS_DO_PERFIL
     .filter(([id]) => camposTocados.has(id)).map(([id]) => [id, $(id).value]));
   const senha = $('p-senha').value;
+  travarCamposDoPerfil(true);
+  const esteSalvar = ++ultimoSalvar;
   // Recibos da fila que ficaram sem cota na passada abaixo: nao somem calados.
-  let semCota = 0;
-  const comAvisoDaCota = (texto) => (semCota
-    ? `${texto} Atenção: ${semCota} recibo(s) da fila ficaram sem link e sem QR, porque acabou o limite do mês do plano Grátis.`
+  // Contador vivo (a passada pode continuar depois dos 8 s).
+  const cont = { semCota: 0 };
+  const comAvisoDaCota = (texto) => (cont.semCota
+    ? `${texto} Atenção: ${cont.semCota} recibo(s) da fila ficaram sem link e sem QR, porque acabou o limite do mês do plano Grátis.`
     : texto);
+  // Como refazer o aviso deste Salvar quando a passada da fila terminar depois.
+  let refazerAviso = null;
   try {
     // A mesma regra do servidor, antes de gastar uma tentativa de senha.
     if (!$('p-cooperativa').value.trim() !== !$('p-cnpj-cooperativa').value.trim()) {
@@ -2076,11 +2097,18 @@ $('form-perfil').addEventListener('submit', async (ev) => {
       avisoPerfil('Não deu para conferir os seus dados agora. Tente de novo em instantes.', true);
       return;
     }
+    // A tela mostra o que vai: os campos que ele nao mexeu com os dados de agora.
+    preencherPerfil(Guardado.get('motorista') || {}, { soNaoTocados: true });
     // Os recibos da fila sobem antes, com os dados de quando foram emitidos
     // (o servidor grava no recibo o retrato da hora em que ele chega). Espera
     // no maximo 8 s: com fila grande e sinal fraco, o Salvar nao fica preso;
     // o que nao subir a tempo sobe depois, com os dados novos.
-    const passada = sincronizar({ semTelaDoPro: true }).then((p) => { semCota = (p && p.semCota) || 0; });
+    const passada = sincronizar({ semTelaDoPro: true, contador: cont });
+    // Passada que termina depois do aviso: o aviso e refeito com os numeros
+    // finais (um recibo "ainda na fila" pode ter levado 402 no fim).
+    passada.then(() => {
+      if (refazerAviso && esteSalvar === ultimoSalvar && daMesmaSessao() && !$('tela-perfil').hidden) refazerAviso();
+    });
     await Promise.race([passada, new Promise((ok) => setTimeout(ok, 8000))]);
     if (!daMesmaSessao()) return;
     const atual = Guardado.get('motorista') || {};
@@ -2101,18 +2129,32 @@ $('form-perfil').addEventListener('submit', async (ev) => {
       camposTocados.clear();
       preencherPerfil(r.motorista);
       vibrar('HEAVY');
-      // Recibo que nao subiu a tempo vai ao ar com os dados novos: avisa.
-      const naFila = (await pendentes()).length;
-      avisoPerfil(comAvisoDaCota(naFila
-        ? `Dados salvos. ${naFila} recibo(s) ainda na fila vão subir com os dados novos.`
-        : 'Dados salvos. Os próximos recibos já saem com eles.'), !!semCota);
+      // Recibo que ainda nao subiu vai ao ar com os dados novos: o que esta
+      // na fila e o que espera vaga no plano Gratis (sem link e sem QR).
+      refazerAviso = async () => {
+        const lista = await listarRecibos();
+        const naFila = lista.filter((x) => x.pendente).length;
+        const semVaga = lista.filter((x) => x.recusado === 'limite_mensal').length;
+        let texto = naFila
+          ? `Dados salvos. ${naFila} recibo(s) ainda na fila vão subir com os dados novos.`
+          : 'Dados salvos. Os próximos recibos já saem com eles.';
+        if (semVaga) {
+          texto += ` ${semVaga} recibo(s) estão sem link e sem QR, esperando vaga no plano Grátis;`
+            + ' quando subirem, vão com os dados novos.';
+        }
+        // Vermelho se algum ficou sem cota AGORA, nesta passada: e novidade.
+        avisoPerfil(texto, cont.semCota > 0);
+      };
+      await refazerAviso();
       return;
     }
     // O api() ja tentou renovar a sessao: 401 aqui e sessao morta de verdade.
     if (resp.status === 401) { encerrarSessao(); return; }
-    avisoPerfil(comAvisoDaCota(MENSAGENS_DO_PERFIL[r.erro] || r.mensagem
+    const erroDoSalvar = MENSAGENS_DO_PERFIL[r.erro] || r.mensagem
       || (resp.status >= 500 ? 'O serviço está fora do ar agora. Tente de novo em instantes.'
-        : 'Não foi possível salvar agora. Tente de novo.')), true);
+        : 'Não foi possível salvar agora. Tente de novo.');
+    refazerAviso = () => avisoPerfil(comAvisoDaCota(erroDoSalvar), true);
+    refazerAviso();
   } catch {
     if (daMesmaSessao()) avisoPerfil(comAvisoDaCota('Sem conexão. Salvar precisa de internet.'), true);
   } finally {
@@ -2121,6 +2163,7 @@ $('form-perfil').addEventListener('submit', async (ev) => {
     if (daMesmaSessao()) {
       salvandoPerfil = false;
       botao.disabled = false;
+      travarCamposDoPerfil(false);
     }
   }
 });

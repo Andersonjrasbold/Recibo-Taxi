@@ -540,8 +540,9 @@ window.addEventListener('load', async () => {
       q('form-perfil').requestSubmit(); await espera(600);
       ok('perfil: a fila sobe antes do Salvar', window.__ordem[0] === 'recibo' && window.__ordem.includes('perfil'), JSON.stringify(window.__ordem));
       ok('perfil: 402 na fila nao abre a tela do Pro por cima', q('tela-assinatura').hidden && !q('tela-perfil').hidden);
-      ok('perfil: o 402 da fila nao some calado: o aviso diz que o recibo ficou sem link e sem QR',
-         /1 recibo\(s\) da fila ficaram sem link e sem QR/.test(q('aviso-perfil').textContent), q('aviso-perfil').textContent);
+      ok('perfil: o 402 da fila nao some calado: o aviso diz que ha recibo sem link e sem QR, em vermelho',
+         /\d+ recibo\(s\) estão sem link e sem QR, esperando vaga/.test(q('aviso-perfil').textContent)
+         && q('aviso-perfil').classList.contains('erro'), q('aviso-perfil').textContent);
       window.__regra = () => ({});
       // Sair no meio do Salvar: nada do que voltar escreve na sessao seguinte.
       await abrirPerfil();
@@ -567,10 +568,12 @@ window.addEventListener('load', async () => {
       window.__sessaoAtraso = 700;
       window.__perfil = { status: 200, corpo: { motorista: { ...retratoNovo, plate: 'NEW2B22' } } };
       q('form-perfil').requestSubmit(); await espera(150);
+      ok('perfil: durante o Salvar os campos ficam so de leitura', q('p-placa').readOnly && q('p-senha').readOnly);
       clicar('btn-perfil'); await espera(50); clicar('btn-meus-dados'); await espera(50);
       ok('perfil: reabrir durante o Salvar mostra a tela sem zerar a senha nem os campos',
          !q('tela-perfil').hidden && q('p-senha').value === 'senha-certa' && q('p-placa').value === 'NEW2B22');
       await espera(1600);
+      ok('perfil: depois do Salvar os campos voltam a ser editaveis', !q('p-placa').readOnly && !q('p-senha').readOnly);
       window.__sessaoAtraso = 0;
       ok('perfil: o Salvar manda o que estava na tela no toque', __perfis.length === 1 && __perfis[0].placa === 'NEW2B22'
          && __perfis[0].senha_atual === 'senha-certa', JSON.stringify(__perfis));
@@ -589,7 +592,8 @@ window.addEventListener('load', async () => {
       await emitir('Fila lenta', '13'); await espera(300);
       redeDoAparelho.getStatus = async () => ({ connected: true });
       await abrirPerfil();
-      window.__regra = (c) => (c.origem === 'Fila lenta' ? { atraso: 12000 } : {});
+      // O recibo lento leva 402 aos 9 s, depois de o aviso ja ter saido: o aviso e refeito.
+      window.__regra = (c) => (c.origem === 'Fila lenta' ? { atraso: 9000, status: 402, corpo: { erro: 'limite_mensal', limite: 6 } } : {});
       window.__perfil = { status: 200, corpo: { motorista: retratoNovo } };
       __perfis.length = 0; q('p-senha').value = 'senha-certa';
       const inicioFila = performance.now();
@@ -600,6 +604,10 @@ window.addEventListener('load', async () => {
       await espera(400);
       ok('perfil: o aviso diz que o recibo ainda na fila sobe com os dados novos', q('aviso-perfil').textContent.includes('ainda na fila'),
          q('aviso-perfil').textContent);
+      while (performance.now() - inicioFila < 9800) await espera(200);
+      ok('perfil: o 402 que chega depois do aviso refaz o aviso (sem cota, em vermelho)',
+         !q('aviso-perfil').textContent.includes('ainda na fila') && q('aviso-perfil').textContent.includes('esperando vaga')
+         && q('aviso-perfil').classList.contains('erro'), q('aviso-perfil').textContent);
       window.__regra = () => ({});
       // Sair enquanto o Salvar confere os dados: nada sobe com o token do motorista seguinte.
       await salvarRecibo({ rid: 'DEB00000000001', criado_em: new Date().toISOString(), pendente: true, dono: 'b@teste.invalid',

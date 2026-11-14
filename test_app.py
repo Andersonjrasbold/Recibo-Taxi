@@ -1449,6 +1449,17 @@ check("excluir pelo site: passou do teto, a conta fica",
       _r.status_code == 302 and A.get_store().get_user_by_email("perfil-app@teste.invalid") is not None)
 A.get_store().reset_counter(_chave_ei)
 _falhas_e = A.get_store().get_counter(_chave_falhas)
+# Pedidos simultaneos nao passam do teto: a tentativa conta antes de conferir a senha.
+import concurrent.futures as _cf_reauth
+def _tentar_errado(_i):
+    return A.app.test_client().post("/api/perfil", headers=_cab_p, json={**_novo_p, "senha_atual": f"errada-{_i}"}).status_code
+with _cf_reauth.ThreadPoolExecutor(max_workers=8) as _ex:
+    _codigos = list(_ex.map(_tentar_errado, range(A.LOGIN_DAILY_LIMIT_EMAIL + 10)))
+check("teto de quem ja entrou: 40 senhas erradas ao mesmo tempo, so 30 conferidas",
+      _codigos.count(403) == A.LOGIN_DAILY_LIMIT_EMAIL and _codigos.count(429) == 10, f"403={_codigos.count(403)} 429={_codigos.count(429)}")
+A.get_store().reset_counter(_chave_falhas)
+check("painel do site tem 'Esqueci minha senha' na exclusao de conta (a saida do teto)",
+      'href="/recuperar-senha"' in _cs_p.get("/dashboard").get_data(as_text=True))
 _r = _cp.post("/api/excluir-conta", headers=_cab_p, json={"senha": "errada"})
 check("excluir pelo app: senha errada conta um erro desta conta",
       _r.status_code == 403 and A.get_store().get_counter(_chave_falhas) == _falhas_e + 1)

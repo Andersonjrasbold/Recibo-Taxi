@@ -1052,16 +1052,14 @@ def conferir_senha_atual(user: dict, senha: str) -> str:
     """
     chave = chave_de_reconfirmacao(user["_id"])
     store = get_store()
+    # Conta a tentativa ANTES de conferir, num passo só: ler e somar depois
+    # deixava pedidos simultâneos passarem todos pelo teto. A senha certa zera.
     try:
-        if store.get_counter(chave) >= LOGIN_DAILY_LIMIT_EMAIL:
+        if store.bump_counter(chave) > LOGIN_DAILY_LIMIT_EMAIL:
             return "bloqueada"
     except Exception as exc:
         app.logger.warning("teto de senha indisponível: %s", exc)
     if not auth_conferir_senha(user["email"], senha):
-        try:
-            store.bump_counter(chave)
-        except Exception as exc:
-            app.logger.warning("contador de senha indisponível: %s", exc)
         return "errada"
     try:
         store.reset_counter(chave)
@@ -3919,9 +3917,10 @@ def api_perfil():
     Pede a senha atual, como o site: um token esquecido num aparelho
     emprestado não pode trocar o nome e o telefone que saem nos recibos de
     alguém. Senha errada é 403, e não 401: o app trata 401 como token
-    vencido e tentaria renovar a sessão. Conta como falha de login (mesmo
-    teto do /api/login), e a validação dos campos vem antes, para um CNPJ
-    digitado errado não gastar tentativa de senha.
+    vencido e tentaria renovar a sessão. Conta no teto de quem já entrou
+    (conferir_senha_atual: 30 por dia nesta conta, separado do /api/login),
+    e a validação dos campos vem antes, para um CNPJ digitado errado não
+    gastar tentativa de senha.
     """
     dados = corpo_json()
     campos = {k: str(dados.get(k, "") or "").strip() for k in PERFIL_DO_APP}

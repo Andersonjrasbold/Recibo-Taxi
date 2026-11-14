@@ -72,7 +72,8 @@ async function encerrar(codigo) {
   try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* temporario */ }
   process.exit(codigo);
 }
-setTimeout(() => { console.log('VIGIA: o teste passou de 4 minutos'); encerrar(2); }, 240000).unref();
+// A parte de rede tem esperas de verdade (fila lenta de 9 s no Salvar do perfil).
+setTimeout(() => { console.log('VIGIA: o teste passou de 6 minutos'); encerrar(2); }, 360000).unref();
 
 let alvo;
 for (let i = 0; i < 80 && !alvo; i++) {
@@ -146,7 +147,7 @@ const partes = [];
 for (const [hash, nome] of [['c=asserts', 'fluxo'], ['c=rede', 'rede simulada']]) {
   await abrir(hash);
   let parte;
-  for (let i = 0; i < 120 && !parte; i++) {
+  for (let i = 0; i < 300 && !parte; i++) {   // ate 150 s por parte
     await espera(500);
     parte = await avaliar("document.getElementById('resultado-teste')?.textContent");
   }

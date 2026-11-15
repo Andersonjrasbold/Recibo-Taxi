@@ -188,6 +188,11 @@ window.addEventListener('load', async () => {
 
       // Pedido de avaliacao: so na volta de uma entrega, a partir do 3o recibo
       // aceito (aqui ja sao 3; o "Sem cota" foi recusado e nao conta).
+      // A volta ao app tambem rele a sessao (desde a vitrine, 2026-11-14), e
+      // esta sessao simulada diz que ha vaga: o "Sem cota" seria reaberto e
+      // aceito, o que e certo no app, mas desmonta estes testes e os da cota
+      // logo abaixo. A releitura fica pausada aqui; a vitrine a testa de proposito.
+      sessaoRelidaEm = Date.now() + 10 * 60e3;
       const voltarAoApp = () => (window.__ouvintes.resume || []).forEach((f) => f());
       const entregarEVoltar = async () => { clicar('btn-whats'); voltarAoApp(); await espera(1300); };
       window.__regra = () => ({});
@@ -642,6 +647,550 @@ window.addEventListener('load', async () => {
       q('form-perfil').requestSubmit(); await espera(400);
       ok('perfil: 401 com a sessao morta leva ao login', !q('tela-login').hidden && !localStorage.getItem('access_token'));
       window.__refresh = null;
+
+      // ── Vitrine dos planos (2026-11-14) ─────────────────────────────────
+      // Faixa no inicio e no recibo recem-gerado, so no plano Gratis; nunca
+      // para quem e Pro (servidor ou loja). Com preco da loja, os planos sao
+      // botoes de assinar; sem preco, so "Ver planos". Nenhum preco escrito.
+      window.__perfil = null; window.__regra = () => ({});
+      localStorage.setItem('access_token', JSON.stringify('token-v'));
+      localStorage.setItem('refresh_token', JSON.stringify('refresh-v'));
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      const retratoV = { full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' };
+      Guardado.set('motorista', retratoV);
+      // Depois da identidade: a limpeza so apaga os recibos de quem esta aqui.
+      await limparRecibosLocais();
+      window.__sessao = { id: 'web-motorista', plano: 'free', limite_mensal: 6, usados_no_mes: 2,
+                          passageiro_opcional: true, motorista: retratoV };
+      pacotesPro = {};
+      await atualizarSessao();
+      irParaInicio(); await espera(300);
+      const vIni = q('vitrine-inicio');
+      const vRec = q('vitrine-recibo');
+      const visivel = (id) => !q(id).hidden && !q(id).closest('[hidden]');
+      ok('vitrine: Gratis ve a faixa no inicio', !vIni.hidden);
+      ok('vitrine: conta o uso do mes', vIni.textContent.includes('2 de 6 recibos'), vIni.textContent);
+      Guardado.set('usados_mes', '2000-01');
+      await mostrarVitrineDoInicio();
+      ok('vitrine: contagem de outro mes nao vale (virada do mes sem sessao nova)', vIni.textContent.includes('0 de 6 recibos'), vIni.textContent);
+      Guardado.set('usados_mes', mesDaCota());
+      await mostrarVitrineDoInicio();
+      ok('vitrine: sem resposta da loja, nenhum preco e nenhum botao de assinar, so "Ver planos"',
+         vIni.querySelector('.vitrine-compra').hidden && !/R\$/.test(vIni.innerText) && visivel('btn-vitrine-inicio-ver'), vIni.innerText);
+      ok('vitrine: os dois caminhos ficam acima da faixa',
+         q('btn-ir-corrida').getBoundingClientRect().bottom <= vIni.getBoundingClientRect().top);
+      const links = [...vIni.querySelectorAll('a'), ...vRec.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+      ok('vitrine: os unicos links sao Termos e Privacidade (nada de comprar fora do app, 3.1.1)',
+         links.length === 4 && links.every((h) => /^https:\/\/www\.recibotaxi\.com\.br\/(termos|privacidade)$/.test(h)), links.join(' '));
+      clicar('btn-vitrine-inicio-ver'); await espera(300);
+      ok('vitrine: "Ver planos" abre a assinatura do app', !q('tela-assinatura').hidden);
+      ok('assinatura: sem resposta da loja, nenhum preco escrito no mensal', !/R\$/.test(q('preco-mensal').textContent), q('preco-mensal').textContent);
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: fechar a assinatura volta ao inicio, com a faixa', !q('tela-inicio').hidden && !vIni.hidden);
+
+      // Loja simulada: os precos chegam do RevenueCat, como no aparelho.
+      let assinouNaLoja = false;
+      let respostaDaCompra = null;            // null = compra aprovada; funcao = outra resposta
+      const compras = [];
+      window.Capacitor.Plugins.Purchases = {
+        configure: async () => {},
+        getCustomerInfo: async () => ({ customerInfo: { entitlements: { active: assinouNaLoja ? { pro: {} } : {} } } }),
+        getOfferings: async () => ({ current: { availablePackages: [
+          { identifier: '$rc_annual', product: { priceString: 'R$ 59,90', price: 59.9, currencyCode: 'BRL', pricePerMonthString: 'R$ 4,99' } },
+          { identifier: '$rc_monthly', product: { priceString: 'R$ 9,90', price: 9.9, currencyCode: 'BRL' } },
+        ] } }),
+        purchasePackage: async ({ aPackage }) => {
+          compras.push(aPackage.identifier);
+          if (respostaDaCompra) return respostaDaCompra();
+          assinouNaLoja = true;
+          return { customerInfo: { entitlements: { active: { pro: {} } } } };
+        },
+        restorePurchases: async () => ({ customerInfo: { entitlements: { active: assinouNaLoja ? { pro: {} } : {} } } }),
+      };
+      await iniciarCompras(); carregarLojaParaVitrine(); await espera(400);
+      ok('vitrine: com a loja, os dois botoes de assinar com o preco cobrado',
+         visivel('btn-vitrine-inicio-anual') && visivel('btn-vitrine-inicio-mensal')
+         && q('btn-vitrine-inicio-anual').innerText.includes('Assinar Pro anual agora') && q('btn-vitrine-inicio-anual').innerText.includes('R$ 59,90/ano')
+         && q('btn-vitrine-inicio-mensal').innerText.includes('Assinar Pro mensal agora') && q('btn-vitrine-inicio-mensal').innerText.includes('R$ 9,90/mês'),
+         vIni.innerText);
+      ok('vitrine: com os botoes de assinar, "Ver planos" sai e "Agora não" fica', !visivel('btn-vitrine-inicio-ver') && visivel('btn-vitrine-inicio-fechar'));
+      ok('vitrine: a faixa diz que renova sozinho e onde cancelar', vIni.innerText.includes('Renova sozinho') && vIni.innerText.includes('cancele'), vIni.innerText);
+      const tamanho = (sel) => parseFloat(getComputedStyle(vIni.querySelector(sel)).fontSize);
+      ok('vitrine: o "equivale a" do anual aparece menor que o valor cobrado',
+         vIni.innerText.includes('equivale a R$ 4,99/mês') && tamanho('.vitrine-anual .vitrine-nota') < tamanho('.vitrine-anual .vitrine-preco'));
+
+      // Sem o preco na tela nao se cobra: com a loja sem devolver os planos, o
+      // botao da assinatura diz "Carregar os planos" e o primeiro toque so carrega.
+      const ofertasDaLoja = window.Capacitor.Plugins.Purchases.getOfferings;
+      pacotesPro = {};
+      window.Capacitor.Plugins.Purchases.getOfferings = async () => { throw Object.assign(new Error('sem rede'), { code: '10' }); };
+      clicar('btn-pro'); await espera(400);
+      ok('assinatura: sem os planos da loja, o botao carrega em vez de assinar e o mensal fica sem numero',
+         q('btn-assinar').textContent === 'Carregar os planos' && q('preco-mensal').textContent === 'Preço ainda não carregado',
+         `${q('btn-assinar').textContent} / ${q('preco-mensal').textContent}`);
+      window.Capacitor.Plugins.Purchases.getOfferings = ofertasDaLoja;
+      const comprasCarga = compras.length;
+      clicar('btn-assinar'); await espera(500);
+      ok('assinatura: o primeiro toque so carrega os planos, nao compra, e o preco aparece',
+         compras.length === comprasCarga && q('btn-assinar').textContent === 'Assinar o plano mensal'
+         && q('preco-mensal').textContent === 'R$ 9,90/mês' && !q('plano-anual').hidden,
+         `${compras.length - comprasCarga} ${q('btn-assinar').textContent} ${q('preco-mensal').textContent}`);
+      clicar('btn-fechar-pro'); await espera(200);
+      irParaInicio(); await espera(300);
+
+      clicar('btn-vitrine-inicio-fechar');
+      ok('vitrine: "Agora não" esconde a faixa do inicio', vIni.hidden);
+      irParaInicio(); await espera(200);
+      ok('vitrine: continua escondida ao voltar ao inicio', vIni.hidden);
+      // Trocar rapido de app nao e abrir de novo; meia hora fora, e.
+      const agoraReal = Date.now;
+      let deslocamento = 0;
+      Date.now = () => agoraReal() + deslocamento;
+      const irAoFundo = (minutos) => {
+        (__ouvintes.pause || []).forEach((f) => f());
+        deslocamento += minutos * 60000;
+        (__ouvintes.resume || []).forEach((f) => f());
+      };
+      try {
+        irAoFundo(5); await espera(300);
+        ok('vitrine: voltar do WhatsApp em 5 min nao reabre a faixa nem cobre a tela', vIni.hidden && q('tela-vitrine').hidden);
+        irAoFundo(31); await espera(900);
+        ok('vitrine: abrir o app depois de meia hora cobre a tela com os planos', !q('tela-vitrine').hidden && q('tela-inicio').hidden);
+        clicar('btn-vitrine-cheia-fechar'); await espera(200);
+        ok('vitrine: "Agora não" na tela cheia leva ao inicio, sem a faixa', !q('tela-inicio').hidden && vIni.hidden);
+        await abrirVitrineAoAbrir(); await espera(200);
+        ok('vitrine: a tela cheia da abertura aparece uma vez so por abertura', q('tela-vitrine').hidden && !q('tela-inicio').hidden);
+        const rVolta = { rid: 'VOLTA000000001', criado_em: new Date().toISOString(), pendente: false, dono: 'web-motorista', motorista: retratoV,
+          dados: { rid: 'VOLTA000000001', origem: 'A', destino: 'B', valor: '5', valor_exibido: '5,00', data: '2026-11-14', forma_pagamento: 'Pix' } };
+        abrirRecibo(rVolta); await espera(100);
+        irAoFundo(5); await espera(300);
+        ok('vitrine: 5 min fora no recibo continua no recibo', !q('tela-recibo').hidden);
+        irAoFundo(31); await espera(900);
+        ok('vitrine: meia hora fora no recibo cobre o recibo com os planos (sem tira-lo dele)',
+           !q('tela-vitrine').hidden && vitrineCheiaOrigem === 'recibo');
+        clicar('btn-vitrine-cheia-fechar'); await espera(200);
+        ok('vitrine: "Agora não" volta ao mesmo recibo', !q('tela-recibo').hidden && q('btn-compartilhar').dataset.rid === 'VOLTA000000001');
+      } finally {
+        Date.now = agoraReal;
+      }
+      // A faixa do inicio e a reserva da tela cheia (sem preco da loja); os
+      // testes dela seguem, entao ela volta a valer aqui.
+      vitrineInicioFechada = false;
+      irParaInicio(); await espera(200);
+
+      // Pagou no site (ou Pix, indicacao, cortesia) com o app aberto: o plano
+      // guardado ainda diz Gratis. Tocar em assinar rele a sessao e nao cobra.
+      window.__sessao = { ...window.__sessao, plano: 'pro', limite_mensal: null };
+      const comprasSite = compras.length;
+      clicar('btn-vitrine-inicio-anual'); await espera(600);
+      ok('pagamento: quem ja e Pro pelo site nao e cobrado de novo na loja', compras.length === comprasSite, `${compras.length - comprasSite}`);
+      ok('pagamento: a assinatura mostra "ativa" em vez dos planos', !q('pro-ativo').hidden && q('btn-assinar').hidden);
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: e a faixa some do inicio', !q('tela-inicio').hidden && vIni.hidden);
+      // Voltar ao app rele a sessao: o Pro que chegou com o app no fundo some
+      // com a faixa; o Gratis que volta, traz.
+      window.__sessao = { ...window.__sessao, plano: 'free', limite_mensal: 6, usados_no_mes: 2 };
+      sessaoRelidaEm = 0;
+      (__ouvintes.pause || []).forEach((f) => f()); (__ouvintes.resume || []).forEach((f) => f());
+      await espera(400);
+      ok('vitrine: voltar ao app rele o plano (Gratis de novo, a faixa volta)', !vIni.hidden);
+      window.__sessao = { ...window.__sessao, plano: 'pro', limite_mensal: null };
+      (__ouvintes.pause || []).forEach((f) => f()); (__ouvintes.resume || []).forEach((f) => f());
+      await espera(400);
+      ok('vitrine: duas voltas no mesmo minuto releem a sessao uma vez so', !vIni.hidden);
+      window.__sessao = { ...window.__sessao, plano: 'pro', limite_mensal: null };
+      sessaoRelidaEm = 0;
+      (__ouvintes.pause || []).forEach((f) => f()); (__ouvintes.resume || []).forEach((f) => f());
+      await espera(400);
+      ok('vitrine: Pro que chegou com o app no fundo some da faixa na volta', vIni.hidden);
+      window.__sessao = { ...window.__sessao, plano: 'free', limite_mensal: 6, usados_no_mes: 2 };
+      await atualizarSessao(); irParaInicio(); await espera(300);
+
+      // Assinar o MENSAL pelo inicio e desistir na janela da loja: cai na tela
+      // de assinatura com a dica de trocar o cartao (iPhone, nesta sonda).
+      respostaDaCompra = () => { throw Object.assign(new Error('Purchase was cancelled.'), { code: '1' }); };
+      clicar('btn-vitrine-inicio-mensal'); await espera(500);
+      ok('vitrine: "Assinar Pro mensal agora" compra o mensal', compras.at(-1) === '$rc_monthly', compras.join(','));
+      ok('pagamento: desistir na janela da loja deixa uma dica, sem vermelho',
+         !q('tela-assinatura').hidden && !q('aviso-pro').hidden && q('erro-pro').hidden
+         && q('aviso-pro').textContent.startsWith('Compra não concluída.') && q('aviso-pro').textContent.includes('conta Apple'),
+         q('aviso-pro').textContent);
+      window.Capacitor.getPlatform = () => 'android';
+      clicar('btn-assinar'); await espera(400);
+      ok('pagamento: no Android a dica manda trocar o cartao na janela do Google Play',
+         q('aviso-pro').textContent.includes('janela do Google Play') && q('aviso-pro').textContent.includes('adicionar um novo'),
+         q('aviso-pro').textContent);
+      respostaDaCompra = () => { throw Object.assign(new Error('store problem'), { code: '2' }); };
+      clicar('btn-assinar'); await espera(400);
+      ok('pagamento: problema na loja lembra do cartao recusado',
+         !q('erro-pro').hidden && q('aviso-pro').hidden && q('erro-pro').textContent.includes('não concluiu a compra')
+         && q('erro-pro').textContent.includes('cartão'),
+         q('erro-pro').textContent);
+      // Dois toques enquanto a janela da loja abre: uma compra so, sem erro.
+      let soltar;
+      respostaDaCompra = () => new Promise((ok2) => { soltar = () => ok2({ customerInfo: { entitlements: { active: {} } } }); });
+      const antes = compras.length;
+      clicar('btn-assinar'); await espera(250);
+      ok('pagamento: o botao trava enquanto a compra anda', q('btn-assinar').disabled === true);
+      clicar('btn-assinar'); await espera(150);
+      ok('pagamento: segundo toque nao abre outra compra', compras.length === antes + 1, `${compras.length - antes}`);
+      soltar(); await espera(200);
+      ok('pagamento: o botao volta depois da resposta da loja, sem erro na tela', q('btn-assinar').disabled === false && q('erro-pro').hidden);
+      window.Capacitor.getPlatform = () => 'ios';
+      // Textos de pagamento direto na funcao: os que falavam de contrato (5, 23,
+      // sem oferta), os codigos novos (6, 15) e o 3, que muda com a plataforma.
+      const caixaErro = document.createElement('p');
+      const textoDoErro = (e) => { mostrarErroDeCompra(caixaErro, e); return caixaErro.textContent; };
+      for (const so of ['ios', 'android']) {
+        window.Capacitor.getPlatform = () => so;
+        const tx = Object.fromEntries(['3', '5', '6', '15', '23'].map((c) => [c, textoDoErro({ code: c })]));
+        tx.semOferta = textoDoErro(new Error('sem oferta configurada'));
+        const loja = so === 'android' ? 'O Google Play' : 'A App Store';
+        ok(`pagamento (${so}): textos de erro para o motorista, sem "contrato", com a loja certa e o codigo no fim`,
+           Object.values(tx).every((x) => !/contrato/i.test(x))
+           && tx['6'].includes('Restaurar compra') && tx['6'].endsWith('(PRODUCT_ALREADY_PURCHASED_ERROR 6)')
+           && tx['15'].includes('em andamento') && tx['15'].endsWith('(OPERATION_ALREADY_IN_PROGRESS_ERROR 15)')
+           && tx['3'].includes(so === 'android' ? 'Google Play deste celular' : 'Este iPhone')
+           && tx['5'].startsWith(loja) && tx['23'].includes(so === 'android' ? 'do Google Play' : 'da App Store')
+           && tx.semOferta.startsWith(loja) && tx.semOferta.includes('não devolveu os planos'),
+           JSON.stringify(tx));
+      }
+      window.Capacitor.getPlatform = () => 'ios';
+      // Conta recem-criada sem o id (sessao ainda nao chegou): busca a sessao
+      // antes; sem ela, diz o motivo em vez de "Não foi possível...".
+      const idGuardado = Guardado.get('motorista_id');
+      const comprasAntes = compras.length;
+      Guardado.del('motorista_id'); comprasPara = '';
+      const sessaoGuardada = window.__sessao; window.__sessao = null;
+      respostaDaCompra = null;
+      clicar('btn-assinar'); await espera(400);
+      ok('pagamento: sem a conta carregada, nao compra e explica', compras.length === comprasAntes
+         && q('erro-pro').textContent.includes('carregar a sua conta'), q('erro-pro').textContent);
+      window.__sessao = sessaoGuardada;
+      respostaDaCompra = () => { throw Object.assign(new Error('Purchase was cancelled.'), { code: '1' }); };
+      clicar('btn-assinar'); await espera(500);
+      ok('pagamento: com a sessao de volta, o toque busca a conta e chega a loja',
+         compras.length === comprasAntes + 1 && Guardado.get('motorista_id') === idGuardado, `${compras.length - comprasAntes} ${Guardado.get('motorista_id')}`);
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: fechar a assinatura aberta pelo inicio volta ao inicio', !q('tela-inicio').hidden);
+
+      // Sinal fraco: a releitura antes de cobrar demora. Se ele desistir no
+      // meio ("Agora não"), a loja nao abre depois.
+      respostaDaCompra = () => { throw Object.assign(new Error('Purchase was cancelled.'), { code: '1' }); };
+      const comprasEspera = compras.length;
+      window.__sessaoAtraso = 2500;
+      clicar('btn-vitrine-inicio-anual'); await espera(300);
+      ok('pagamento: durante a espera o botao avisa', q('btn-assinar').textContent === 'Aguarde…', q('btn-assinar').textContent);
+      clicar('btn-fechar-pro'); await espera(2800);
+      ok('pagamento: desistiu durante a espera, a loja nao abre depois', compras.length === comprasEspera && !q('tela-inicio').hidden,
+         `${compras.length - comprasEspera}`);
+      // Sem resposta nenhuma (sinal parado), em 5 s segue com o plano guardado.
+      window.__sessaoAtraso = 8000;
+      clicar('btn-vitrine-inicio-anual'); await espera(5700);
+      ok('pagamento: sem resposta da sessao em 5 s, segue para a loja', compras.length === comprasEspera + 1, `${compras.length - comprasEspera}`);
+      window.__sessaoAtraso = 0;
+      await espera(2600);   // a releitura atrasada termina antes do proximo passo
+      clicar('btn-fechar-pro'); await espera(200);
+      // O plano que vai para a loja e o do toque, mesmo se a tela for remarcada
+      // no meio da espera (um 402 de outra passada reabre a assinatura no anual).
+      window.__sessaoAtraso = 800;
+      clicar('btn-vitrine-inicio-mensal'); await espera(200);
+      abrirAssinatura(''); escolherPlano(ANUAL);   // o que o 402 faria
+      await espera(1200);
+      window.__sessaoAtraso = 0;
+      ok('pagamento: o toque no mensal compra o mensal, mesmo com a tela remarcada', compras.at(-1) === '$rc_monthly', compras.join(','));
+      clicar('btn-fechar-pro'); await espera(200);
+      // Saiu da assinatura durante a espera e voltou logo (pelo menu): a compra
+      // do toque antigo nao segue sozinha.
+      window.__sessaoAtraso = 1500;
+      const comprasVolta = compras.length;
+      clicar('btn-vitrine-inicio-anual'); await espera(200);
+      clicar('btn-fechar-pro'); await espera(150);
+      clicar('btn-pro'); await espera(1700);
+      ok('pagamento: saiu e voltou durante a espera, a loja nao abre com o toque antigo',
+         compras.length === comprasVolta && !q('tela-assinatura').hidden, `${compras.length - comprasVolta}`);
+      window.__sessaoAtraso = 0;
+      clicar('btn-fechar-pro'); await espera(200);
+      // Ja assina pela loja (o servidor ainda nao sabe): tocar em assinar nao
+      // abre a loja de novo (no Google Play seria outra assinatura).
+      assinouNaLoja = true;
+      const comprasLoja = compras.length;
+      clicar('btn-vitrine-inicio-anual'); await espera(700);
+      ok('pagamento: quem ja assina pela loja nao compra de novo', compras.length === comprasLoja && !q('pro-ativo').hidden,
+         `${compras.length - comprasLoja}`);
+      clicar('btn-fechar-pro'); await espera(200);
+      assinouNaLoja = false; proPelaLoja = false; lojaConferidaParaVitrine = false;
+      irParaInicio(); await espera(300);
+      // Venceu na loja com o app aberto: a tela abre como "ativa" pelo guardado,
+      // a loja desmente, e os planos voltam (e a faixa tambem).
+      proPelaLoja = true;
+      clicar('btn-pro'); await espera(500);
+      ok('pagamento: assinatura que venceu com o app aberto volta a mostrar os planos',
+         proPelaLoja === false && q('pro-ativo').hidden && !q('btn-assinar').hidden && !q('planos-pro').hidden);
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: e a faixa volta ao inicio', !q('tela-inicio').hidden && !vIni.hidden);
+
+      // Tela cheia da abertura: nao cobre quem ja tocou no inicio, nem a corrida
+      // aberta; o "Agora não" do topo fecha; e sai sozinha para quem vira Pro.
+      irParaInicio(); await espera(100);
+      vitrineCheiaNestaAbertura = false;
+      const desdeToque = performance.now();
+      document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      await abrirVitrineAoAbrir(desdeToque); await espera(150);
+      ok('vitrine: quem ja tocou no inicio nao leva a tela cheia por baixo do dedo', q('tela-vitrine').hidden && !q('tela-inicio').hidden);
+      await abrirCorrida(); await espera(200);
+      digitar('corrida-destino', 'Aeroporto de Congonhas');
+      clicar('btn-comecar'); await espera(200);
+      irParaInicio(); await espera(100);
+      await abrirVitrineAoAbrir(performance.now()); await espera(150);
+      ok('vitrine: com corrida aberta, a tela cheia da abertura nao cobre (ele abriu para encerrar a corrida)',
+         !!corridaAtual() && q('tela-vitrine').hidden && !q('tela-inicio').hidden);
+      apagarCorrida(); irParaInicio(); await espera(100);
+      await abrirVitrineAoAbrir(performance.now()); await espera(200);
+      ok('vitrine: sem corrida, a abertura cobre a tela', !q('tela-vitrine').hidden);
+      clicar('btn-vitrine-cheia-fechar-topo'); await espera(200);
+      ok('vitrine: o "Agora não" do topo fecha a tela cheia', q('tela-vitrine').hidden && !q('tela-inicio').hidden);
+      vitrineCheiaNestaAbertura = false;
+      await abrirVitrineAoAbrir(performance.now()); await espera(200);
+      window.__sessao = { ...window.__sessao, plano: 'pro', limite_mensal: null };
+      await atualizarSessao(); await espera(200);
+      ok('vitrine: virou Pro com a tela cheia aberta, ela sai sozinha', q('tela-vitrine').hidden && !q('tela-inicio').hidden);
+      window.__sessao = { ...window.__sessao, plano: 'free', limite_mensal: 6 };
+      await atualizarSessao(); await espera(100);
+      // 402 com a assinatura ja na tela (compra andando): so o motivo muda; o
+      // plano que ele marcou continua marcado.
+      await salvarRecibo({ rid: 'COTANACOMPRA01', criado_em: new Date().toISOString(), pendente: true, dono: 'web-motorista', motorista: retratoV,
+                           dados: { rid: 'COTANACOMPRA01', origem: 'Cota na compra', destino: 'Centro', valor: '5', valor_exibido: '5,00',
+                                    data: '2026-11-14', forma_pagamento: 'Pix' } });
+      abrirAssinatura(''); await espera(150);
+      escolhidoNaTela = true; escolherPlano(MENSAL);
+      window.__regra = (c) => (c.origem === 'Cota na compra' ? { status: 402, corpo: { erro: 'limite_mensal', limite: 6 } } : {});
+      await sincronizar(); await espera(150);
+      window.__regra = () => ({});
+      ok('pagamento: 402 com a assinatura na tela so troca o motivo e mantem o plano marcado',
+         !q('tela-assinatura').hidden && q('motivo-pro').textContent.includes('ficou sem link') && planoEscolhido === MENSAL
+         && q('plano-mensal').getAttribute('aria-checked') === 'true', `${planoEscolhido} / ${q('motivo-pro').textContent}`);
+      clicar('btn-fechar-pro'); await espera(200);
+      // Sem rastro para os testes seguintes: o recibo recusado deste teste voltaria
+      // a fila (e a contagem) quando houvesse vaga, e a faixa do inicio ficou fechada.
+      const bancoV = await abrirBanco();
+      await new Promise((ok2) => { const tx = bancoV.transaction('recibos', 'readwrite');
+        tx.objectStore('recibos').delete('COTANACOMPRA01'); tx.oncomplete = ok2; });
+      vitrineInicioFechada = false;
+
+      // Recibo SEM preco da loja (sem sinal, loja sem responder): nada de tela
+      // cheia; fica a faixa de reserva, com "Ver planos", contando a fila.
+      const ofertasDeVerdade = window.Capacitor.Plugins.Purchases.getOfferings;
+      window.Capacitor.Plugins.Purchases.getOfferings = async () => { throw Object.assign(new Error('sem rede'), { code: '10' }); };
+      const pacotesComPreco = pacotesPro;
+      pacotesPro = {};
+      window.__regra = (c) => (c.origem === 'Vitrine 1' ? { atraso: 1200 } : {});
+      await emitir('Vitrine 1', '15'); await espera(300);
+      ok('vitrine: sem preco da loja, gerar o recibo nao cobre a tela', q('tela-vitrine').hidden && !q('tela-recibo').hidden);
+      ok('vitrine: no lugar, a faixa aparece no recibo, so com "Ver planos"',
+         !vRec.hidden && visivel('btn-vitrine-recibo-ver') && vRec.querySelector('.vitrine-compra').hidden);
+      ok('vitrine: no recibo, conta o recibo que ainda esta na fila (2 do servidor + 1)',
+         vRec.textContent.includes('3 de 6 recibos') && Guardado.get('usados') === 2 && (await achar('Vitrine 1'))?.pendente === true,
+         `${vRec.textContent} / ${Guardado.get('usados')}`);
+      ok('vitrine: no recibo, fica depois dos botoes de enviar',
+         q('btn-novo').getBoundingClientRect().bottom <= vRec.getBoundingClientRect().top);
+      ok('vitrine: no topo do recibo, uma linha leva a faixa', visivel('vitrine-recibo-atalho')
+         && q('vitrine-recibo-atalho').textContent.includes('Assinar o Pro')
+         && q('vitrine-recibo-atalho').getBoundingClientRect().bottom <= q('recibo').getBoundingClientRect().top, q('vitrine-recibo-atalho').textContent);
+      const topoAntes = vRec.getBoundingClientRect().top;
+      ok('vitrine: a faixa do recibo comeca abaixo da dobra (por isso a linha do topo)', topoAntes >= innerHeight, String(topoAntes));
+      clicar('vitrine-recibo-atalho'); await espera(900);
+      ok('vitrine: tocar na linha desce ate a faixa', vRec.getBoundingClientRect().top < innerHeight && scrollY > 0, `${vRec.getBoundingClientRect().top} / ${innerHeight} / ${scrollY}`);
+      await espera(1500);
+      window.__regra = () => ({});
+      ok('vitrine: depois de o recibo subir, a conta continua 3 de 6 (agora pelo numero guardado)',
+         vRec.textContent.includes('3 de 6 recibos') && Guardado.get('usados') === 3, `${vRec.textContent} / ${Guardado.get('usados')}`);
+      // Sessao que chega com o envio em voo ja traz este recibo: o 201 nao
+      // soma de novo (senao a faixa mostraria um recibo a mais).
+      window.__regra = (c) => (c.origem === 'Vitrine guarda' ? { atraso: 900 } : {});
+      await emitir('Vitrine guarda', '15'); await espera(250);
+      window.__sessao = { ...window.__sessao, usados_no_mes: 4 };   // o servidor ja contou este
+      await atualizarSessao();
+      await espera(1300);
+      window.__regra = () => ({});
+      ok('contagem: sessao gravada durante o envio nao deixa o 201 somar de novo', Guardado.get('usados') === 4, String(Guardado.get('usados')));
+      // Mes da cota no fuso do servidor (-3): 23h de 30/11 em Brasilia ainda e novembro.
+      const agoraDeVerdade = Date.now;
+      Date.now = () => Date.parse('2026-12-01T02:00:00Z');
+      const mesNoFuso = mesDaCota();
+      Date.now = agoraDeVerdade;
+      ok('contagem: o mes da cota segue o fuso de Brasilia', mesNoFuso === '2026-11', mesNoFuso);
+
+      // Recibo COM preco da loja: os planos cobrem a tela, com tres botoes, e
+      // "Agora não" mostra o recibo recem-gerado (sem faixa: ele acabou de ver).
+      window.Capacitor.Plugins.Purchases.getOfferings = ofertasDeVerdade;
+      pacotesPro = pacotesComPreco;
+      await emitir('Vitrine cheia', '15'); await espera(500);
+      const vChe = q('vitrine-cheia');
+      ok('vitrine: com preco, gerar o recibo cobre a tela com os planos', !q('tela-vitrine').hidden && q('tela-recibo').hidden);
+      const botoesCheia = [...vChe.querySelectorAll('button')].filter((b) => !b.hidden && !b.closest('[hidden]')).map((b) => b.id);
+      ok('vitrine: tela cheia com os tres botoes (anual, mensal e "Agora não" por ultimo) e um "Agora não" tambem no topo',
+         botoesCheia.join(',') === 'btn-vitrine-cheia-fechar-topo,btn-vitrine-cheia-anual,btn-vitrine-cheia-mensal,btn-vitrine-cheia-fechar', botoesCheia.join(','));
+      ok('vitrine: o "Agora não" do topo fica a vista ate em tela baixa (deitado)', q('btn-vitrine-cheia-fechar-topo').getBoundingClientRect().bottom <= 200,
+         String(q('btn-vitrine-cheia-fechar-topo').getBoundingClientRect().bottom));
+      ok('vitrine: nos primeiros instantes, toque do dedo na tela cheia nao vale (era mirado na tela de baixo)', vitrineCheiaRecemAberta());
+      ok('vitrine: a tela cheia nao vende como do Pro o que o Gratis ja tem', !vChe.innerText.includes('Compartilhar por WhatsApp'));
+      ok('vitrine: na tela cheia, o "Agora não" cabe sem rolar ate num Android pequeno (640 px)',
+         q('btn-vitrine-cheia-fechar').getBoundingClientRect().bottom <= 640, String(q('btn-vitrine-cheia-fechar').getBoundingClientRect().bottom));
+      const tamanhoCheia = (sel) => parseFloat(getComputedStyle(vChe.querySelector(sel)).fontSize);
+      ok('vitrine: na tela cheia, o anual mostra o valor por ano em destaque e o "equivale a" por mes menor',
+         q('btn-vitrine-cheia-anual').innerText.includes('R$ 59,90/ano') && q('btn-vitrine-cheia-anual').innerText.includes('equivale a R$ 4,99/mês')
+         && tamanhoCheia('.vitrine-anual .vitrine-nota') < tamanhoCheia('.vitrine-anual .vitrine-preco')
+         && q('btn-vitrine-cheia-mensal').innerText.includes('R$ 9,90/mês'), vChe.innerText);
+      const linksCheia = [...vChe.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+      ok('vitrine: na tela cheia, so os links de Termos e Privacidade, com a renovacao escrita',
+         linksCheia.length === 2 && linksCheia.every((h) => /^https:\/\/www\.recibotaxi\.com\.br\/(termos|privacidade)$/.test(h))
+         && vChe.innerText.includes('Renova sozinho'), linksCheia.join(' '));
+      // "N de 6" ou, no 6o, "Você usou os 6": as duas formas contam o recibo novo.
+      ok('vitrine: a tela cheia conta o recibo novo', /\d de 6 recibos|usou os 6 recibos/.test(vChe.textContent), vChe.textContent);
+      const ridCheia = q('btn-compartilhar').dataset.rid;
+      clicar('btn-vitrine-cheia-fechar'); await espera(300);
+      ok('vitrine: "Agora não" mostra o recibo recem-gerado, sem faixa nem linha',
+         !q('tela-recibo').hidden && q('btn-compartilhar').dataset.rid === ridCheia && vRec.hidden && q('vitrine-recibo-atalho').hidden);
+      await emitir('Vitrine cheia 2', '15'); await espera(500);
+      clicar('btn-vitrine-cheia-anual'); await espera(600);
+      ok('vitrine: "Assinar Pro anual" da tela cheia compra o anual', compras.at(-1) === '$rc_annual', compras.join(','));
+      ok('vitrine: desistindo, fica na assinatura com o anual marcado', !q('tela-assinatura').hidden
+         && q('plano-anual').getAttribute('aria-checked') === 'true');
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: "Agora não" na assinatura volta ao recibo, sem faixa', !q('tela-recibo').hidden && vRec.hidden);
+      await emitir('Vitrine cheia 3', '15'); await espera(500);
+      ok('vitrine: o voltar do Android na tela cheia volta ao recibo', voltarUmNivel() === true && !q('tela-recibo').hidden && q('tela-vitrine').hidden);
+      await emitir('Vitrine cheia 4', '15'); await espera(500);
+      clicar('btn-vitrine-cheia-mensal'); await espera(600);
+      ok('vitrine: "Assinar Pro mensal" da tela cheia compra o mensal', compras.at(-1) === '$rc_monthly', compras.join(','));
+      ok('vitrine: o voltar do Android na assinatura tambem volta ao recibo', voltarUmNivel() === true && !q('tela-recibo').hidden);
+      sairDaAssinatura();   // uma compra que termina com ele ja fora da assinatura
+      ok('pagamento: compra que termina com ele fora da assinatura nao o tira do recibo', !q('tela-recibo').hidden);
+      const ridVitrine = q('btn-compartilhar').dataset.rid;
+      abrirRecibo((await listarRecibos()).find((x) => x.rid === ridVitrine), { doHistorico: true }); await espera(200);
+      ok('vitrine: o mesmo recibo aberto pelo historico nao mostra a faixa nem a linha', vRec.hidden && q('vitrine-recibo-atalho').hidden);
+      clicar('btn-pro'); await espera(300);
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: a assinatura aberta pelo menu fecha na tela de trabalho, nao no recibo', q('tela-recibo').hidden);
+      // A volta ao recibo vale so enquanto a assinatura esta na tela.
+      await emitir('Vitrine volta', '15'); await espera(300);
+      clicar('btn-vitrine-recibo-ver'); await espera(300);
+      irParaInicio(); await espera(200);
+      abrirAssinatura(''); await espera(200);
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: saindo da assinatura pelo inicio, a volta ao recibo antigo se perde', !q('tela-inicio').hidden && q('tela-recibo').hidden);
+
+      window.__regra = (c) => (c.origem === 'Vitrine 2' ? { atraso: 1200 } : {});
+      await emitir('Vitrine 2', '16'); await espera(500);
+      ok('vitrine: o recibo ainda esta na fila quando ele fecha a tela cheia',
+         (await achar('Vitrine 2'))?.pendente === true && !q('tela-vitrine').hidden);
+      clicar('btn-vitrine-cheia-fechar'); await espera(100);
+      ok('vitrine: fechou: o recibo, sem faixa nem linha', !q('tela-recibo').hidden && vRec.hidden && q('vitrine-recibo-atalho').hidden);
+      await espera(1800);
+      window.__regra = () => ({});
+      ok('vitrine: o recibo que subiu depois nao traz a faixa nem a tela cheia de volta',
+         (await achar('Vitrine 2'))?.pendente === false && vRec.hidden && q('tela-vitrine').hidden && !q('tela-recibo').hidden);
+
+      window.__sessao = { ...window.__sessao, plano: 'pro', limite_mensal: null, usados_no_mes: 4 };
+      await atualizarSessao(); irParaInicio(); await espera(300);
+      ok('vitrine: Pro (servidor) nao ve a faixa no inicio', vIni.hidden);
+      await emitir('Vitrine Pro', '17'); await espera(400);
+      ok('vitrine: Pro (servidor) nao ve a faixa nem a tela cheia no recibo',
+         !q('tela-recibo').hidden && q('tela-vitrine').hidden && vRec.hidden && q('vitrine-recibo-atalho').hidden);
+      irParaInicio(); vitrineCheiaNestaAbertura = false; await abrirVitrineAoAbrir(); await espera(200);
+      ok('vitrine: Pro (servidor) nao ve a tela cheia ao abrir o app', q('tela-vitrine').hidden && !q('tela-inicio').hidden);
+
+      // Ja assina pela loja (outro aparelho, mesma conta Google): abrir a
+      // assinatura descobre e a faixa some, sem esperar o servidor.
+      window.__sessao = { ...window.__sessao, plano: 'free', limite_mensal: 6, usados_no_mes: 5 };
+      await atualizarSessao(); irParaInicio(); await espera(300);
+      assinouNaLoja = true;
+      clicar('btn-pro'); await espera(500);
+      ok('vitrine: a assinatura que descobre o Pro da loja tira a faixa', proPelaLoja === true && !q('pro-ativo').hidden);
+      clicar('btn-fechar-pro'); await espera(200);
+      ok('vitrine: e o inicio fica sem faixa', !q('tela-inicio').hidden && vIni.hidden);
+      // Restaurar compra tambem tira a faixa.
+      proPelaLoja = false; lojaConferidaParaVitrine = false;
+      irParaInicio(); await espera(300);
+      ok('vitrine: (de volta ao Gratis para o teste da restauracao)', !vIni.hidden);
+      abrirAssinatura(''); await espera(200);
+      proPelaLoja = false; lojaConferidaParaVitrine = false;
+      clicar('btn-restaurar'); await espera(500);
+      ok('pagamento: restaurar a compra tira a faixa e sai da assinatura', proPelaLoja === true && q('tela-assinatura').hidden && vIni.hidden);
+
+      // Recibo recusado por cota e o servidor passa a ter vaga (virou o mes):
+      // a volta ao app rele a sessao e o recibo sobe sozinho.
+      proPelaLoja = false; lojaConferidaParaVitrine = false; assinouNaLoja = false;
+      window.__sessao = { ...window.__sessao, plano: 'free', limite_mensal: 6, usados_no_mes: 6 };
+      await atualizarSessao();
+      window.__regra = () => (window.__sessao.usados_no_mes >= 6 ? { status: 402, corpo: { erro: 'limite_mensal', limite: 6 } } : {});
+      await emitir('Vitrine mes novo', '17'); await espera(900);
+      if (!q('tela-assinatura').hidden) { clicar('btn-fechar-pro'); await espera(200); }
+      ok('fila: sem vaga, o recibo fica recusado', (await achar('Vitrine mes novo'))?.recusado === 'limite_mensal');
+      window.__sessao = { ...window.__sessao, usados_no_mes: 0 };
+      sessaoRelidaEm = 0;
+      (__ouvintes.pause || []).forEach((f) => f()); (__ouvintes.resume || []).forEach((f) => f());
+      await espera(1500);
+      const mesNovo = await achar('Vitrine mes novo');
+      ok('fila: com vaga, a volta ao app devolve o recusado a fila e ele sobe', mesNovo && !mesNovo.recusado && !mesNovo.pendente && !!mesNovo.url,
+         JSON.stringify(mesNovo && { r: mesNovo.recusado, p: mesNovo.pendente }));
+      window.__regra = () => ({});
+
+      // Recibo recusado por limite, pago pela faixa: volta ao mesmo recibo e,
+      // quando o servidor souber do Pro (o aviso da loja chega depois), ele
+      // sobe e ganha o QR.
+      proPelaLoja = false; lojaConferidaParaVitrine = false; assinouNaLoja = false;
+      window.__sessao = { ...window.__sessao, plano: 'free', limite_mensal: 6, usados_no_mes: 6 };
+      await atualizarSessao();
+      window.__regra = () => (window.__sessao.plano === 'pro' ? {} : { status: 402, corpo: { erro: 'limite_mensal', limite: 6 } });
+      await emitir('Vitrine cota', '18'); await espera(900);
+      ok('pagamento: o limite abre a assinatura por cima do recibo', !q('tela-assinatura').hidden);
+      ok('pagamento: na cota estourada, so a assinatura com o motivo, sem a tela cheia antes',
+         q('tela-vitrine').hidden && q('motivo-pro').textContent.includes('ficou sem link'), q('motivo-pro').textContent);
+      const ridCota = q('btn-compartilhar').dataset.rid;
+      respostaDaCompra = null;
+      clicar('btn-assinar'); await espera(300);
+      ok('pagamento: depois de assinar, volta ao mesmo recibo na hora',
+         !q('tela-recibo').hidden && q('btn-compartilhar').dataset.rid === ridCota);
+      ok('vitrine: quem acabou de assinar na loja nao ve a faixa (o servidor ainda diz Gratis)', vRec.hidden && q('vitrine-recibo-atalho').hidden);
+      // O aviso da loja ainda nao chegou ao servidor e ele ja emite o proximo:
+      // 402, o recibo fica recusado, mas a assinatura NAO reabre por cima.
+      await emitir('Depois de pagar', '19'); await espera(600);
+      ok('pagamento: 402 logo depois de pagar nao reabre a assinatura',
+         q('tela-assinatura').hidden && (await achar('Depois de pagar'))?.recusado === 'limite_mensal',
+         `${q('tela-assinatura').hidden} ${(await achar('Depois de pagar'))?.recusado}`);
+      window.__sessao = { ...window.__sessao, plano: 'pro', limite_mensal: null };
+      let pago, depoisDePagar;
+      for (let i = 0; i < 24; i++) {
+        await espera(500);
+        pago = await achar('Vitrine cota'); depoisDePagar = await achar('Depois de pagar');
+        // Os dois subiram E a tela ja foi redesenhada (o QR aparece depois do envio).
+        if (pago?.url && depoisDePagar?.url && q('recibo').querySelector('svg.qr')) break;
+      }
+      ok('pagamento: quando o servidor confirma o Pro, os recusados sobem e o recibo da tela ganha o QR',
+         pago && !pago.recusado && !pago.pendente && !!pago.url && depoisDePagar && !depoisDePagar.recusado && !!depoisDePagar.url
+         && !!q('recibo').querySelector('svg.qr'),
+         JSON.stringify({ pago: pago && { r: pago.recusado, u: !!pago.url }, depois: depoisDePagar && { r: depoisDePagar.recusado, u: !!depoisDePagar.url } }));
+      ok('pagamento: e a assinatura nao reabriu por cima do recibo pago', q('tela-assinatura').hidden);
+      window.__regra = () => ({});
+      irParaInicio(); await espera(300);
+      ok('vitrine: nem no inicio', vIni.hidden);
+      const esperandoLoja = [];
+      window.Capacitor.Plugins.Purchases.getCustomerInfo = () => new Promise((ok2) => esperandoLoja.push(ok2));
+      let soltarRestauracao = () => {};
+      window.Capacitor.Plugins.Purchases.restorePurchases = () => new Promise((ok2) => { soltarRestauracao = ok2; });
+      proPelaLoja = false; lojaConferidaParaVitrine = false;
+      abrirAssinatura(''); await espera(150);   // a conferencia da loja de quem vai sair fica esperando
+      clicar('btn-restaurar'); await espera(100);   // e a restauracao tambem
+      encerrarSessao();
+      esperandoLoja.forEach((f) => f({ customerInfo: { entitlements: { active: { pro: {} } } } }));
+      soltarRestauracao({ customerInfo: { entitlements: { active: { pro: {} } } } }); await espera(150);
+      ok('pagamento: restauracao que termina depois de sair da conta nao marca o proximo motorista',
+         proPelaLoja === false && q('tela-assinatura').hidden && !q('tela-login').hidden);
+      ok('vitrine: sair da conta esconde as faixas e esquece a loja, mesmo com a resposta da loja chegando depois',
+         vIni.hidden && vRec.hidden && proPelaLoja === false && lojaConferidaParaVitrine === false && buscouVitrineEm === 0);
+      delete window.Capacitor.Plugins.Purchases;
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
     }
@@ -661,6 +1210,26 @@ window.addEventListener('load', async () => {
       '$rc_monthly': { identifier: '$rc_monthly', product: { priceString: 'R$ 9,90', price: 9.9, currencyCode: 'BRL' } },
     };
     abrirAssinatura('');
+    return;
+  }
+
+  if (['vitrine', 'vitrine-recibo', 'vitrine-recibo-depois'].includes(H.get('c'))) {
+    // Fotos da vitrine dos planos: motorista no Gratis, precos da loja.
+    await limparRecibosLocais();   // o recibo pendente da foto 8 somaria na contagem
+    localStorage.setItem('access_token', JSON.stringify('token-foto'));
+    localStorage.setItem('plano', JSON.stringify('free'));
+    localStorage.setItem('limite', JSON.stringify(6));
+    localStorage.setItem('usados', JSON.stringify(2));
+    pacotesPro = {
+      '$rc_annual': { identifier: '$rc_annual', product: { priceString: 'R$ 59,90', price: 59.9, currencyCode: 'BRL', pricePerMonthString: 'R$ 4,99' } },
+      '$rc_monthly': { identifier: '$rc_monthly', product: { priceString: 'R$ 9,90', price: 9.9, currencyCode: 'BRL' } },
+    };
+    if (H.get('c') === 'vitrine') { irParaInicio(); await mostrarVitrineCheia('abertura'); return; }
+    await irParaEmitir(); await espera(200);
+    q('passageiro').value = 'Maria Souza'; q('origem').value = 'Avenida Paulista, 1578';
+    q('destino').value = 'Aeroporto de Congonhas'; q('valor').value = '61,40';
+    q('form-recibo').requestSubmit();
+    if (H.get('c') === 'vitrine-recibo-depois') { await espera(900); clicar('btn-vitrine-cheia-fechar'); }
     return;
   }
 

@@ -208,6 +208,40 @@
     </button>
   </div>
 
+  <!-- Vitrine dos planos para quem esta no Gratis (pedido do Anderson,
+       2026-11-14): uma faixa, nunca uma janela por cima. Fica DEPOIS dos dois
+       caminhos de proposito: os precos chegam da loja alguns instantes depois
+       de a tela abrir, e a faixa crescendo acima deles empurraria o "Emitir
+       recibo" para baixo do dedo do motorista. Quem e Pro (loja, site,
+       pre-pago, cortesia, indicacao) nao ve. Com os precos da loja, os planos
+       sao os proprios botoes de assinar (pedido do Anderson): por isso a faixa
+       tem a renovacao e os links de Termos e Privacidade, que a Apple (3.1.2)
+       e o Google pedem junto da compra. Nenhum link para comprar fora do app
+       (Apple 3.1.1) e nenhum preco escrito aqui: o preco vem da loja. Sem
+       preco (sem rede, loja sem responder), fica so "Ver planos". -->
+  <div id="vitrine-inicio" class="vitrine" role="region" aria-label="Planos do Recibo Táxi Pro" hidden>
+    <p class="vitrine-uso"></p>
+    <strong class="vitrine-titulo">Recibo Táxi Pro: recibos ilimitados</strong>
+    <div class="vitrine-compra" hidden>
+      <button type="button" id="btn-vitrine-inicio-anual" class="vitrine-assinar vitrine-anual" hidden>
+        <span class="vitrine-rotulo">Assinar Pro anual agora</span>
+        <span class="vitrine-preco"></span>
+        <small class="vitrine-nota"></small>
+      </button>
+      <button type="button" id="btn-vitrine-inicio-mensal" class="vitrine-assinar vitrine-mensal" hidden>
+        <span class="vitrine-rotulo">Assinar Pro mensal agora</span>
+        <span class="vitrine-preco"></span>
+      </button>
+      <p class="vitrine-termos"><span class="vitrine-renovacao"></span>
+        <a href="https://www.recibotaxi.com.br/termos" class="ligacao">Termos de Uso</a> ·
+        <a href="https://www.recibotaxi.com.br/privacidade" class="ligacao">Privacidade</a></p>
+    </div>
+    <div class="vitrine-acoes">
+      <button type="button" id="btn-vitrine-inicio-ver" class="vitrine-ver">Ver planos</button>
+      <button type="button" id="btn-vitrine-inicio-fechar" class="texto">Agora não</button>
+    </div>
+  </div><!-- /vitrine-inicio -->
+
   <!-- Indicacao: um cartao, nao um terceiro caminho. Os caminhos sao o
        trabalho do dia; isto e para quando sobra um minuto. -->
   <button id="btn-ir-indicar" class="indicar-cartao">
@@ -424,6 +458,10 @@
 
 <!-- ── Recibo pronto ───────────────────────────────────────────────────── -->
 <section id="tela-recibo" class="tela" hidden>
+  <!-- Atalho da vitrine (so Gratis, so no recibo recem-gerado): a faixa inteira
+       fica depois dos botoes de enviar, abaixo da dobra; esta linha avisa que
+       ela existe e desce ate ela, sem empurrar o recibo para longe. -->
+  <button type="button" id="vitrine-recibo-atalho" class="vitrine-atalho" hidden></button>
   <div id="recibo" class="recibo"></div>
   <div class="acoes">
     <a id="btn-whats" class="primario como-botao" hidden>Enviar no WhatsApp</a>
@@ -433,9 +471,77 @@
     <button id="btn-novo" class="secundario">Novo recibo</button>
     <button id="btn-voltar-historico" class="texto" hidden>Voltar ao histórico</button>
   </div>
+
+  <!-- A mesma vitrine, so no recibo recem-gerado por quem esta no Gratis.
+       Depois dos botoes de enviar: o passageiro esperando vem primeiro. -->
+  <div id="vitrine-recibo" class="vitrine" role="region" aria-label="Planos do Recibo Táxi Pro" hidden>
+    <p class="vitrine-uso"></p>
+    <strong class="vitrine-titulo">Recibo Táxi Pro: recibos ilimitados</strong>
+    <div class="vitrine-compra" hidden>
+      <button type="button" id="btn-vitrine-recibo-anual" class="vitrine-assinar vitrine-anual" hidden>
+        <span class="vitrine-rotulo">Assinar Pro anual agora</span>
+        <span class="vitrine-preco"></span>
+        <small class="vitrine-nota"></small>
+      </button>
+      <button type="button" id="btn-vitrine-recibo-mensal" class="vitrine-assinar vitrine-mensal" hidden>
+        <span class="vitrine-rotulo">Assinar Pro mensal agora</span>
+        <span class="vitrine-preco"></span>
+      </button>
+      <p class="vitrine-termos"><span class="vitrine-renovacao"></span>
+        <a href="https://www.recibotaxi.com.br/termos" class="ligacao">Termos de Uso</a> ·
+        <a href="https://www.recibotaxi.com.br/privacidade" class="ligacao">Privacidade</a></p>
+    </div>
+    <div class="vitrine-acoes">
+      <button type="button" id="btn-vitrine-recibo-ver" class="vitrine-ver">Ver planos</button>
+      <button type="button" id="btn-vitrine-recibo-fechar" class="texto">Agora não</button>
+    </div>
+  </div><!-- /vitrine-recibo -->
 </section>
 
 <!-- ── Assinatura ──────────────────────────────────────────────────────── -->
+<!-- Vitrine em TELA CHEIA, so no plano Gratis (pedido do Anderson, 2026-11-14):
+     cobre a tela ao abrir o app (uma vez por abertura) e depois de cada "Gerar
+     recibo", com tres botoes: assinar o anual, assinar o mensal e, por ultimo,
+     "Agora não". So aparece com o preco da loja na mao; sem ele, fica a faixa
+     com "Ver planos". O valor cobrado do anual (por ano) e o destaque e o
+     "equivale a por mes" vem menor, embaixo: regra do Google Play e da Apple
+     (3.1.2), que recusam o anual vendido pelo preco mensal. -->
+<section id="tela-vitrine" class="tela" hidden>
+  <div id="vitrine-cheia" class="vitrine vitrine-tela" role="region" aria-label="Planos do Recibo Táxi Pro">
+    <!-- Um "Agora não" tambem no topo: em tela baixa (celular pequeno, deitado)
+         o de baixo fica fora da vista, e tela de planos dificil de fechar e o
+         que as lojas recusam. O de baixo continua o ultimo dos tres botoes. -->
+    <div class="cabecalho-tela">
+      <h1 class="vitrine-cheia-titulo">Recibo Táxi Pro</h1>
+      <button type="button" id="btn-vitrine-cheia-fechar-topo" class="texto">Agora não</button>
+    </div>
+    <p class="vitrine-uso"></p>
+    <strong class="vitrine-titulo">Recibos ilimitados, todo mês</strong>
+    <ul class="lista-pro">
+      <li>Recibos ilimitados</li>
+      <li>Histórico de todos os meses no painel do site</li>
+    </ul>
+    <div class="vitrine-compra" hidden>
+      <button type="button" id="btn-vitrine-cheia-anual" class="vitrine-assinar vitrine-anual" hidden>
+        <span class="vitrine-rotulo">Assinar Pro anual</span>
+        <span class="vitrine-preco"></span>
+        <small class="vitrine-nota"></small>
+      </button>
+      <button type="button" id="btn-vitrine-cheia-mensal" class="vitrine-assinar vitrine-mensal" hidden>
+        <span class="vitrine-rotulo">Assinar Pro mensal</span>
+        <span class="vitrine-preco"></span>
+      </button>
+      <p class="vitrine-termos"><span class="vitrine-renovacao"></span>
+        <a href="https://www.recibotaxi.com.br/termos" class="ligacao">Termos de Uso</a> ·
+        <a href="https://www.recibotaxi.com.br/privacidade" class="ligacao">Privacidade</a></p>
+    </div>
+    <div class="vitrine-acoes">
+      <button type="button" id="btn-vitrine-cheia-ver" class="vitrine-ver" hidden>Ver planos</button>
+    </div>
+    <button type="button" id="btn-vitrine-cheia-fechar" class="secundario">Agora não</button>
+  </div><!-- /vitrine-cheia -->
+</section>
+
 <section id="tela-assinatura" class="tela" hidden>
   <div class="cabecalho-tela">
     <h1>Recibo Táxi Pro</h1>
@@ -452,7 +558,8 @@
   </div>
 
   <!-- O preco de cada opcao vem da loja quando a tela abre. O anual so aparece
-       se a loja o devolveu; o mensal tem o valor de sempre como reserva. -->
+       se a loja o devolveu; o mensal fica sem numero ate a loja responder —
+       nunca um preco escrito aqui (a moeda e o valor sao os da loja do motorista). -->
   <div id="planos-pro" class="planos-pro" role="radiogroup" aria-label="Escolha o plano">
     <button type="button" id="plano-anual" class="plano-pro" role="radio" aria-checked="false" hidden>
       <span class="plano-topo"><strong>Anual</strong><span id="selo-anual" class="selo-pro" hidden></span></span>
@@ -461,7 +568,7 @@
     </button>
     <button type="button" id="plano-mensal" class="plano-pro" role="radio" aria-checked="true">
       <span class="plano-topo"><strong>Mensal</strong></span>
-      <span id="preco-mensal" class="plano-preco">R$ 9,90/mês</span>
+      <span id="preco-mensal" class="plano-preco"></span>
       <span class="plano-nota">Cobrado todo mês</span>
     </button>
   </div>
@@ -470,14 +577,15 @@
     <ul class="lista-pro">
       <li>Recibos ilimitados</li>
       <li>Histórico de todos os meses no painel do site</li>
-      <li>Compartilhar por WhatsApp e e-mail</li>
       <li>Suporte por e-mail</li>
     </ul>
   </div>
 
   <button id="btn-assinar" class="primario">Assinar o plano mensal</button>
   <button id="btn-restaurar" class="secundario">Restaurar compra</button>
-  <p id="erro-pro" class="erro" hidden></p>
+  <p id="erro-pro" class="erro" role="alert" hidden></p>
+  <!-- Compra nao concluida (a janela da loja fechou): dica, sem vermelho. -->
+  <p id="aviso-pro" class="aviso aviso-pro" role="status" hidden></p>
 
   <p id="aviso-renovacao" class="ajuda" style="margin-top:1.2rem">
     Renova automaticamente ao fim de cada período, mensal ou anual. Cancele

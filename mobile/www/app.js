@@ -28,9 +28,6 @@ const plataforma = () => (window.Capacitor && window.Capacitor.getPlatform
 // chave publica. Vazia significa "ainda nao configurada" — e nao erro.
 const chaveDaLoja = () => (window.RC_CHAVES || {})[plataforma()] || '';
 
-// O motorista le "App Store" no iPhone e "Google Play" no Android. Dizer a
-// loja errada faz a instrucao nao bater com o que ele tem na mao.
-const nomeDaLoja = () => (plataforma() === 'android' ? 'Google Play' : 'App Store');
 
 async function temRede() {
   const net = P().Network;
@@ -293,6 +290,8 @@ async function api(caminho, opcoes = {}) {
 // A tela de assinatura aberta pela recusa por limite fecha de volta no recibo
 // (ver btn-fechar-pro).
 let voltarDaAssinaturaParaRecibo = false;
+// Sobe a cada /api/sessao que grava a contagem do mes (ver sincronizar).
+let contagensDoServidor = 0;
 
 // Passada que parou por servidor fora do ar, 429 ou rede caida: tenta de novo
 // sozinha, em 30 s, depois 1 min, 2, ate 5 min, enquanto houver fila. Sem
@@ -336,6 +335,7 @@ async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
     // saiu e subiria com o token de quem entrou. Para aqui; a fila fica.
     if (geracao !== geracaoDaSessao) break;
     try {
+      const contagemAntes = contagensDoServidor;
       const resp = await api('/api/recibos', {
         method: 'POST',
         body: JSON.stringify(recibo.dados),
@@ -346,6 +346,16 @@ async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
         const corpo = await resp.json();
         await salvarRecibo({ ...recibo, pendente: false, url: corpo.url });
         enviados++;
+        // 201 = recibo novo, que conta no mes do plano Gratis. O numero
+        // guardado (o do menu e o da vitrine) acompanha sem esperar a proxima
+        // sessao; quando ela chega, vale o numero do servidor. Se uma sessao
+        // gravou a contagem enquanto este envio andava, ela pode ja incluir
+        // este recibo: nao soma (contar a menos se corrige na proxima sessao;
+        // contar duas vezes mostraria limite que nao existe).
+        if (resp.status === 201 && Guardado.get('limite') != null && contagensDoServidor === contagemAntes) {
+          Guardado.set('usados', usadosDoMes() + 1);
+          Guardado.set('usados_mes', mesDaCota());
+        }
       } else if (resp.status === 402) {
         // Cota do mês acabou: marca e segue para o proximo, que o servidor
         // decide (um reenvio de rid ja gravado sobe mesmo sem cota). A tela do
@@ -357,14 +367,26 @@ async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
         // O limite vem na resposta: quem acabou de perder o Pro ainda tinha
         // "ilimitado" guardado, e a frase saia sem numero.
         const limite = corpo.limite ?? Guardado.get('limite') ?? '';
-        if (!avisouLimite && !semTelaDoPro) {
+        // Quem acabou de pagar na loja (proPelaLoja) espera o servidor saber:
+        // reabrir a tela do Pro em cima do pagamento seria cobrar de novo.
+        if (!avisouLimite && !semTelaDoPro && !proPelaLoja) {
           avisouLimite = true;
           // Vindo da tela do recibo, "Agora não" volta para ela: e la que esta o
           // aviso de que este recibo ficou sem QR.
-          if (!$('tela-recibo').hidden) voltarDaAssinaturaParaRecibo = true;
-          abrirAssinatura(
-            `Você usou os ${limite} recibos deste mês do plano Grátis: o recibo novo ` +
-            'ficou sem link e sem QR para o passageiro. O Pro libera recibos ilimitados.');
+          // A vitrine em tela cheia por cima do recibo recem-gerado conta como
+          // o recibo: e para ele que o "Agora não" tem de voltar.
+          const motivo = `Você usou os ${limite} recibos deste mês do plano Grátis: o recibo novo `
+            + 'ficou sem link e sem QR para o passageiro. O Pro libera recibos ilimitados.';
+          // Ja na assinatura (talvez com a compra andando): so o motivo. Reabrir
+          // zerava a escolha e remarcava o anual por cima do plano que ele tocou.
+          if (!$('tela-assinatura').hidden) {
+            $('motivo-pro').textContent = motivo;
+          } else {
+            if (!$('tela-recibo').hidden || (!$('tela-vitrine').hidden && vitrineCheiaOrigem === 'recibo')) {
+              voltarDaAssinaturaParaRecibo = true;
+            }
+            abrirAssinatura(motivo);
+          }
         }
       } else if (resp.status === 400 || resp.status === 409) {
         await salvarRecibo({ ...recibo, pendente: false, recusado: (await resp.json()).erro });
@@ -395,7 +417,7 @@ const $ = (id) => document.getElementById(id);
 const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-inicio',
                'tela-corrida', 'tela-tarifa', 'tela-emitir', 'tela-recibo',
                'tela-assinatura', 'tela-indicar', 'tela-historico', 'tela-excluir',
-               'tela-perfil'];
+               'tela-perfil', 'tela-vitrine'];
 
 // Telas de onde o motorista sai para o menu. Fechar o historico, a assinatura,
 // a exclusao ou a tarifa volta para a ultima delas, e nao sempre para o
@@ -403,9 +425,19 @@ const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-inicio',
 const TELAS_BASE = ['tela-inicio', 'tela-corrida', 'tela-emitir'];
 let telaBase = 'tela-inicio';
 
+// Quantas vezes a assinatura saiu da tela. Uma compra que espera a sessao ou a
+// loja so segue se ele nao saiu no meio: sair e voltar em seguida nao pode
+// fazer a loja abrir sozinha com o plano do toque antigo.
+let saidasDaAssinatura = 0;
+
 function mostrar(qual) {
+  if (qual !== 'tela-assinatura' && !$('tela-assinatura').hidden) saidasDaAssinatura++;
   telas.forEach((t) => { $(t).hidden = t !== qual; });
   if (TELAS_BASE.includes(qual)) telaBase = qual;
+  // A volta ao recibo vale so enquanto a assinatura esta na tela. Saindo dela
+  // por outro caminho (marca, menu), um 402 depois devolvia o motorista a um
+  // recibo antigo em vez de onde ele estava.
+  if (qual !== 'tela-assinatura') voltarDaAssinaturaParaRecibo = false;
   window.scrollTo(0, 0);
 }
 
@@ -706,11 +738,15 @@ function mostrarRecibo(recibo) {
 }
 
 // Leva para a tela do recibo, venha ele de ser emitido ou do historico.
-function abrirRecibo(recibo, { doHistorico = false } = {}) {
+function abrirRecibo(recibo, { doHistorico = false, recemGerado = false } = {}) {
   $('btn-compartilhar').dataset.rid = recibo.rid;
   $('btn-voltar-historico').hidden = !doHistorico;
+  // A vitrine dos planos e so do recibo que acabou de ser gerado: o mesmo
+  // recibo reaberto pelo historico nao a mostra de novo.
+  vitrineReciboRid = recemGerado ? recibo.rid : '';
   mostrarRecibo(recibo);
   mostrar('tela-recibo');
+  mostrarVitrineDoRecibo();
 }
 
 // Enquanto o recibo nao subiu, o link existe mas a pagina do outro lado nao —
@@ -956,9 +992,8 @@ function atualizarCabecalho() {
   // Quanto ainda cabe no mês: é a resposta para "por que existe um botão Pro".
   const plano = NOME_DO_PLANO[Guardado.get('plano')] || 'Grátis';
   const limite = Guardado.get('limite');
-  const usados = Guardado.get('usados');
   $('menu-plano').textContent = limite
-    ? `Plano ${plano} · ${usados ?? 0} de ${limite} recibos este mês`
+    ? `Plano ${plano} · ${usadosDoMes()} de ${limite} recibos este mês`
     : `Plano ${plano} · recibos ilimitados`;
 }
 
@@ -1279,13 +1314,16 @@ $('form-recibo').addEventListener('submit', async (ev) => {
     if (reciboDaCorrida) { apagarCorrida(); limparCorridaDoFormulario(); }
     preencherDataEHora();     // o próximo recibo já nasce com a hora certa
 
-    abrirRecibo(recibo);
+    abrirRecibo(recibo, { recemGerado: true });
+    // No Gratis, os planos cobrem a tela; "Agora não" mostra este recibo.
+    mostrarVitrineCheia('recibo', rid);
   } finally {
     emitindo = false;   // aconteca o que acontecer, o botao nao fica morto
   }
 
   await esperarSubir(rid);
   await atualizarAvisoFila();
+  atualizarVitrines();   // o recibo subiu (ou nao): a contagem do mes muda de lugar
 });
 
 // O Share.share() do iOS abre a folha do sistema, que lista contatos salvos —
@@ -1529,17 +1567,341 @@ function emReais(valor, moeda) {
   }
 }
 
+// ── Vitrine dos planos (plano Gratis) ──────────────────────────────────────
+// Pedido do Anderson (2026-11-14): os planos a vista para quem esta no Gratis,
+// no inicio a cada abertura do app e na tela do recibo logo depois de cada
+// "Gerar recibo". Faixa, e nao janela por cima: nada fica entre o motorista e
+// o recibo que o passageiro esta esperando. Quem e Pro — pela loja, pelo site,
+// pre-pago, cortesia ou mes de indicacao — nao ve: o servidor manda essas
+// contas sem limite, e a loja e consultada para quem acabou de pagar e o
+// servidor ainda nao soube. "Ver planos" abre a assinatura do proprio app
+// (nada de site: Apple 3.1.1). O preco vem da loja, como na tela de
+// assinatura; sem resposta dela, a vitrine fala do Pro sem numero.
+const VITRINE_VOLTA_DEPOIS_MS = 30 * 60 * 1000;   // fora do app mais que isso = abriu de novo
+let vitrineInicioFechada = false;   // "Agora não" no inicio: volta na proxima abertura
+let vitrineReciboRid = '';          // o recibo recem-gerado que mostra a vitrine
+let proPelaLoja = false;            // a loja ja disse que ele assina
+let lojaConferidaParaVitrine = false;
+let buscaDaVitrine = null;
+let buscouVitrineEm = 0;
+let foiParaOFundoEm = 0;
+let sessaoRelidaEm = 0;             // ultima /api/sessao pedida pela volta ao app
+
+function limiteDoGratis() {
+  const limite = Number(Guardado.get('limite'));
+  return Number.isInteger(limite) && limite > 0 ? limite : 0;
+}
+
+// Mes da cota no fuso do servidor (BR_TZ fixo em -03:00, app.py), e nao no do
+// aparelho: e assim que o servidor zera a contagem no dia 1o.
+const mesDaCota = () => new Date(Date.now() - 3 * 3600e3).toISOString().slice(0, 7);
+
+// O 'usados' guardado e de um mes. Virou o mes sem sessao nova (sem sinal no
+// dia 1o), a contagem e zero — e nao a do mes passado somando ate "7 de 6".
+function usadosDoMes() {
+  const mes = Guardado.get('usados_mes');
+  return mes && mes !== mesDaCota() ? 0 : (Number(Guardado.get('usados')) || 0);
+}
+
+// Gratis = logado, o servidor diz Gratis e manda o limite do mes, e a loja
+// nao disse que ele assina. Antes da primeira sessao (sem rede na primeira
+// abertura) nao ha limite guardado, e a vitrine nao aparece.
+const noGratis = () => !!token() && !assinaPeloServidor() && !proPelaLoja && limiteDoGratis() > 0;
+
+async function desenharVitrine(caixa) {
+  const limite = limiteDoGratis();
+  // O servidor conta o que ja subiu; o que esta na fila ainda vai contar.
+  let naFila = 0;
+  try { naFila = (await pendentes()).length; } catch { /* banco local com defeito: so o do servidor */ }
+  const naConta = usadosDoMes() + naFila;   // pode passar do limite: o servidor recusa o excesso
+  const usados = Math.min(naConta, limite);
+  const uso = usados >= limite
+    ? `Você usou os ${limite} recibos grátis deste mês`
+    : `Plano Grátis: ${usados} de ${limite} recibos usados este mês`;
+  caixa.querySelector('.vitrine-uso').textContent = uso;
+  // Com o preco da loja, cada plano e um botao de assinar com o valor cobrado
+  // em destaque. Sem preco nenhum, os botoes somem e fica "Ver planos": nao se
+  // pede para assinar sem mostrar quanto custa.
+  const anual = pacotesPro[ANUAL]?.product;
+  const mensal = pacotesPro[MENSAL]?.product;
+  const botaoAnual = caixa.querySelector('.vitrine-anual');
+  const botaoMensal = caixa.querySelector('.vitrine-mensal');
+  botaoAnual.hidden = !anual?.priceString;
+  if (anual?.priceString) {
+    botaoAnual.querySelector('.vitrine-preco').textContent = `${anual.priceString}/ano`;
+    const porMes = anual.pricePerMonthString
+      || (Number.isFinite(anual.price) ? emReais(anual.price / 12, anual.currencyCode) : '');
+    botaoAnual.querySelector('.vitrine-nota').textContent = porMes ? `equivale a ${porMes}/mês` : '';
+  }
+  botaoMensal.hidden = !mensal?.priceString;
+  if (mensal?.priceString) botaoMensal.querySelector('.vitrine-preco').textContent = `${mensal.priceString}/mês`;
+  const comPreco = !botaoAnual.hidden || !botaoMensal.hidden;
+  caixa.querySelector('.vitrine-compra').hidden = !comPreco;
+  caixa.querySelector('.vitrine-ver').hidden = comPreco;
+  caixa.querySelector('.vitrine-renovacao').textContent = 'Renova sozinho ao fim de cada período; cancele '
+    + `quando quiser ${ehAndroid() ? 'pelo Google Play' : 'nos Ajustes do iPhone'}.`;
+  return { usados, limite, naConta };
+}
+
+// Os botoes de assinar da vitrine abrem a tela de assinatura com o plano
+// marcado e ja chamam a compra: a janela da loja sobe por cima dela. Se ele
+// desistir ou o cartao for recusado, cai na tela de assinatura, com os dois
+// planos, os termos e a dica de trocar o cartao — e "Agora não" volta para
+// onde ele estava (o recibo, se veio do recibo).
+function assinarPelaVitrine(plano, doRecibo) {
+  vibrar('LIGHT');
+  voltarDaAssinaturaParaRecibo = doRecibo;
+  abrirAssinatura('');
+  if (pacotesPro[plano]) { escolhidoNaTela = true; escolherPlano(plano); }
+  $('btn-assinar').click();
+}
+
+async function mostrarVitrineDoInicio() {
+  const caixa = $('vitrine-inicio');
+  const vale = () => noGratis() && !vitrineInicioFechada && !$('tela-inicio').hidden;
+  if (!vale()) { caixa.hidden = true; return; }
+  await desenharVitrine(caixa);
+  caixa.hidden = !vale();   // de novo depois do await: ele pode ter saido, assinado ou fechado
+  carregarLojaParaVitrine();
+}
+
+// No recibo, a faixa inteira fica depois dos botoes de enviar, quase sempre
+// abaixo da dobra (o recibo com QR ocupa a tela). Uma linha no topo avisa que
+// ela existe e desce ate ela, sem empurrar o recibo que o passageiro le.
+async function mostrarVitrineDoRecibo() {
+  const caixa = $('vitrine-recibo');
+  const atalho = $('vitrine-recibo-atalho');
+  const vale = () => noGratis() && !!vitrineReciboRid && !$('tela-recibo').hidden
+    && $('btn-compartilhar').dataset.rid === vitrineReciboRid;
+  if (!vale()) { caixa.hidden = true; atalho.hidden = true; return; }
+  const { usados, limite } = await desenharVitrine(caixa);
+  // Curta, para caber numa linha e nao empurrar o QR.
+  atalho.textContent = usados >= limite
+    ? `Você usou os ${limite} grátis · Assinar o Pro ↓`
+    : `Grátis: ${usados} de ${limite} este mês · Assinar o Pro ↓`;
+  caixa.hidden = !vale();   // outro recibo pode ter aberto durante o await
+  atalho.hidden = caixa.hidden;
+  carregarLojaParaVitrine();
+}
+
+$('vitrine-recibo-atalho').addEventListener('click', () => {
+  $('vitrine-recibo').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+function atualizarVitrines() {
+  // Virou Pro (servidor ou loja) com os planos cobrindo a tela: sai deles.
+  if (!$('tela-vitrine').hidden && !noGratis()) fecharVitrineCheia();
+  mostrarVitrineDoInicio();
+  mostrarVitrineDoRecibo();
+}
+
+// Precos da loja e "ja assina?", em segundo plano, para a vitrine nao esperar
+// o motorista abrir a assinatura. So depois de o SDK estar configurado para
+// este motorista (iniciar() faz isso), uma busca por vez, e no maximo uma
+// tentativa por minuto: sem loja (sem rede, versao web) a vitrine nao fica
+// perguntando sem parar. Redesenha so quando algo mudou.
+function carregarLojaParaVitrine() {
+  const { Purchases } = P();
+  const perfil = Guardado.get('motorista_id');
+  const completa = lojaConferidaParaVitrine && Object.keys(pacotesPro).length > 0;
+  if (!Purchases || !chaveDaLoja() || !perfil || comprasPara !== perfil || completa
+      || buscaDaVitrine || Date.now() - buscouVitrineEm < 60000) return;
+  buscouVitrineEm = Date.now();
+  const geracao = geracaoDaSessao;
+  buscaDaVitrine = (async () => {
+    let mudou = false;
+    if (!lojaConferidaParaVitrine) {
+      try {
+        const { customerInfo } = await Purchases.getCustomerInfo();
+        if (geracao !== geracaoDaSessao) return false;   // outro motorista entrou
+        lojaConferidaParaVitrine = true;
+        if (customerInfo?.entitlements?.active?.pro && !proPelaLoja) { proPelaLoja = true; mudou = true; }
+      } catch { /* sem resposta da loja: vale o servidor */ }
+    }
+    if (!Object.keys(pacotesPro).length) {
+      try { await buscarPacotes(); mudou = mudou || Object.keys(pacotesPro).length > 0; } catch { /* fica sem preco */ }
+    }
+    return mudou;
+  })().then((mudou) => { if (mudou) atualizarVitrines(); })
+    .finally(() => { buscaDaVitrine = null; });
+}
+
+$('btn-vitrine-inicio-ver').addEventListener('click', () => {
+  vibrar('LIGHT');
+  voltarDaAssinaturaParaRecibo = false;
+  abrirAssinatura('');
+});
+$('btn-vitrine-inicio-fechar').addEventListener('click', () => {
+  vitrineInicioFechada = true;
+  $('vitrine-inicio').hidden = true;
+});
+// Do recibo, "Agora não" na assinatura volta para o recibo: ele ainda pode
+// precisar envia-lo ao passageiro.
+$('btn-vitrine-recibo-ver').addEventListener('click', () => {
+  vibrar('LIGHT');
+  voltarDaAssinaturaParaRecibo = true;
+  abrirAssinatura('');
+});
+$('btn-vitrine-recibo-fechar').addEventListener('click', () => {
+  vitrineReciboRid = '';
+  $('vitrine-recibo').hidden = true;
+  $('vitrine-recibo-atalho').hidden = true;
+});
+// ── Vitrine em tela cheia ──────────────────────────────────────────────────
+// Pedido do Anderson (2026-11-14): no Gratis, os planos cobrem a tela ao abrir
+// o app (uma vez por abertura) e depois de cada "Gerar recibo"; tres botoes,
+// com "Agora não" por ultimo. So com o preco da loja na mao: sem ele a tela
+// nao serviria para assinar, e fica a faixa com "Ver planos". Depois dela, a
+// faixa nao aparece de novo no mesmo momento (ele acabou de ver os planos).
+let vitrineCheiaOrigem = '';            // 'abertura' ou 'recibo'
+let vitrineCheiaNestaAbertura = false;  // a da abertura ja apareceu nesta abertura
+
+const temPrecoDaLoja = () => !!(pacotesPro[ANUAL]?.product?.priceString
+  || pacotesPro[MENSAL]?.product?.priceString);
+
+async function mostrarVitrineCheia(origem, rid = '') {
+  if (!noGratis() || !temPrecoDaLoja()) return false;
+  const { limite, naConta } = await desenharVitrine($('vitrine-cheia'));
+  // Recibo alem da cota, com sinal: o servidor vai recusar e a assinatura abre
+  // sozinha com o motivo ("ficou sem QR"). Duas telas de venda seguidas para o
+  // mesmo recibo, nao: fica so a que explica.
+  if (origem === 'recibo' && naConta > limite && await temRede()) return false;
+  // De novo depois do await: ele pode ter saido da tela, assinado ou trocado de recibo.
+  const aindaVale = noGratis() && (origem === 'recibo'
+    ? !$('tela-recibo').hidden && $('btn-compartilhar').dataset.rid === rid
+    : !$('tela-inicio').hidden);
+  if (!aindaVale) return false;
+  vitrineCheiaOrigem = origem;
+  if (origem === 'recibo') {
+    vitrineReciboRid = '';                 // sem faixa nem atalho quando ele voltar ao recibo
+    $('vitrine-recibo').hidden = true; $('vitrine-recibo-atalho').hidden = true;
+  } else {
+    vitrineInicioFechada = true;           // nem faixa no inicio, nesta abertura
+    $('vitrine-inicio').hidden = true;
+  }
+  vitrineCheiaMostradaEm = performance.now();
+  mostrar('tela-vitrine');
+  return true;
+}
+
+// "Agora não" (e o voltar do Android): de volta ao recibo que ele ainda
+// precisa enviar, ou ao inicio.
+function fecharVitrineCheia() {
+  const origem = vitrineCheiaOrigem;
+  vitrineCheiaOrigem = '';
+  if (origem === 'recibo') {
+    mostrar('tela-recibo');
+    redesenharReciboAberto();   // pode ter subido enquanto os planos estavam na tela
+    return;
+  }
+  irParaInicio();
+}
+
+// Ao abrir o app: espera os precos da loja (ate ~3 s) e so cobre a tela se ele
+// ainda esta no inicio, sem ter comecado outra coisa.
+// Ultimo toque na tela, qualquer um: a tela cheia da abertura nao cobre o app
+// de quem ja comecou a usar.
+let ultimoToqueEm = 0;
+document.addEventListener('pointerdown', () => { ultimoToqueEm = performance.now(); }, true);
+
+// `desde`: quando a tela que ela cobriria apareceu (o inicio, na abertura; o
+// app, na volta). Com corrida aberta nao cobre (ele abriu para encerrar a
+// corrida, com o passageiro no carro): fica a faixa, e a tela cheia volta na
+// proxima abertura sem corrida.
+async function abrirVitrineAoAbrir(desde = performance.now()) {
+  if (vitrineCheiaNestaAbertura || !noGratis() || corridaAtual()) return;
+  const geracao = geracaoDaSessao;
+  for (let i = 0; i < 15 && !temPrecoDaLoja(); i++) await new Promise((ok) => setTimeout(ok, 200));
+  if (geracao !== geracaoDaSessao || vitrineCheiaNestaAbertura || corridaAtual()) return;
+  // Ja tocou em alguma coisa: esta trabalhando. A tela cheia chegando por
+  // baixo do dedo virava compra sem querer ("Fazer corrida" sob o anual).
+  if (ultimoToqueEm > desde) return;
+  // Voltou com um recibo na tela (talvez ainda nao enviado): cobre o recibo, e
+  // "Agora não" volta para ele, em vez de tira-lo de la.
+  const rid = $('tela-recibo').hidden ? '' : $('btn-compartilhar').dataset.rid;
+  if (!rid && $('tela-inicio').hidden) return;
+  if (await mostrarVitrineCheia(rid ? 'recibo' : 'abertura', rid)) vitrineCheiaNestaAbertura = true;
+}
+
+// Os primeiros instantes da tela cheia nao valem toque do dedo: o toque que
+// chega nessa hora foi mirado na tela de baixo, que ela acabou de cobrir.
+let vitrineCheiaMostradaEm = -Infinity;
+const vitrineCheiaRecemAberta = () => performance.now() - vitrineCheiaMostradaEm < 800;
+$('vitrine-cheia').addEventListener('click', (e) => {
+  if (e.isTrusted && vitrineCheiaRecemAberta()) { e.preventDefault(); e.stopPropagation(); }
+}, true);
+$('btn-vitrine-cheia-fechar-topo').addEventListener('click', fecharVitrineCheia);
+
+$('btn-vitrine-cheia-anual').addEventListener('click', () => assinarPelaVitrine(ANUAL, vitrineCheiaOrigem === 'recibo'));
+$('btn-vitrine-cheia-mensal').addEventListener('click', () => assinarPelaVitrine(MENSAL, vitrineCheiaOrigem === 'recibo'));
+$('btn-vitrine-cheia-fechar').addEventListener('click', fecharVitrineCheia);
+$('btn-vitrine-cheia-ver').addEventListener('click', () => {
+  voltarDaAssinaturaParaRecibo = vitrineCheiaOrigem === 'recibo';
+  abrirAssinatura('');
+});
+
+$('btn-vitrine-inicio-anual').addEventListener('click', () => assinarPelaVitrine(ANUAL, false));
+$('btn-vitrine-inicio-mensal').addEventListener('click', () => assinarPelaVitrine(MENSAL, false));
+$('btn-vitrine-recibo-anual').addEventListener('click', () => assinarPelaVitrine(ANUAL, true));
+$('btn-vitrine-recibo-mensal').addEventListener('click', () => assinarPelaVitrine(MENSAL, true));
+
+// "Toda vez que abrir o app": trocar rapido para o WhatsApp ou o Waze nao e
+// abrir de novo; voltar depois de meia hora fora, e. Ai a vitrine fechada com
+// "Agora não" volta.
+//
+// E o plano pode ter mudado com o app no fundo: pagou no site ou por Pix,
+// ganhou o mes da indicacao, cortesia do painel. Sem reler a sessao, a vitrine
+// continuava oferecendo a loja a quem ja e Pro (e cobraria de novo). Rele no
+// maximo uma vez por minuto: ele vai e volta do WhatsApp a cada recibo.
+if (P().App) {
+  P().App.addListener('pause', () => { foiParaOFundoEm = Date.now(); });
+  P().App.addListener('resume', async () => {
+    const desde = performance.now();
+    const voltouDepoisDeUmTempo = foiParaOFundoEm && Date.now() - foiParaOFundoEm > VITRINE_VOLTA_DEPOIS_MS;
+    foiParaOFundoEm = 0;
+    if (voltouDepoisDeUmTempo) {
+      vitrineInicioFechada = false;
+      vitrineCheiaNestaAbertura = false;   // e uma abertura nova: a tela cheia volta
+      // Depois de meia hora fora, quem estava no historico volta ao inicio,
+      // como numa abertura do zero. O recibo fica (pode nao ter sido enviado: a
+      // tela cheia o cobre e "Agora não" volta a ele). Formulario, corrida,
+      // perfil e assinatura ficam como estavam: podem ter coisa digitada.
+      if (noGratis() && !$('tela-historico').hidden) irParaInicio();
+    }
+    if (token() && Date.now() - sessaoRelidaEm > 60000) {
+      sessaoRelidaEm = Date.now();
+      if (await atualizarSessao()) {   // ja redesenha as vitrines
+        if (voltouDepoisDeUmTempo) abrirVitrineAoAbrir(desde);   // sem esperar a fila
+        // A sessao pode ter devolvido a fila o recusado por cota (virou Pro,
+        // virou o mes) ou o sem nome; o ouvinte da fila olhou antes disso.
+        await sincronizar({ semTelaDoPro: true });
+        atualizarAvisoFila();
+        redesenharReciboAberto();
+        return;
+      }
+    }
+    if (voltouDepoisDeUmTempo) { atualizarVitrines(); abrirVitrineAoAbrir(desde); }
+  });
+}
+
 function escolherPlano(id) {
   planoEscolhido = id;
   $('plano-anual').setAttribute('aria-checked', String(id === ANUAL));
   $('plano-mensal').setAttribute('aria-checked', String(id === MENSAL));
-  $('btn-assinar').textContent = id === ANUAL ? 'Assinar o plano anual' : 'Assinar o plano mensal';
+  // Durante a compra o botao diz "Aguarde…": os planos que chegam da loja no
+  // meio da espera nao trocam o texto (o finally da compra redesenha).
+  if (comprando) return;
+  // Sem o pacote da loja nao ha preco na tela: o botao carrega, nao assina.
+  $('btn-assinar').textContent = !pacotesPro[id] ? 'Carregar os planos'
+    : id === ANUAL ? 'Assinar o plano anual' : 'Assinar o plano mensal';
 }
 
 function mostrarPlanos() {
   const anual = pacotesPro[ANUAL]?.product;
   const mensal = pacotesPro[MENSAL]?.product;
-  if (mensal?.priceString) $('preco-mensal').textContent = `${mensal.priceString}/mês`;
+  // Sem resposta da loja, nada de numero escrito aqui (moeda e valor sao os da
+  // loja do motorista): so o aviso, e o botao vira "Carregar os planos".
+  $('preco-mensal').textContent = mensal?.priceString ? `${mensal.priceString}/mês` : 'Preço ainda não carregado';
 
   // Sem o anual na resposta da loja (ainda em analise, ou sem rede na primeira
   // abertura), a tela fica so com o mensal — nunca com um preco inventado.
@@ -1554,7 +1916,8 @@ function mostrarPlanos() {
   }
 
   if (!escolhidoNaTela) escolherPlano(anual ? ANUAL : MENSAL);
-  else if (!pacotesPro[planoEscolhido] && Object.keys(pacotesPro).length) escolherPlano(MENSAL);
+  // Sempre redesenha o botao: o texto depende de o plano ter chegado da loja.
+  else escolherPlano(!pacotesPro[planoEscolhido] && Object.keys(pacotesPro).length ? MENSAL : planoEscolhido);
 }
 
 async function buscarPacotes() {
@@ -1578,13 +1941,25 @@ function mostrarAssinaturaAtiva(link) {
 async function conferirNaLoja() {
   const { Purchases } = P();
   if (!Purchases || !chaveDaLoja()) return;
+  const geracao = geracaoDaSessao;   // a resposta da loja e deste motorista
   // Se o id do motorista ainda nao existia quando o app abriu, configura agora.
   if (!(await iniciarCompras())) return;
   try {
     const { customerInfo } = await Purchases.getCustomerInfo();
-    if (customerInfo?.entitlements?.active?.pro || assinaPeloServidor()) {
+    if (geracao !== geracaoDaSessao) return;
+    // A loja e quem sabe da assinatura da loja, nos dois sentidos: diz que ele
+    // assina, a vitrine some sem esperar o servidor; diz que nao assina mais
+    // (venceu com o app aberto), o "ja assina" guardado deixa de valer.
+    const assinaNaLoja = !!customerInfo?.entitlements?.active?.pro;
+    lojaConferidaParaVitrine = true;
+    if (assinaNaLoja !== proPelaLoja) { proPelaLoja = assinaNaLoja; atualizarVitrines(); }
+    if (assinaNaLoja || assinaPeloServidor()) {
       mostrarAssinaturaAtiva(customerInfo?.managementURL || '');
       return;
+    }
+    // A tela abriu como "ativa" pelo guardado e a loja desmentiu: os planos voltam.
+    if (!$('tela-assinatura').hidden && $('btn-assinar').hidden) {
+      $('pro-ativo').hidden = true; $('planos-pro').hidden = false; $('btn-assinar').hidden = false;
     }
   } catch { /* sem resposta da loja: segue o que o servidor disse */ }
   try { await buscarPacotes(); } catch { /* o toque em Assinar tenta de novo e mostra o motivo */ }
@@ -1593,10 +1968,13 @@ async function conferirNaLoja() {
 function abrirAssinatura(motivo) {
   $('motivo-pro').textContent = motivo || '';
   $('erro-pro').hidden = true;
+  $('aviso-pro').hidden = true;
   $('link-gerenciar').hidden = true;
   escolhidoNaTela = false;
 
-  const jaAssina = assinaPeloServidor();
+  // Vale tambem o que a loja ja disse (comprou e o servidor ainda nao soube):
+  // mostrar os planos de novo seria convidar a uma segunda cobranca.
+  const jaAssina = assinaPeloServidor() || proPelaLoja;
   $('pro-ativo').hidden = !jaAssina;
   // Pro pre-pago (anual ou mes de indicacao) tem data de fim; assinatura, nao.
   // Quem assinou pelo site gerencia la: a loja nao conhece essa assinatura,
@@ -1627,36 +2005,93 @@ $('plano-mensal').addEventListener('click', () => { escolhidoNaTela = true; esco
 // A tela de assinatura tambem abre sozinha no 402. Este botao existe para o
 // caso em que ninguem bateu no limite ainda: sem ele a analise da Apple nao
 // tem como chegar na compra, e assinante nenhum tem como restaurar.
-$('btn-pro').addEventListener('click', () => abrirAssinatura(''));
+$('btn-pro').addEventListener('click', () => {
+  voltarDaAssinaturaParaRecibo = false;   // pelo menu, volta para a tela de trabalho
+  abrirAssinatura('');
+});
 
-// A recusa por limite abre esta tela por cima do recibo recem-emitido. Voltar
-// ao formulario escondia o aviso de que o recibo ficou sem QR.
-$('btn-fechar-pro').addEventListener('click', () => {
+// A recusa por limite e a vitrine do recibo abrem esta tela por cima do recibo
+// recem-emitido. Voltar ao formulario escondia o aviso de que o recibo ficou
+// sem QR — e o recibo que o passageiro ainda espera. Vale para "Agora não",
+// para o voltar do Android e para depois da compra.
+function sairDaAssinatura() {
   const paraRecibo = voltarDaAssinaturaParaRecibo;
   voltarDaAssinaturaParaRecibo = false;
-  if (paraRecibo) { mostrar('tela-recibo'); return; }
+  // Depois de uma compra (espera longa na loja) ele pode ja ter saido da tela.
+  if ($('tela-assinatura').hidden) return;
+  if (paraRecibo) { mostrar('tela-recibo'); mostrarVitrineDoRecibo(); return; }
   voltarParaBase();
-});
+}
+
+// O servidor so sabe do Pro pelo aviso da loja (webhook), que chega segundos
+// depois da compra. Ate la a /api/sessao ainda diz Gratis, e o recibo recusado
+// por limite nao volta para a fila — o motorista voltava ao recibo pago e sem
+// QR. Pergunta de novo algumas vezes; quando o servidor confirmar, a fila sobe
+// e o recibo aberto ganha o link e o QR. Outra sessao no meio: para.
+async function esperarProNoServidor() {
+  const geracao = geracaoDaSessao;
+  for (const ms of [0, 2000, 5000, 15000, 30000]) {
+    if (ms) await new Promise((ok) => setTimeout(ok, ms));
+    if (geracao !== geracaoDaSessao) return;
+    await atualizarSessao();
+    if (assinaPeloServidor()) break;
+  }
+  if (geracao !== geracaoDaSessao) return;
+  await sincronizar();
+  atualizarAvisoFila();
+  redesenharReciboAberto();
+}
+
+$('btn-fechar-pro').addEventListener('click', sairDaAssinatura);
 
 // "Nao foi possivel concluir a compra" era tudo que aparecia, para qualquer
 // causa: produto que a loja nao devolveu, contrato pendente, aparelho sem conta
 // de teste, rede caida. Sem o motivo na tela, o motorista repete o toque e eu
 // fico adivinhando. Agora o app diz o que deu, e guarda o codigo tecnico junto
 // — feio, mas e o que permite consertar em vez de chutar.
+// As frases sao para o motorista, nao para mim: as primeiras falavam do
+// contrato de "apps pagos" (coisa do console da Apple) e culpavam a loja quando
+// o problema era o cartao. O codigo tecnico continua entre parenteses, no fim.
+const SUPORTE = 'suporte@recibotaxi.com.br';
+const ehAndroid = () => plataforma() === 'android';
+// O motorista le "App Store" no iPhone e "Google Play" no Android: a loja
+// errada faz a instrucao nao bater com o que ele tem na mao. E com o artigo
+// certo: "o Google Play", "a App Store".
+const aLoja = () => (ehAndroid() ? 'O Google Play' : 'A App Store');
+const daLoja = () => (ehAndroid() ? 'do Google Play' : 'da App Store');
+
+// No Android, a recusa do cartao aparece DENTRO da janela do Google Play, que
+// deixa trocar de cartao ali mesmo; quando o motorista fecha a janela, o app
+// recebe so "cancelado" (caso de 2026-11-14: "não consigo pagar pelo Google
+// Pay"). No iPhone, a forma de pagamento mora nos Ajustes, na conta Apple.
+const dicaDePagamentoRecusado = () => (ehAndroid()
+  ? 'Se o cartão foi recusado, toque em assinar de novo e, na janela do Google Play, '
+    + 'toque na forma de pagamento para escolher outro cartão ou adicionar um novo.'
+  : 'Se o pagamento foi recusado, confira a forma de pagamento da sua conta Apple '
+    + 'nos Ajustes do iPhone e tente de novo.');
+
 const motivosDeCompra = () => ({
   PRODUCT_NOT_AVAILABLE_FOR_PURCHASE:
-    `A ${nomeDaLoja()} não está oferecendo a assinatura ainda. Isso costuma ser o `
-    + 'contrato de apps pagos que ainda não entrou em vigor.',
+    `${aLoja()} não liberou a assinatura para esta conta agora. Tente mais tarde; `
+    + `se continuar, fale com o suporte: ${SUPORTE}.`,
   CONFIGURATION_ERROR:
-    `A assinatura não chegou da ${nomeDaLoja()}. Confira se o produto está pronto e `
-    + 'se o contrato de apps pagos está ativo.',
+    `Não conseguimos carregar os planos ${daLoja()} agora. Confira a internet e `
+    + `tente de novo; se continuar, fale com o suporte: ${SUPORTE}.`,
   OFFLINE_CONNECTION_ERROR: 'Sem conexão. Tente com sinal melhor.',
-  NETWORK_ERROR: 'A loja não respondeu. Tente de novo em instantes.',
-  STORE_PROBLEM_ERROR: `A ${nomeDaLoja()} está com problema agora. Tente mais tarde.`,
-  PURCHASE_NOT_ALLOWED_ERROR:
-    'Este aparelho não permite compras. Veja as restrições de compra do aparelho.',
+  NETWORK_ERROR: 'A loja não respondeu. Confira a internet e tente de novo em instantes.',
+  STORE_PROBLEM_ERROR:
+    `${aLoja()} não concluiu a compra. ${dicaDePagamentoRecusado()} `
+    + 'Se não foi isso, tente de novo em instantes.',
+  PURCHASE_NOT_ALLOWED_ERROR: ehAndroid()
+    ? 'O Google Play deste celular não está aceitando compras. Confira se você entrou com a '
+      + 'sua conta Google na Play Store e se ela está atualizada.'
+    : 'Este iPhone não permite compras. Veja as restrições de compra nos Ajustes.',
   PAYMENT_PENDING_ERROR: 'A compra ficou pendente de aprovação. Aguarde a confirmação.',
+  PRODUCT_ALREADY_PURCHASED_ERROR:
+    `${ehAndroid() ? 'Sua conta Google' : 'Sua conta Apple'} já tem esta assinatura. Toque em "Restaurar compra" `
+    + 'para ativá-la aqui.',
   RECEIPT_ALREADY_IN_USE_ERROR: 'Esta compra já está em outra conta.',
+  OPERATION_ALREADY_IN_PROGRESS_ERROR: 'A compra já está em andamento. Aguarde a janela da loja.',
   INVALID_APP_USER_ID: 'Sessão inconsistente. Saia e entre de novo.',
 });
 
@@ -1666,57 +2101,128 @@ const motivosDeCompra = () => ({
 const NOME_DO_CODIGO_RC = {
   '1': 'PURCHASE_CANCELLED_ERROR',
   '2': 'STORE_PROBLEM_ERROR', '3': 'PURCHASE_NOT_ALLOWED_ERROR',
-  '5': 'PRODUCT_NOT_AVAILABLE_FOR_PURCHASE', '7': 'RECEIPT_ALREADY_IN_USE_ERROR',
-  '10': 'NETWORK_ERROR', '14': 'INVALID_APP_USER_ID', '20': 'PAYMENT_PENDING_ERROR',
-  '23': 'CONFIGURATION_ERROR', '35': 'OFFLINE_CONNECTION_ERROR',
+  '5': 'PRODUCT_NOT_AVAILABLE_FOR_PURCHASE', '6': 'PRODUCT_ALREADY_PURCHASED_ERROR',
+  '7': 'RECEIPT_ALREADY_IN_USE_ERROR',
+  '10': 'NETWORK_ERROR', '14': 'INVALID_APP_USER_ID', '15': 'OPERATION_ALREADY_IN_PROGRESS_ERROR',
+  '20': 'PAYMENT_PENDING_ERROR', '23': 'CONFIGURATION_ERROR', '35': 'OFFLINE_CONNECTION_ERROR',
 };
 
 function mostrarErroDeCompra(erro, e) {
   const bruto = String(e?.code ?? e?.errorCode ?? '');
   const codigo = NOME_DO_CODIGO_RC[bruto] || bruto;
+  const mensagem = String(e?.message || '');
   const base = motivosDeCompra()[codigo]
-    || (String(e?.message || '').includes('sem oferta')
-        ? `A ${nomeDaLoja()} não devolveu nenhuma assinatura para vender. `
-          + 'O produto precisa estar pronto e o contrato de apps pagos ativo.'
-        : 'Não foi possível concluir a compra.');
+    || (mensagem.includes('sem oferta')
+      ? `${aLoja()} não devolveu os planos agora. Confira a internet e tente de novo; `
+        + `se continuar, fale com o suporte: ${SUPORTE}.`
+      : mensagem.includes('sem conta')
+        ? 'Não deu para carregar a sua conta agora. Confira a internet e tente de novo.'
+        : `Não foi possível concluir a compra. Tente de novo; se continuar, fale com o suporte: ${SUPORTE}.`);
   erro.textContent = `${base}${codigo ? ` (${codigo}${bruto !== codigo ? ' ' + bruto : ''})` : ''}`;
   erro.hidden = false;
+  if (erro.isConnected) erro.scrollIntoView({ block: 'nearest' });   // fica abaixo dos botoes
 }
 
+// Trava do botao enquanto a compra anda: um segundo toque com a janela da loja
+// abrindo virava "Não foi possível concluir a compra. (15)", como se a compra
+// tivesse falhado.
+let comprando = false;
+
 $('btn-assinar').addEventListener('click', async () => {
+  if (comprando) return;
   const erro = $('erro-pro');
+  const aviso = $('aviso-pro');
   erro.hidden = true;
+  aviso.hidden = true;
   const { Purchases } = P();
   if (!Purchases || !chaveDaLoja()) {
     erro.textContent = 'Assinatura ainda não disponível nesta versão.';
     erro.hidden = false;
     return;
   }
-  // O toque confirma o plano que esta marcado na tela. Sem isto, a busca logo
-  // abaixo podia trazer o anual e trocar a escolha do motorista antes da compra.
+  comprando = true;
+  $('btn-assinar').disabled = true;
+  $('btn-assinar').textContent = 'Aguarde…';
+  // O toque confirma o plano que esta marcado na tela, e e ESSE que vai para a
+  // loja: um 402 de outra passada durante as esperas abaixo reabre a tela e
+  // remarca o anual, e o toque no mensal virava compra do anual.
   escolhidoNaTela = true;
+  const plano = planoEscolhido;
+  // Ele pode desistir durante as esperas ("Agora não", voltar) ou outra conta
+  // entrar: dai em diante nada de abrir a loja nem de mudar de tela.
+  const geracao = geracaoDaSessao;
+  const saidas = saidasDaAssinatura;
+  const aindaAqui = () => geracao === geracaoDaSessao && !!token() && !$('tela-assinatura').hidden
+    && saidasDaAssinatura === saidas;
   try {
-    // A tela pode ter aberto sem rede, ou a loja ainda nao ter respondido.
-    // Buscar aqui de novo faz o erro de verdade (sem conexao, produto que a
-    // loja nao devolveu) chegar na tela com o motivo, em vez de "sem oferta".
-    if (!pacotesPro[planoEscolhido]) await buscarPacotes();
-    // Pelo identificador, nao pela posicao: o pacote e exatamente o que esta
-    // marcado na tela. Sem ele, nao compra outra coisa no lugar.
-    const pacote = pacotesPro[planoEscolhido];
-    if (!pacote) throw new Error('sem oferta configurada');
-    const r = await Purchases.purchasePackage({ aPackage: pacote });
+    // Antes de cobrar, o plano de agora: ele pode ter virado Pro fora do app
+    // (site, Pix, indicacao, cortesia) com o plano velho guardado, e pagaria de
+    // novo na loja. A conta recem-criada tambem ganha aqui o id do motorista,
+    // sem o qual o SDK da loja nao esta configurado (a compra falhava sem
+    // codigo nem motivo). Com sinal fraco a resposta pode nao vir: em 5 s
+    // segue com o que esta guardado.
+    const sessao = await Promise.race([atualizarSessao(), new Promise((ok) => setTimeout(() => ok(null), 5000))]);
+    if (!aindaAqui()) return;
+    if (sessao && assinaPeloServidor()) {
+      abrirAssinatura('');   // mostra "ativa"
+      // Os recusados por cota que a sessao devolveu a fila sobem agora.
+      sincronizar({ semTelaDoPro: true }).then(() => { atualizarAvisoFila(); redesenharReciboAberto(); });
+      return;
+    }
+    if (!(await iniciarCompras())) throw new Error('sem conta configurada');
+    // Sem o preco na tela nao se cobra (Apple 3.1.2): o toque so carrega os
+    // planos, e a compra fica para o proximo, com o valor a vista. A busca aqui
+    // tambem faz o erro de verdade (sem conexao, produto que a loja nao
+    // devolveu) chegar na tela com o motivo.
+    if (!pacotesPro[plano]) {
+      await buscarPacotes();
+      if (!pacotesPro[plano]) throw new Error('sem oferta configurada');
+      return;
+    }
+    // Quem ja assina pela loja nao compra de novo: no Google Play o mensal e o
+    // anual sao assinaturas separadas (seriam duas cobrancas), e o servidor e o
+    // ultimo a saber. Sem resposta da loja, a compra abaixo diz o motivo.
+    let naLoja = null;
+    try { ({ customerInfo: naLoja } = await Purchases.getCustomerInfo()); } catch { /* segue */ }
+    if (!aindaAqui()) return;
+    // A resposta de agora vale mais que a guardada: quem deixou de assinar com
+    // o app aberto pode assinar de novo. Sem resposta, vale a guardada.
+    const assinaNaLoja = naLoja ? !!naLoja.entitlements?.active?.pro : proPelaLoja;
+    if (assinaNaLoja !== proPelaLoja) { proPelaLoja = assinaNaLoja; atualizarVitrines(); }
+    if (assinaNaLoja) {
+      lojaConferidaParaVitrine = true;
+      mostrarAssinaturaAtiva(naLoja?.managementURL || '');
+      return;
+    }
+    // Pelo identificador, nao pela posicao: o pacote e exatamente o do toque.
+    const r = await Purchases.purchasePackage({ aPackage: pacotesPro[plano] });
     const virou = !!r?.customerInfo?.entitlements?.active?.pro;
+    // A sessao caiu (ou outro motorista entrou) com a janela da loja aberta: o
+    // "ja assina" e de quem pagou, nao de quem esta no aparelho agora.
+    if (geracao !== geracaoDaSessao) return;
     if (virou) {
       vibrar('HEAVY');
-      await atualizarSessao();
-      sincronizar().then(atualizarAvisoFila);   // o que a cota segurava sobe agora
-      voltarParaBase();
+      proPelaLoja = true;   // a vitrine some ja, antes de o webhook chegar ao servidor
+      atualizarVitrines();
+      sairDaAssinatura();
+      esperarProNoServidor();   // o que a cota segurava sobe quando o servidor souber
     }
   } catch (e) {
-    // Cancelar não é erro: o motorista fechou a folha de pagamento.
+    // Cancelar não é erro: o motorista fechou a folha de pagamento. Mas é também
+    // como a folha termina depois de um cartão recusado. Em silêncio, ele não
+    // sabia que podia trocar de cartão ali mesmo: fica uma dica, sem vermelho.
     const nome = NOME_DO_CODIGO_RC[String(e?.code ?? '')] || String(e?.code ?? '');
-    if (nome === 'PURCHASE_CANCELLED_ERROR' || /cancel/i.test(e?.message || '')) return;
+    if (nome === 'PURCHASE_CANCELLED_ERROR' || /cancel/i.test(e?.message || '')) {
+      aviso.textContent = `Compra não concluída. ${dicaDePagamentoRecusado()}`;
+      aviso.hidden = false;
+      aviso.scrollIntoView({ block: 'nearest' });   // fica abaixo dos botoes
+      return;
+    }
     mostrarErroDeCompra(erro, e);
+  } finally {
+    comprando = false;
+    $('btn-assinar').disabled = false;
+    escolherPlano(planoEscolhido);   // o texto do botao volta ao do plano marcado
   }
 });
 
@@ -1724,14 +2230,18 @@ $('btn-assinar').addEventListener('click', async () => {
 $('btn-restaurar').addEventListener('click', async () => {
   const erro = $('erro-pro');
   erro.hidden = true;
+  $('aviso-pro').hidden = true;
   const { Purchases } = P();
   if (!Purchases) return;
+  const geracao = geracaoDaSessao;
   try {
     const r = await Purchases.restorePurchases();
+    if (geracao !== geracaoDaSessao) return;   // outra sessao: nao e dela
     if (r?.customerInfo?.entitlements?.active?.pro) {
-      await atualizarSessao();
-      sincronizar().then(atualizarAvisoFila);   // o que a cota segurava sobe agora
-      voltarParaBase();
+      proPelaLoja = true;
+      atualizarVitrines();
+      sairDaAssinatura();
+      esperarProNoServidor();
     } else {
       erro.textContent = 'Nenhuma assinatura ativa encontrada nesta conta.';
       erro.hidden = false;
@@ -1756,6 +2266,13 @@ function encerrarSessao() {
   Guardado.del('cupom_indicacao'); Guardado.del('origem_assinatura');
   ['moeda', 'moeda_simbolo', 'moeda_casas', 'pais', 'ddi'].forEach((k) => Guardado.del(k));
   aplicarMoedaNaTela();
+  // A vitrine e o "ja assina" eram do motorista que saiu. A busca da loja
+  // tambem: a dele, se ainda estiver andando, e descartada pela geracao.
+  Guardado.del('usados_mes');
+  proPelaLoja = false; lojaConferidaParaVitrine = false; buscouVitrineEm = 0; buscaDaVitrine = null;
+  sessaoRelidaEm = 0; vitrineCheiaNestaAbertura = false; vitrineCheiaOrigem = '';
+  vitrineInicioFechada = false; vitrineReciboRid = ''; voltarDaAssinaturaParaRecibo = false;
+  $('vitrine-inicio').hidden = true; $('vitrine-recibo').hidden = true; $('vitrine-recibo-atalho').hidden = true;
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -1827,6 +2344,8 @@ async function atualizarSessao() {
     Guardado.set('plano', s.plano);
     Guardado.set('limite', s.limite_mensal);
     Guardado.set('usados', s.usados_no_mes);
+    Guardado.set('usados_mes', mesDaCota());   // de que mes e essa contagem
+    contagensDoServidor++;
     // Codigo de indicacao e fim do Pro pre-pago: guardados para a tela de
     // indicar e a de assinatura funcionarem sem sinal.
     Guardado.set('codigo_indicacao', s.codigo_indicacao || '');
@@ -1846,6 +2365,7 @@ async function atualizarSessao() {
       aplicarMoedaNaTela();
     }
     atualizarCabecalho();
+    atualizarVitrines();   // plano e contagem do mes chegaram agora
     await reabrirRecusadosPorCota(s);
     await reabrirRecusadosSemNome(s);
     return s;
@@ -1925,7 +2445,13 @@ function voltarUmNivel() {
     return true;
   }
 
-  if (!$('tela-historico').hidden || !$('tela-assinatura').hidden || !$('tela-perfil').hidden
+  // A assinatura volta para onde veio, como o "Agora não" (o recibo, se foi
+  // aberta por cima dele).
+  if (!$('tela-assinatura').hidden) { sairDaAssinatura(); return true; }
+  // A vitrine em tela cheia: o voltar e o "Agora não".
+  if (!$('tela-vitrine').hidden) { fecharVitrineCheia(); return true; }
+
+  if (!$('tela-historico').hidden || !$('tela-perfil').hidden
       || !$('tela-excluir').hidden || !$('tela-tarifa').hidden || !$('tela-indicar').hidden) {
     voltarParaBase();
     return true;
@@ -2337,6 +2863,7 @@ function irParaInicio() {
   atualizarSaudacao();
   mostrarCorridaAberta();
   mostrar('tela-inicio');
+  mostrarVitrineDoInicio();
 }
 
 $('btn-ir-emitir').addEventListener('click', () => { vibrar('LIGHT'); irParaEmitir(); });
@@ -2942,6 +3469,7 @@ async function iniciar() {
   atualizarCabecalho();
   aplicarMoedaNaTela();   // com o que ficou guardado; a sessao atualiza se houver rede
   if (!token()) { mostrar('tela-login'); return; }
+  const inicioDesde = performance.now();   // a tela cheia da abertura so cobre quem ainda nao tocou em nada
   irParaInicio();
   // Antes de qualquer envio: recibos de antes desta versao ganham o dono, com
   // ou sem sinal, para a fila deste motorista nao se misturar com a de outro.
@@ -2951,6 +3479,8 @@ async function iniciar() {
   // O nome da saudacao e o dono da corrida aberta chegam com a sessao.
   if (!$('tela-inicio').hidden) irParaInicio();
   await iniciarCompras();
+  carregarLojaParaVitrine();   // precos da vitrine e "ja assina?", sem esperar
+  abrirVitrineAoAbrir(inicioDesde);   // no Gratis, os planos cobrem a tela uma vez por abertura
   await atualizarSugestoesDeLocal();
   await atualizarAvisoFila();
   sincronizar().then(atualizarAvisoFila);

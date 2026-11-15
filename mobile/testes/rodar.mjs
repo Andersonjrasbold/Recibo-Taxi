@@ -35,7 +35,9 @@ const ancora = '<script src="config.js"></script>';
 const html = fs.readFileSync(pagina, 'utf8');
 if (!html.includes(ancora)) throw new Error('nao achei o config.js no index.html');
 const sonda = fs.readFileSync(path.join(AQUI, 'sonda-corrida.html'), 'utf8');
-fs.writeFileSync(pagina, html.replace(ancora, sonda + ancora));
+// Com funcao, e nao com texto: no texto de troca, "$'" quer dizer "o resto da
+// pagina" — um 'R$' num teste colava os scripts do app duas vezes.
+fs.writeFileSync(pagina, html.replace(ancora, () => sonda + ancora));
 
 // 2. Servidor em localhost: em file:// o IndexedDB e o localStorage nao valem.
 const TIPOS = {
@@ -72,8 +74,9 @@ async function encerrar(codigo) {
   try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* temporario */ }
   process.exit(codigo);
 }
-// A parte de rede tem esperas de verdade (fila lenta de 9 s no Salvar do perfil).
-setTimeout(() => { console.log('VIGIA: o teste passou de 6 minutos'); encerrar(2); }, 360000).unref();
+// A parte de rede tem esperas de verdade (fila lenta de 9 s no Salvar do perfil;
+// sessao lenta e prazo de 5 s na compra pela vitrine).
+setTimeout(() => { console.log('VIGIA: o teste passou de 9 minutos'); encerrar(2); }, 540000).unref();
 
 let alvo;
 for (let i = 0; i < 80 && !alvo; i++) {
@@ -125,6 +128,10 @@ if (modo === 'fotos') {
     // assinatura na App Store Connect; a loja nao responde no Chrome, entao a
     // sonda poe os pacotes na mao).
     ['c=pro', '10-assinatura'],
+    // Vitrine dos planos (plano Gratis), em tela cheia: ao abrir o app, depois de
+    // gerar o recibo, e o recibo depois do "Agora não".
+    ['c=vitrine', '11-vitrine-abertura'], ['c=vitrine-recibo', '12-vitrine-recibo'],
+    ['c=vitrine-recibo-depois', '13-recibo-depois-da-vitrine'],
   ];
   for (const [hash, nome] of casos) {
     await abrir(hash);
@@ -147,7 +154,7 @@ const partes = [];
 for (const [hash, nome] of [['c=asserts', 'fluxo'], ['c=rede', 'rede simulada']]) {
   await abrir(hash);
   let parte;
-  for (let i = 0; i < 300 && !parte; i++) {   // ate 150 s por parte
+  for (let i = 0; i < 480 && !parte; i++) {   // ate 240 s por parte
     await espera(500);
     parte = await avaliar("document.getElementById('resultado-teste')?.textContent");
   }

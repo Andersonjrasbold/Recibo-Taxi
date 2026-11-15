@@ -1590,6 +1590,40 @@ check("iPhone e Android com o mesmo numero de versao",
       len(_ver_ios) == 1 and _ver_and and _ver_ios == {_ver_and.group(1)},
       f"ios={_ver_ios} android={_ver_and.group(1) if _ver_and else None}")
 
+# -- Vitrine dos planos (2026-11-14) --------------------------------------
+# Faixa com os planos para quem esta no Gratis, no inicio e no recibo recem-
+# gerado. Sem link para fora do app (Apple 3.1.1) e sem preco escrito: o preco
+# vem da loja, como na tela de assinatura. O comportamento (quem ve, quando
+# some, para onde volta) e conferido no navegador por mobile/testes/rodar.mjs.
+print("\n-- Vitrine dos planos --")
+def _trecho(html, ident):
+    if f'id="{ident}"' not in html:
+        return ""
+    return html.split(f'id="{ident}"', 1)[1].split(f"<!-- /{ident} -->", 1)[0]
+_vit_ini, _vit_rec = _trecho(_html_app, "vitrine-inicio"), _trecho(_html_app, "vitrine-recibo")
+_vit_che = _trecho(_html_app, "vitrine-cheia")   # a de tela cheia
+check("a vitrine existe no inicio e na tela do recibo", bool(_vit_ini) and bool(_vit_rec))
+_links_vit = _re.findall(r'href="([^"]+)"', _vit_ini + _vit_rec + _vit_che)
+check("a vitrine so linka Termos e Privacidade, nunca uma compra pelo site (3.1.1/3.1.2)",
+      len(_links_vit) == 6 and all(_re.fullmatch(r"https://www\.recibotaxi\.com\.br/(termos|privacidade)", h) for h in _links_vit)
+      and not any(p in (_vit_ini + _vit_rec + _vit_che).lower() for p in ("/planos", "/assinar", "/oferta", "/login", "stripe")),
+      str(_links_vit))
+check("nenhum preco escrito na vitrine (vem da loja)", all(v and "R$" not in v for v in (_vit_ini, _vit_rec, _vit_che)))
+check("a vitrine em tela cheia tem assinar anual, assinar mensal e Agora nao por ultimo",
+      bool(_vit_che) and 0 < _vit_che.find('id="btn-vitrine-cheia-anual"') < _vit_che.find('id="btn-vitrine-cheia-mensal"')
+      < _vit_che.find('id="btn-vitrine-cheia-fechar"') and 'id="btn-vitrine-cheia-fechar-topo"' in _vit_che)
+check("a tela cheia nao vende como do Pro o que o Gratis ja tem (compartilhar)",
+      bool(_vit_che) and "Compartilhar por WhatsApp" not in _vit_che)
+check("a vitrine em tela cheia e uma tela do app (entra na troca de telas)", "'tela-vitrine'" in _appjs)
+check("a vitrine tem Assinar Pro anual agora, Assinar Pro mensal agora e Agora nao",
+      all("Assinar Pro anual agora" in v and "Assinar Pro mensal agora" in v and "Agora não" in v for v in (_vit_ini, _vit_rec)))
+check("as mensagens de compra do app nao falam de contrato de apps pagos (texto de console)",
+      "contrato de apps pagos" not in _appjs)
+check("a vitrine so aparece no Gratis (nunca para quem e Pro, pelo servidor ou pela loja)",
+      "const noGratis = () => !!token() && !assinaPeloServidor() && !proPelaLoja" in _appjs)
+check("a vitrine do inicio fica depois dos dois caminhos (preco que chega depois nao empurra o Emitir)",
+      0 < _html_app.find('id="btn-ir-corrida"') < _html_app.find('id="vitrine-inicio"'))
+
 # A pagina publica do recibo nao pode ser indexada: mostra nome e CPF. O 200
 # importa: sem ele, se este recibo sumir, a pagina de espera (que tambem tem
 # noindex) passaria no lugar da pagina do recibo.

@@ -269,6 +269,66 @@ button:disabled { opacity:.5; }
 .corrida-aberta strong { font-size:1rem; overflow-wrap:anywhere; }
 .corrida-aberta small { color:var(--muted); font-size:.8rem; }
 
+/* Vitrine dos planos (so no plano Gratis), no inicio e no recibo recem-gerado.
+   O valor cobrado (por ano, por mes) e o maior texto de cada linha; o
+   "equivale a" do anual fica menor, ao lado: o Google Play e a Apple (3.1.2)
+   pedem que o preco do periodo seja o destaque. */
+.vitrine {
+  display:grid; gap:.35rem; margin-top:1rem;
+  padding:1rem 1.1rem; border-radius:18px; color:var(--paper);
+  background:rgba(255,197,49,.08); border:1px solid rgba(255,197,49,.32);
+}
+#tela-recibo .vitrine { margin-top:1.4rem; }
+.vitrine-uso { margin:0; font-size:.8rem; font-weight:800; color:var(--ambar); }
+.vitrine-titulo { font-size:1rem; }
+/* Cada plano e um botao de assinar: o nome da acao, o valor cobrado logo
+   abaixo e, no anual, o "equivale a" menor. O anual e o principal (ambar
+   cheio); o mensal, contornado. */
+.vitrine-compra { display:grid; gap:.55rem; margin-top:.35rem; }
+.vitrine-assinar {
+  display:grid; gap:.05rem; width:100%; min-height:56px; text-align:left;
+  padding:.75rem 1rem; border-radius:14px;
+  color:var(--paper); background:transparent; border:1px solid rgba(255,197,49,.5);
+}
+.vitrine-assinar.vitrine-anual { color:var(--ink); background:var(--ambar); border-color:var(--ambar); }
+.vitrine-rotulo { font-size:1rem; font-weight:800; }
+.vitrine-preco { font-size:1.02rem; font-weight:700; }
+.vitrine-mensal .vitrine-preco { color:var(--ambar); }
+.vitrine-nota { font-size:.78rem; font-weight:600; opacity:.78; }
+/* Renovacao e links exigidos junto da compra: pequenos, mas legiveis (o
+   --muted nao se le no fundo ambar escuro). */
+.vitrine-termos { margin:.1rem 0 0; font-size:.76rem; line-height:1.45; color:rgba(247,245,242,.62); }
+.vitrine-termos .ligacao { font-weight:700; }
+.vitrine-acoes { display:flex; align-items:center; gap:.6rem; margin-top:.2rem; }
+.vitrine-acoes .texto { margin-left:auto; }
+.vitrine-ver {
+  min-height:46px; padding:0 1.3rem; border-radius:12px;
+  font-weight:800; font-size:.95rem; color:var(--ink); background:var(--ambar);
+}
+.aviso-pro { margin:.9rem 0 0; }
+/* Vitrine em tela cheia: o mesmo conteudo da faixa, sem a moldura, com os
+   botoes do tamanho do polegar e o "Agora não" por ultimo. */
+/* Compacta de proposito: os tres botoes, com o "Agora não", cabem sem rolar
+   ate num Android pequeno (640 px de altura). Tela de planos que ele precisa
+   rolar para fechar e o tipo de coisa que as lojas recusam. */
+.vitrine-tela { margin:0; padding:0; background:none; border:0; gap:.4rem; }
+.vitrine-cheia-titulo { margin:0; font-size:1.5rem; line-height:1.2; }
+.vitrine-tela .vitrine-titulo { font-size:1.05rem; }
+.vitrine-tela .lista-pro { margin:0; }
+.vitrine-tela .lista-pro li { padding:.2rem 0 .2rem 1.7rem; font-size:.9rem; }
+.vitrine-tela .vitrine-compra { gap:.6rem; margin-top:.3rem; }
+.vitrine-tela .vitrine-assinar { min-height:62px; padding:.75rem 1.05rem; border-radius:16px; }
+.vitrine-tela .vitrine-rotulo { font-size:1.05rem; }
+.vitrine-tela .vitrine-preco { font-size:1.1rem; }
+#btn-vitrine-cheia-fechar { margin-top:.5rem; }
+/* Linha no topo do recibo que leva a vitrine, abaixo da dobra. Baixa, para
+   nao empurrar o QR para fora da tela. */
+.vitrine-atalho {
+  display:block; width:100%; margin:0 0 .8rem; padding:.6rem .95rem; border-radius:12px;
+  text-align:left; font-size:.84rem; font-weight:800; line-height:1.35; color:var(--ambar);
+  background:rgba(255,197,49,.08); border:1px solid rgba(255,197,49,.32);
+}
+
 /* ── Corrida ───────────────────────────────────────────────────────────── */
 .botao-encerrar { margin:0 0 .4rem; }
 .campo-com-botao { display:flex; gap:.5rem; }

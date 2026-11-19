@@ -3,6 +3,8 @@
 alter table auth.users add column if not exists last_sign_in_at timestamptz;
 alter table auth.users add column if not exists email_confirmed_at timestamptz;
 alter table auth.users add column if not exists banned_until timestamptz;
+-- app_metadata do GoTrue: só o servidor escreve (marca a conta criada pelo painel).
+alter table auth.users add column if not exists raw_app_meta_data jsonb default '{}'::jsonb;
 create unique index if not exists auth_users_email_lower on auth.users (lower(email));
 create table if not exists auth.sessions (
   id uuid primary key default gen_random_uuid(),

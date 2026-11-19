@@ -205,6 +205,50 @@ falhar, nada é apagado. Assinante pela App Store ou Google Play não pode ser
 apagado pelo painel, porque o servidor não consegue parar a cobrança da loja.
 Cada exclusão fica no log com o e-mail do admin.
 
+**Vender o Pro pelo painel** (venda por telefone, 2026-11-19). Três caminhos,
+todos só do admin:
+
+- *Link de pagamento* (ficha do motorista → "Vender o Pro"): `/pagar/<token>`,
+  assinado com a `SECRET_KEY` (sal próprio), para um motorista e um plano:
+  mensal ou anual no cartão (assinatura) ou anual por Pix ou cartão (pagamento
+  único, `mode=payment`). Vale até as 23:59 (Brasília) do 7º dia, como a
+  mensagem promete. O motorista abre sem login: o GET só mostra plano, preço e
+  regras (a prévia do WhatsApp também abre o link) e o POST cria a sessão da
+  Stripe na conta dele, com `origem=link_painel` e o id do link no metadata
+  (também no da assinatura). O webhook de sempre libera o Pro; o link passa a
+  dizer "já foi pago" (contador `link_pago:<id>` e, depois que ele é limpo, o
+  registro em `billing_events`), então não cobra duas vezes. A volta da Stripe é
+  a página pública `/pagar/<token>/pronto`. Quem já assina pelo site ou pela loja
+  vê "você já é Pro"; o link não dá acesso à conta. Gerar não grava nada: é um
+  GET na ficha (`?link=<plano>`), e o log registra quem gerou.
+- *Cadastro pelo painel* (Motoristas → "Novo motorista"): a pedido do motorista,
+  com os mesmos dados e regras do cadastro do site (WhatsApp com DDD). A conta
+  nasce com senha aleatória que ninguém vê e com `criado_pelo_painel` no
+  `app_metadata` do Auth (o motorista não edita). A ficha mostra o link
+  `/criar-senha/<token>` para mandar pelo WhatsApp: vale 7 dias, morre no
+  primeiro uso, pede os 4 últimos números do WhatsApp do cadastro (5 erros por
+  link, contados antes de conferir), cria a senha, entra no site e, se o admin
+  escolheu um plano e ele ainda está no Grátis, segue para o pagamento. O e-mail
+  não sai sozinho: foi ditado por telefone, e um endereço errado entregaria a
+  conta a outra pessoa. Por isso, enquanto a conta não tem senha, o "Esqueci
+  minha senha" manda esse mesmo link (e não o de 1 hora), e a régua de e-mails
+  automáticos não a inclui. Não existe senha padrão: o site exige 8 caracteres,
+  e quem soubesse o e-mail entraria na conta. E-mail errado: excluir a conta e
+  cadastrar de novo.
+- *Formulário* (mesma tela): o link `/cadastro?plano=<plano>` para o motorista
+  preencher sozinho, com a senha dele; no final ele vai direto ao pagamento.
+
+Se o mesmo motorista acabar com duas assinaturas na Stripe (pagou duas sessões
+abertas), o webhook avisa a equipe por e-mail para cancelar uma, e eventos da
+assinatura que não está gravada não derrubam a que vale. As páginas com token
+(`/pagar/`, `/criar-senha/`, `/redefinir-senha/`) saem com `noindex`,
+`no-store` e `no-referrer`, e o canonical sem o token. Planos sem Price na
+Vercel aparecem desligados no painel. O Pix precisa de duas coisas na Stripe: a
+forma de pagamento Pix ativada (Configurações → Formas de pagamento) e um Price
+**avulso** de R$ 59,90 em BRL, cujo id vai em `STRIPE_PRO_ANUAL_PIX_PRICE_ID`.
+Não ativar Boleto: o webhook de assinatura libera o Pro sem olhar
+`payment_status`.
+
 O que o painel ainda **não** mede, por falta de instrumentação: upgrades e
 cancelamentos por dia, mensal × anual, e-mails entregues × falhos, canal do
 recibo (site × app) e se o cron rodou. O caminho é uma tabela de eventos

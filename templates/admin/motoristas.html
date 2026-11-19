@@ -2,7 +2,12 @@
 {% import "admin/_macros.html" as ui %}
 {% block title %}Motoristas — Painel{% endblock %}
 {% block admin %}
-<h1 class="admin-titulo">Motoristas</h1>
+<div class="adm-cabecalho">
+  <h1 class="admin-titulo">Motoristas</h1>
+  <div class="adm-acoes">
+    <a href="{{ url_for('admin_motorista_novo') }}" class="adm-botao adm-botao-primario"><i class="bi bi-person-plus me-1"></i>Novo motorista</a>
+  </div>
+</div>
 <form method="get" action="{{ url_for('admin_motoristas') }}" class="adm-filtros">
   <input type="search" name="q" value="{{ filtros.q }}" maxlength="80" class="form-control form-control-auth" placeholder="Nome, e-mail, placa, WhatsApp ou CPF">
   <select name="plano" class="form-select form-control-auth">
@@ -13,6 +18,7 @@
     <option value="">Qualquer origem</option>
     <option value="stripe" {% if filtros.origem == 'stripe' %}selected{% endif %}>Stripe</option>
     <option value="loja" {% if filtros.origem == 'loja' %}selected{% endif %}>Loja</option>
+    <option value="prepago" {% if filtros.origem == 'prepago' %}selected{% endif %}>Pré-pago (Pix, cortesia, indicação)</option>
   </select>
   <select name="filtro" class="form-select form-control-auth" aria-label="Engajamento">
     <option value="">Qualquer engajamento</option>

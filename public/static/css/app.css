@@ -1637,3 +1637,12 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
   white-space:pre-wrap; font-size:.78rem; color:rgba(255,244,236,.75); background:rgba(255,244,236,.04);
   padding:.75rem; border-radius:10px; max-height:320px; overflow:auto;
 }
+
+/* ── Link de pagamento e criar senha (páginas com token, cartão claro) ───── */
+.pagar-plano { background:#fff; border:1px solid var(--line); border-radius:var(--r-md); padding:1.1rem 1.25rem; }
+.pagar-plano-nome { font-weight:800; color:var(--ink); }
+.pagar-itens { list-style:none; padding:0; margin:.85rem 0 0; display:grid; gap:.45rem; }
+.pagar-itens li { display:flex; align-items:flex-start; gap:.55rem; font-size:.9rem; color:var(--ink); }
+.pagar-itens li .bi { color:var(--coral); flex-shrink:0; margin-top:3px; }
+.pagar-nota { font-size:.84rem; color:var(--muted); }
+.pagar-email { font-weight:800; color:var(--ink); overflow-wrap:anywhere; }

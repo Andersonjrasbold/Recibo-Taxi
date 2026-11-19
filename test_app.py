@@ -1774,6 +1774,8 @@ A.app.test_client().post("/login", data={"email": _email_entrou, "senha": "senha
 _id_nunca = A.get_store().get_user_by_email(_email_nunca)["_id"]
 _id_entrou = A.get_store().get_user_by_email(_email_entrou)["_id"]
 _tam = A.ADMIN_PAGE_SIZE; A.ADMIN_PAGE_SIZE = 100
+# Conta so os links de ficha (com o id), e nao o botao "Novo motorista".
+_LINK_FICHA = _re_adm.compile(r"/admin/motoristas/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _listas = {}
 for _f in A._FILTROS_ENGAJAMENTO:
     r = _ca.get(f"/admin/motoristas?filtro={_f}"); _listas[_f] = r.get_data(as_text=True)
@@ -1790,7 +1792,7 @@ check("'inativos ha 30 dias' nao traz conta criada agora",
 for _f, _n_card in (("login_24h", _painel["logins"]["login_24h"]), ("login_7d", _painel["logins"]["login_7d"]),
                     ("login_30d", _painel["logins"]["login_30d"]), ("nunca_logou", _painel["logins"]["nunca_logou"]),
                     ("sessao_viva", _painel["sessoes"]["usuarios"]), ("inativos_30d", _painel["inativos_30d"]["n"])):
-    _n_lista = _listas[_f].count("/admin/motoristas/")
+    _n_lista = len(_LINK_FICHA.findall(_listas[_f]))
     check(f"card e lista de {_f} mostram o mesmo numero", _n_card > 100 or _n_lista == _n_card, f"card {_n_card}, lista {_n_lista}")
 r = _ca.get("/admin/motoristas?filtro=nao_existe")
 check("filtro desconhecido e ignorado", r.status_code == 200 and "Filtro:" not in r.get_data(as_text=True), r.status_code)
@@ -1802,10 +1804,10 @@ A.ADMIN_PAGE_SIZE = _tam
 _tam = A.ADMIN_PAGE_SIZE; A.ADMIN_PAGE_SIZE = 2
 r = _ca.get("/admin/motoristas?q=teste.invalid"); _p1 = r.get_data(as_text=True)
 _cursor = _re_adm.search(r'cursor=([^&"]+)', _p1)
-check("pagina de 2 traz cursor para a proxima", _p1.count("/admin/motoristas/") == 2 and _cursor is not None)
+check("pagina de 2 traz cursor para a proxima", len(_LINK_FICHA.findall(_p1)) == 2 and _cursor is not None)
 r = _ca.get(f"/admin/motoristas?q=teste.invalid&cursor={_cursor.group(1) if _cursor else ''}")
 check("proxima pagina abre e nao repete a primeira",
-      r.status_code == 200 and _p1.split("/admin/motoristas/")[1][:36] not in r.get_data(as_text=True))
+      r.status_code == 200 and (_LINK_FICHA.findall(_p1) or ["?" * 36])[0][-36:] not in r.get_data(as_text=True))
 A.ADMIN_PAGE_SIZE = _tam
 r = _ca.get("/admin/motoristas?cursor=adulterado")
 check("cursor invalido volta a primeira pagina (200)", r.status_code == 200, r.status_code)
@@ -3257,6 +3259,483 @@ check("nenhum R$ fixo no valor do recibo, do historico, do WhatsApp ou do PDF",
 check("o valor digitado segue a mesma regra do servidor (1.500 e milhar)", "separadoresDoValor" in _appjs)
 # (A versao igual nas duas plataformas e conferida em "iPhone e Android com o
 # mesmo numero de versao"; aqui havia um numero fixo que quebrava a cada versao.)
+
+# -- Venda pelo painel: link de pagamento, cadastro e criar senha -------------
+# Pedido de 2026-11-19: um vendedor liga para os motoristas e, fechado o
+# negocio, o painel manda um link de pagamento (sem login) ou cadastra o
+# motorista e manda o link para ele criar a propria senha. Senha padrao nao:
+# quem soubesse o e-mail entraria na conta. O GET dos links nunca cobra nem
+# grava (a previa do WhatsApp abre o link); a Stripe e de mentira.
+print("\n-- Venda pelo painel (link de pagamento, cadastro e criar senha) --")
+import re as _re_lp
+_suf_lp = os.urandom(3).hex()
+_BASE_LP = "https://www.recibotaxi.com.br"
+
+
+class _StripeLp:
+    """Stripe de mentira para os links: anota clientes e sessoes. O Webhook e o
+    da biblioteca de verdade (so confere o HMAC, sem rede), para o webhook de
+    verdade rodar tambem sem chave."""
+    def __init__(self):
+        self.sessoes, self.clientes = [], []
+        falso = self
+
+        class _Customer:
+            @staticmethod
+            def create(**kw):
+                falso.clientes.append(kw)
+                return type("C", (), {"id": f"cus_lp_{_suf_lp}_{len(falso.clientes)}"})()
+
+        class _Session:
+            @staticmethod
+            def create(**kw):
+                falso.sessoes.append(kw)
+                return type("S", (), {"url": "https://checkout.stripe.com/c/pay/cs_falso_lp"})()
+
+        self.Customer = _Customer
+        self.checkout = type("K", (), {"Session": _Session})
+        self.Webhook = A.stripe_lib.Webhook if A.stripe_lib else None
+
+
+def _token_de(html, rota):
+    m = _re_lp.search(rf"/{rota}/([A-Za-z0-9_.-]+)", html or "")
+    return m.group(1) if m else ""
+
+
+_sf_lp, _emails_lp, _avisos_lp = _StripeLp(), [], []
+_orig_lp = (A.get_stripe, A.send_email, A.avisar_novo_cadastro, A.avisar_nova_assinatura, A.LINK_PAGAMENTO_DIAS,
+            A.CRIAR_SENHA_DIAS)
+_env_lp = {k: os.environ.get(k) for k in ("STRIPE_PRO_PRICE_ID", "STRIPE_PRO_ANUAL_PRICE_ID",
+                                          "STRIPE_PRO_ANUAL_PIX_PRICE_ID", "STRIPE_WEBHOOK_SECRET")}
+A.get_stripe = lambda: _sf_lp
+A.send_email = lambda para, assunto, corpo, timeout=15: _emails_lp.append((para, assunto, corpo)) or True
+A.avisar_novo_cadastro = lambda uid, dados, origem: _avisos_lp.append(("cadastro", uid, origem)) or True
+A.avisar_nova_assinatura = (lambda m, ciclo, onde, valor="", teste=False, evento_id="":
+                            _avisos_lp.append(("venda", m["_id"], onde)) or True)
+os.environ["STRIPE_PRO_PRICE_ID"] = "price_falso_mensal"
+os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = "price_falso_anual"
+os.environ["STRIPE_PRO_ANUAL_PIX_PRICE_ID"] = "price_falso_pix"
+os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_suite_lp"
+try:
+    _cadm_lp = A.app.test_client()
+    _email_adm_lp = f"admin-lp-{_suf_lp}@teste.invalid"
+    _adm_lp = A.get_store().upsert_admin(_email_adm_lp, _gph("senha-da-suite-123"))
+    _cadm_lp.post("/admin/login", data={"email": _email_adm_lp, "senha": "senha-da-suite-123"},
+                  environ_base={"REMOTE_ADDR": "203.0.113.253"})
+    with _cadm_lp.session_transaction() as _s_lp:
+        _csrf_lp = _s_lp.get("admin_csrf", "")
+    check("venda: admin da suite entrou", bool(_csrf_lp))
+
+    # Cadastro pelo painel.
+    r = _cadm_lp.get("/admin/motoristas/novo")
+    _h = r.get_data(as_text=True)
+    check("painel: tela de novo motorista abre com os dois caminhos",
+          r.status_code == 200 and "Cadastrar pelo painel" in _h and "Ou mandar o formulário" in _h, r.status_code)
+    check("painel: lista de motoristas tem o botao Novo motorista",
+          "/admin/motoristas/novo" in _cadm_lp.get("/admin/motoristas").get_data(as_text=True))
+    _h = _cadm_lp.get("/admin/motoristas/novo?formulario=pro_anual_pix").get_data(as_text=True)
+    check("painel: link do formulario leva o plano ao cadastro e vem com a mensagem do WhatsApp",
+          "/cadastro?plano=pro_anual_pix" in _h and "https://wa.me/?text=" in _h)
+
+    _email_novo_lp = f"vendido-{_suf_lp}@teste.invalid"
+    _form_lp = {"csrf": _csrf_lp, "nome_completo": "JOAO DA SILVA", "email": _email_novo_lp,
+                "whatsapp": "(11) 98888-7777", "cpf": "529.982.247-25", "cidade": "Curitiba",
+                "placa": "abc1d23", "pais": "BR", "moeda": "BRL", "plano_link": "pro_anual_pix", "pediu": "1"}
+    check("painel: cadastro sem csrf da 400",
+          _cadm_lp.post("/admin/motoristas/novo", data={**_form_lp, "csrf": ""}).status_code == 400)
+    r = _cadm_lp.post("/admin/motoristas/novo", data={**_form_lp, "pediu": ""})
+    check("painel: sem confirmar o pedido do motorista, nada e criado",
+          r.status_code == 400 and not A.get_store().get_user_by_email(_email_novo_lp), r.status_code)
+    r = _cadm_lp.post("/admin/motoristas/novo", data={**_form_lp, "cpf": "123.456.789-00"})
+    check("painel: CPF invalido e recusado", r.status_code == 400 and "CPF" in r.get_data(as_text=True), r.status_code)
+    _n_emails = len(_emails_lp)
+    r = _cadm_lp.post("/admin/motoristas/novo", data=_form_lp)
+    _novo_lp = A.get_store().get_user_by_email(_email_novo_lp) or {}
+    check("painel: cadastro cria a conta e volta para a ficha no Primeiro acesso",
+          r.status_code == 302 and bool(_novo_lp) and f"/admin/motoristas/{_novo_lp.get('_id')}" in r.headers.get("Location", "")
+          and "senha_plano=pro_anual_pix" in r.headers.get("Location", ""), f"{r.status_code} {r.headers.get('Location')}")
+    check("painel: conta nasce Gratis, com os dados digitados e sem senha conhecida",
+          _novo_lp.get("plan") == "free" and _novo_lp.get("plate") == "ABC1D23" and _novo_lp.get("city") == "Curitiba"
+          and not _novo_lp.get("password_changed_at"), str({k: _novo_lp.get(k) for k in ("plan", "plate", "city")}))
+    check("painel: conta marcada como criada pelo painel (app_metadata)",
+          A.criado_pelo_painel(_novo_lp.get("_id", "")) and A.senha_pendente(_novo_lp))
+    check("painel: o e-mail ditado por telefone nao recebe o link sozinho (um endereco errado entregaria a conta)",
+          not any(e[0] == _email_novo_lp for e in _emails_lp[_n_emails:]), str(_emails_lp[_n_emails:])[:200])
+    check("painel: a equipe e avisada do cadastro feito pelo painel",
+          ("cadastro", _novo_lp.get("_id"), "painel") in _avisos_lp)
+    with A.get_store().pool.connection() as _conn:
+        _acessos_lp = _conn.execute("select count(*) as n from public.access_logs where driver_id = %s",
+                                    (_novo_lp["_id"],)).fetchone()["n"]
+    check("painel: o cadastro feito pelo admin nao entra no registro de acessos do motorista", _acessos_lp == 0, _acessos_lp)
+    r = _cadm_lp.post("/admin/motoristas/novo", data=_form_lp)
+    check("painel: e-mail repetido nao cria outra conta", r.status_code == 409, r.status_code)
+
+    _ficha_lp = _cadm_lp.get(f"/admin/motoristas/{_novo_lp['_id']}?senha_plano=pro_anual_pix").get_data(as_text=True)
+    _tok_senha = _token_de(_ficha_lp, "criar-senha")
+    check("ficha: Primeiro acesso mostra o link de criar senha e o WhatsApp do motorista",
+          "Primeiro acesso" in _ficha_lp and bool(_tok_senha) and "https://wa.me/5511988887777?text=" in _ficha_lp)
+    check("ficha: Vender o Pro aparece para quem ainda nao assina", "Vender o Pro" in _ficha_lp)
+    _ficha_venda = _cadm_lp.get(f"/admin/motoristas/{_novo_lp['_id']}?senha_plano=pro_anual_pix&link=pro").get_data(as_text=True)
+    check("ficha: gerar o link de pagamento nao tira o plano do link de senha",
+          'name="senha_plano" value="pro_anual_pix"' in _ficha_venda and "Depois da senha" in _ficha_venda
+          and _re_lp.search(r'value="pro_anual_pix"\s+selected',
+                            _ficha_venda.split('id="senhaPlano"')[-1].split("</select>")[0]) is not None)
+    _n_emails = len(_emails_lp)
+    r = _cadm_lp.post(f"/admin/motoristas/{_novo_lp['_id']}/criar-senha",
+                      data={"csrf": _csrf_lp, "plano_link": "pro_anual_pix"})
+    _mail_lp = _emails_lp[_n_emails:]
+    check("ficha: o botao de e-mail manda o link de criar senha, com o plano e o login",
+          r.status_code == 302 and len(_mail_lp) == 1 and _mail_lp[0][0] == _email_novo_lp
+          and "/criar-senha/" in _mail_lp[0][2] and "Pro anual por Pix" in _mail_lp[0][2] and "Joao" in _mail_lp[0][2]
+          and _email_novo_lp in _mail_lp[0][2], str(_mail_lp)[:300])
+
+    # Criar senha: o link do painel.
+    _cm_lp = A.app.test_client()
+    r = _cm_lp.get(f"/criar-senha/{_tok_senha}", base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("criar senha: GET mostra o login, pede o final do WhatsApp, os Termos e o plano, sem gravar nada",
+          r.status_code == 200 and _email_novo_lp in _h and "Ao criar a senha, você concorda" in _h
+          and 'name="final_whatsapp"' in _h and "Criar senha e ir para o pagamento" in _h
+          and not (A.get_store().get_user_by_id(_novo_lp["_id"]) or {}).get("password_changed_at"), r.status_code)
+    check("criar senha: pagina com token fora da busca, do cache e do Referer",
+          "noindex" in r.headers.get("X-Robots-Tag", "") and r.headers.get("Cache-Control") == "no-store"
+          and r.headers.get("Referrer-Policy") == "no-referrer" and _tok_senha not in _h.split("<body")[0],
+          str(dict(r.headers))[:200])
+    _boa_lp = {"final_whatsapp": "7777", "senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"}
+    r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data={**_boa_lp, "final_whatsapp": "1234"}, base_url=_BASE_LP)
+    check("criar senha: sem o final certo do WhatsApp nao cria a senha (e-mail digitado errado, link encaminhado)",
+          r.status_code == 400 and not (A.get_store().get_user_by_id(_novo_lp["_id"]) or {}).get("password_changed_at"),
+          r.status_code)
+    r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data={**_boa_lp, "senha": "curta", "confirmar_senha": "curta"},
+                    base_url=_BASE_LP)
+    check("criar senha: senha curta e recusada", r.status_code == 400, r.status_code)
+    r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data={**_boa_lp, "confirmar_senha": "outra-coisa-1"}, base_url=_BASE_LP)
+    check("criar senha: confirmacao diferente e recusada", r.status_code == 400, r.status_code)
+    _n_sess = len(_sf_lp.sessoes)
+    r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data=_boa_lp, base_url=_BASE_LP)
+    _s = _sf_lp.sessoes[-1] if len(_sf_lp.sessoes) > _n_sess else {}
+    check("criar senha: com plano, vai direto para a Stripe",
+          r.status_code == 303 and r.headers.get("Location", "").startswith("https://checkout.stripe.com/"),
+          f"{r.status_code} {r.headers.get('Location')}")
+    check("criar senha: checkout do Pix na conta dele, voltando ao painel logado",
+          _s.get("mode") == "payment" and (_s.get("metadata") or {}).get("user_id") == _novo_lp["_id"]
+          and _s.get("line_items") == [{"price": "price_falso_pix", "quantity": 1}]
+          and str(_s.get("success_url", "")).startswith(f"{_BASE_LP}/dashboard"), str(_s)[:300])
+    check("checkout: o cliente da Stripe nasce com chave de idempotencia (dois toques, um cliente so)",
+          (_sf_lp.clientes[-1] if _sf_lp.clientes else {}).get("idempotency_key") == f"cliente:{_novo_lp['_id']}",
+          str(_sf_lp.clientes[-1:])[:200])
+    check("criar senha: a sessao nova sobrevive (carimbo da senha certo)",
+          _cm_lp.get("/dashboard", base_url=_BASE_LP).status_code == 200)
+    check("criar senha: a senha criada entra no Auth", A.auth_conferir_senha(_email_novo_lp, "senha-nova-123") == _novo_lp["_id"])
+    with A.get_store().pool.connection() as _conn:
+        _canal_lp = _conn.execute("select channel from public.access_logs where driver_id = %s order by at desc limit 1",
+                                  (_novo_lp["_id"],)).fetchone()
+    check("criar senha: o primeiro acesso do motorista fica no registro de acessos",
+          bool(_canal_lp) and _canal_lp["channel"] == "site_criar_senha", str(_canal_lp))
+    _n_sess = len(_sf_lp.sessoes)
+    r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data=_boa_lp, base_url=_BASE_LP)
+    check("criar senha: segundo toque, ja logado, mostra o tudo pronto e nao abre outro pagamento",
+          r.status_code == 200 and "Tudo pronto" in r.get_data(as_text=True) and len(_sf_lp.sessoes) == _n_sess, r.status_code)
+    r = A.app.test_client().get(f"/criar-senha/{_tok_senha}", base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("criar senha: o link morre no primeiro uso, diz que a senha recem-criada ja vale e leva ao pagamento",
+          r.status_code == 410 and "já foi usado" in _h and "ela já vale" in _h
+          and "/login?plano=pro_anual_pix" in _h, r.status_code)
+    r = A.app.test_client().post(f"/criar-senha/{_tok_senha}", data=_boa_lp, base_url=_BASE_LP)
+    check("criar senha: reenviar o formulario sem sessao (resposta perdida) leva ao login com o plano",
+          r.status_code == 302 and "/login?plano=pro_anual_pix" in r.headers.get("Location", ""),
+          f"{r.status_code} {r.headers.get('Location')}")
+    _ficha_lp = _cadm_lp.get(f"/admin/motoristas/{_novo_lp['_id']}").get_data(as_text=True)
+    check("ficha: com a senha criada, o Primeiro acesso some", "Primeiro acesso" not in _ficha_lp)
+
+    # Segunda conta do painel: teto de tentativas e plano velho no link de senha.
+    _email_novo2 = f"vendido2-{_suf_lp}@teste.invalid"
+    r = _cadm_lp.post("/admin/motoristas/novo", data={**_form_lp, "email": _email_novo2, "plano_link": "",
+                                                      "whatsapp": "41 99876-5432"})
+    _novo2 = A.get_store().get_user_by_email(_email_novo2) or {}
+    _tok_bloq = _token_de(_cadm_lp.get(f"/admin/motoristas/{_novo2.get('_id')}").get_data(as_text=True), "criar-senha")
+    for _i in range(A.CRIAR_SENHA_TENTATIVAS):
+        A.app.test_client().post(f"/criar-senha/{_tok_bloq}", data={**_boa_lp, "final_whatsapp": f"{_i:04d}"},
+                                 base_url=_BASE_LP)
+    r = A.app.test_client().post(f"/criar-senha/{_tok_bloq}", data={**_boa_lp, "final_whatsapp": "5432"}, base_url=_BASE_LP)
+    check("criar senha: depois de 5 erros no WhatsApp o link para, mesmo com o numero certo",
+          r.status_code == 429 and "Muitas tentativas" in r.get_data(as_text=True)
+          and not (A.get_store().get_user_by_id(_novo2["_id"]) or {}).get("password_changed_at"), r.status_code)
+    _ficha2 = _cadm_lp.get(f"/admin/motoristas/{_novo2['_id']}?senha_plano=pro_anual_pix").get_data(as_text=True)
+    _tok_novo2 = _token_de(_ficha2, "criar-senha")
+    check("criar senha: um link novo do painel volta a funcionar",
+          A.app.test_client().get(f"/criar-senha/{_tok_novo2}", base_url=_BASE_LP).status_code == 200)
+    # Ele pagou pelo link de pagamento antes de abrir o link de senha (que tem plano).
+    A.conceder_pro_prepago(A.get_store().get_user_by_id(_novo2["_id"]), 365, "prepago")
+    _ficha2 = _cadm_lp.get(f"/admin/motoristas/{_novo2['_id']}?senha_plano=pro_anual_pix").get_data(as_text=True)
+    check("ficha: para quem ja e Pro, o link de senha nao leva plano", "Ele já é Pro" in _ficha2
+          and 'id="senhaPlano"' not in _ficha2)
+    _c2 = A.app.test_client()
+    r = _c2.get(f"/criar-senha/{_tok_novo2}", base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("criar senha: link velho com plano, para quem ja pagou, nao promete outro pagamento",
+          r.status_code == 200 and "Seu Pro já está ativo" in _h and "ir para o pagamento" not in _h, r.status_code)
+    _n_sess = len(_sf_lp.sessoes)
+    r = _c2.post(f"/criar-senha/{_tok_novo2}", data={**_boa_lp, "final_whatsapp": "5432"}, base_url=_BASE_LP)
+    check("criar senha: quem ja pagou cria a senha sem ser cobrado de novo",
+          r.status_code == 302 and len(_sf_lp.sessoes) == _n_sess
+          and "Tudo pronto" in _c2.get(r.headers.get("Location", "/"), base_url=_BASE_LP).get_data(as_text=True)
+          and "Pagar o" not in _c2.get(r.headers.get("Location", "/"), base_url=_BASE_LP).get_data(as_text=True),
+          f"{r.status_code} {r.headers.get('Location')}")
+    _tam_senha = A.CRIAR_SENHA_DIAS
+    A.CRIAR_SENHA_DIAS = -1
+    r = A.app.test_client().get(f"/criar-senha/{_tok_novo2}", base_url=_BASE_LP)
+    A.CRIAR_SENHA_DIAS = _tam_senha
+    check("criar senha: link vencido da 410", r.status_code == 410 and "venceu" in r.get_data(as_text=True), r.status_code)
+
+    # Conta comum (cadastro pelo site): o painel nao gera link de senha para ela.
+    _email_comum_lp = f"comum-{_suf_lp}@teste.invalid"
+    novo_cliente(_email_comum_lp)
+    _comum_lp = A.get_store().get_user_by_email(_email_comum_lp)
+    _ficha_comum = _cadm_lp.get(f"/admin/motoristas/{_comum_lp['_id']}").get_data(as_text=True)
+    check("ficha: conta criada pelo proprio motorista nao tem Primeiro acesso",
+          "Primeiro acesso" not in _ficha_comum and "/criar-senha/" not in _ficha_comum)
+    with A.app.test_request_context("/", base_url=_BASE_LP):
+        _forjado = A.gerar_link_criar_senha(_comum_lp).rsplit("/criar-senha/", 1)[1]
+        _reset_lp = A.build_reset_token(_comum_lp)
+    check("criar senha: link para conta que o painel nao criou nao vale",
+          A.app.test_client().get(f"/criar-senha/{_forjado}", base_url=_BASE_LP).status_code == 404)
+    check("criar senha: token de redefinicao (1 hora) nao serve aqui",
+          A.app.test_client().get(f"/criar-senha/{_reset_lp}", base_url=_BASE_LP).status_code == 404)
+    r = _cadm_lp.post(f"/admin/motoristas/{_comum_lp['_id']}/criar-senha", data={"csrf": _csrf_lp})
+    check("ficha: reenviar link de senha para conta comum nao manda nada",
+          r.status_code == 302 and not any(e[0] == _email_comum_lp and "/criar-senha/" in e[2] for e in _emails_lp))
+
+    # Conta do painel ainda sem senha: o "Esqueci minha senha" e a regua de e-mails.
+    _email_novo3 = f"vendido3-{_suf_lp}@teste.invalid"
+    r = _cadm_lp.post("/admin/motoristas/novo", data={**_form_lp, "email": _email_novo3, "plano_link": "",
+                                                      "whatsapp": "123"})
+    check("painel: WhatsApp sem DDD e recusado (o link de senha pede os numeros dele)",
+          r.status_code == 400 and not A.get_store().get_user_by_email(_email_novo3), r.status_code)
+    _cadm_lp.post("/admin/motoristas/novo", data={**_form_lp, "email": _email_novo3, "plano_link": "",
+                                                  "whatsapp": "(21) 97654-3210"})
+    _novo3 = A.get_store().get_user_by_email(_email_novo3) or {}
+    _n_emails = len(_emails_lp)
+    A.app.test_client().post("/recuperar-senha", data={"email": _email_novo3})
+    _mail3 = [e for e in _emails_lp[_n_emails:] if e[0] == _email_novo3]
+    check("esqueci a senha: conta do painel sem senha recebe o link que pede o WhatsApp, e nao o de 1 hora",
+          len(_mail3) == 1 and "/criar-senha/" in _mail3[0][2] and "/redefinir-senha/" not in _mail3[0][2],
+          str(_mail3)[:200])
+    _tok3 = _token_de(_mail3[0][2] if _mail3 else "", "criar-senha")
+    with A.app.test_request_context("/", base_url=_BASE_LP):
+        _reset3 = A.build_reset_token(_novo3)
+    r = A.app.test_client().post(f"/redefinir-senha/{_reset3}",
+                                 data={"senha": "senha-de-outro-1", "confirmar_senha": "senha-de-outro-1"})
+    check("esqueci a senha: o link de 1 hora nao cria a senha de conta do painel",
+          r.status_code == 302 and "/recuperar-senha" in r.headers.get("Location", "")
+          and not (A.get_store().get_user_by_id(_novo3["_id"]) or {}).get("password_changed_at"), r.status_code)
+    r = A.app.test_client().post(f"/criar-senha/{_tok3}", data={**_boa_lp, "final_whatsapp": "\u0663\u0662\u0661\u0660"},
+                                 base_url=_BASE_LP)
+    check("criar senha: digitos fora do ASCII sao recusados sem erro 500", r.status_code == 400, r.status_code)
+    with A.get_store().pool.connection() as _conn:
+        _cands = A.candidatos_do_modelo(
+            _conn, {"id": str(A.uuid4()), "trigger": "signup", "trigger_value": 0, "send_hour": 0, "scheduled_at": None},
+            A.datetime.now(A.timezone.utc), 0, 50, restringir_a=[_novo3["_id"], _comum_lp["_id"]])
+    _ids_cands = {str(c["id"]) for c in _cands}
+    check("regua de e-mails: conta do painel sem senha fica de fora ate criar a senha; cadastro comum entra",
+          _novo3["_id"] not in _ids_cands and _comum_lp["_id"] in _ids_cands, str(_ids_cands))
+
+    # Link de pagamento, sem login.
+    _ficha_comum = _cadm_lp.get(f"/admin/motoristas/{_comum_lp['_id']}?link=pro_anual_pix").get_data(as_text=True)
+    _tok_pix = _token_de(_ficha_comum, "pagar")
+    check("ficha: gera o link de pagamento com validade e WhatsApp do motorista",
+          bool(_tok_pix) and "vale até" in _ficha_comum and "https://wa.me/5511999998888?text=" in _ficha_comum)
+    check("ficha: plano fora da lista nao gera link",
+          "/pagar/" not in _cadm_lp.get(f"/admin/motoristas/{_comum_lp['_id']}?link=business").get_data(as_text=True))
+    _cp_lp = A.app.test_client()
+    _n_sess = len(_sf_lp.sessoes)
+    r = _cp_lp.get(f"/pagar/{_tok_pix}", base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("pagar: GET so mostra o plano (previa do WhatsApp nao cobra)",
+          r.status_code == 200 and len(_sf_lp.sessoes) == _n_sess and "Pagar por Pix ou cartão" in _h
+          and "Ana" in _h and A.filtro_mascarar_email(_email_comum_lp) in _h and _email_comum_lp not in _h, r.status_code)
+    check("pagar: pagina com token fora da busca, do cache e do Referer, sem token no canonical",
+          "noindex" in r.headers.get("X-Robots-Tag", "") and r.headers.get("Cache-Control") == "no-store"
+          and r.headers.get("Referrer-Policy") == "no-referrer"
+          and f'rel="canonical" href="{_BASE_LP}/"' in _h, r.headers.get("Cache-Control"))
+    r = _cp_lp.post(f"/pagar/{_tok_pix}", base_url=_BASE_LP)
+    _s = _sf_lp.sessoes[-1] if len(_sf_lp.sessoes) > _n_sess else {}
+    _meta_pix = dict(_s.get("metadata") or {})
+    check("pagar: POST vai para a Stripe", r.status_code == 303
+          and r.headers.get("Location", "").startswith("https://checkout.stripe.com/"), f"{r.status_code} {r.headers.get('Location')}")
+    check("pagar: Pix e pagamento unico do motorista do link, marcado como venda do painel",
+          _s.get("mode") == "payment" and _meta_pix.get("user_id") == _comum_lp["_id"] and _meta_pix.get("modo") == "prepago"
+          and _meta_pix.get("origem") == "link_painel" and bool(_meta_pix.get("link"))
+          and _s.get("line_items") == [{"price": "price_falso_pix", "quantity": 1}] and "subscription_data" not in _s, str(_s)[:300])
+    check("pagar: volta para a pagina publica do link (ele nao tem login no site)",
+          str(_s.get("success_url", "")).endswith(f"/pagar/{_tok_pix}/pronto")
+          and str(_s.get("cancel_url", "")).endswith(f"/pagar/{_tok_pix}"), str(_s.get("success_url")))
+    check("pagar: chave de idempotencia do link, separada do Assinar do site",
+          str(_s.get("idempotency_key", "")).startswith(f"pagar:{_meta_pix.get('link')}:{_comum_lp['_id']}:pro_anual_pix:"))
+    check("pagar: nada de payment_method_types (a API nova recusa)", "payment_method_types" not in _s)
+    r = A.app.test_client().get(f"/pagar/{_tok_pix}/pronto", base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("pagar: volta da Stripe antes do webhook diz que o pagamento foi recebido, sem anunciar o Pro",
+          r.status_code == 200 and "Pagamento recebido" in _h and "Pronto, Ana" not in _h, r.status_code)
+    _emails_venda = len(_avisos_lp)
+    r = webhook_stripe(_cp_lp, "checkout.session.completed", {
+        "id": f"cs_lp_{_suf_lp}", "object": "checkout.session", "mode": "payment", "payment_status": "paid",
+        "customer": f"cus_lp_{_suf_lp}_1", "amount_total": 5990, "currency": "brl", "metadata": _meta_pix})
+    _comum_pago = A.get_store().get_user_by_id(_comum_lp["_id"])
+    check("pagar: o webhook de sempre libera o Pro pre-pago", r.status_code == 200 and _comum_pago["plan"] == "pro"
+          and _comum_pago["subscription_status"] == "prepago", f"{r.status_code} {_comum_pago.get('plan')}")
+    check("pagar: o aviso da venda diz que veio do link do painel",
+          any(a[0] == "venda" and a[1] == _comum_lp["_id"] and "link de pagamento do painel" in a[2] for a in _avisos_lp[_emails_venda:]))
+    _n_sess = len(_sf_lp.sessoes)
+    r = _cp_lp.get(f"/pagar/{_tok_pix}", base_url=_BASE_LP)
+    check("pagar: link pago nao oferece pagar de novo", r.status_code == 200 and "já foi pago" in r.get_data(as_text=True))
+    r = _cp_lp.post(f"/pagar/{_tok_pix}", base_url=_BASE_LP)
+    check("pagar: link pago nao cobra duas vezes (o Pix somaria outro ano)",
+          r.status_code == 409 and len(_sf_lp.sessoes) == _n_sess, r.status_code)
+    r = A.app.test_client().get(f"/pagar/{_tok_pix}/pronto", base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("pagar: pagina de volta e publica e, com o pagamento confirmado, mostra o Pro e como entrar no app",
+          r.status_code == 200 and "Pronto, Ana" in _h and "Seu Pro está ativo até" in _h
+          and 'No app, toque em "Esqueci minha senha"' in _h and "Para desistir em até 7 dias" in _h, r.status_code)
+    # Link gerado ha 7 dias e 1 minuto: pelo relogio ja passou de 7 x 24 h, mas a
+    # mensagem prometeu "vale ate" o dia de hoje inteiro.
+    from itsdangerous import TimestampSigner as _TsLp
+
+    def _token_antigo(segundos, nonce):
+        class _Assina(_TsLp):
+            def get_timestamp(self):
+                return int(time.time()) - segundos
+        return A.URLSafeTimedSerializer(A.app.config["SECRET_KEY"], salt=A.LINK_PAGAMENTO_SALT, signer=_Assina).dumps(
+            {"u": _comum_lp["_id"], "p": "pro_anual_pix", "n": nonce})
+    _agora_br = A.datetime.now(A.BR_TZ)
+    if _agora_br.hour or _agora_br.minute >= 2:
+        r = A.app.test_client().get(f"/pagar/{_token_antigo(7 * 86400 + 60, 'antigo1' + _suf_lp)}", base_url=_BASE_LP)
+        check("pagar: no ultimo dia o link vale ate as 23:59, mesmo depois de 7 x 24 h", r.status_code == 200, r.status_code)
+    r = A.app.test_client().get(f"/pagar/{_token_antigo(8 * 86400 + 3600, 'antigo2' + _suf_lp)}", base_url=_BASE_LP)
+    check("pagar: no dia seguinte ao ultimo, o link venceu", r.status_code == 410, r.status_code)
+    # O contador "ja pago" e limpo em 7 dias; o registro de cobrancas segura o link.
+    A.get_store().reset_counter(f"link_pago:{_meta_pix.get('link')}")
+    _n_sess = len(_sf_lp.sessoes)
+    r = _cp_lp.post(f"/pagar/{_tok_pix}", base_url=_BASE_LP)
+    check("pagar: sem o contador, o pagamento no registro de cobrancas ainda impede cobrar de novo",
+          r.status_code == 409 and len(_sf_lp.sessoes) == _n_sess and A.link_ja_pago(_meta_pix.get("link", "")),
+          r.status_code)
+    _vence = A._fim_do_link(A.datetime(2026, 11, 19, 18, 30, tzinfo=A.timezone.utc))
+    check("pagar: o link vale ate o fim do dia que a mensagem promete (horario de Brasilia)",
+          (_vence.day, _vence.month, _vence.hour, _vence.minute) == (26, 11, 23, 59), str(_vence))
+
+    # Assinatura (cartao): metadata tambem na assinatura, para renovacao e cancelamento.
+    _email_sub_lp = f"assina-{_suf_lp}@teste.invalid"
+    novo_cliente(_email_sub_lp)
+    _sub_lp = A.get_store().get_user_by_email(_email_sub_lp)
+    _tok_anual = _token_de(_cadm_lp.get(f"/admin/motoristas/{_sub_lp['_id']}?link=pro_anual").get_data(as_text=True), "pagar")
+    r = A.app.test_client().get(f"/pagar/{_tok_anual}", base_url=_BASE_LP)
+    check("pagar: assinatura avisa que renova e como cancelar antes de cobrar",
+          "Renova sozinho a cada ano" in r.get_data(as_text=True) and "Gerenciar plano" in r.get_data(as_text=True))
+    _n_sess = len(_sf_lp.sessoes)
+    r = A.app.test_client().post(f"/pagar/{_tok_anual}", base_url=_BASE_LP)
+    _s = _sf_lp.sessoes[-1] if len(_sf_lp.sessoes) > _n_sess else {}
+    check("pagar: anual no cartao e assinatura com a origem tambem na assinatura",
+          r.status_code == 303 and _s.get("mode") == "subscription"
+          and _s.get("line_items") == [{"price": "price_falso_anual", "quantity": 1}]
+          and ((_s.get("subscription_data") or {}).get("metadata") or {}).get("origem") == "link_painel"
+          and "modo" not in (_s.get("metadata") or {}), str(_s)[:300])
+
+    # Quem ja assina nao paga de novo.
+    A.get_store().update_user(_sub_lp["_id"], {"plan": "pro", "subscription_status": "active"})
+    _n_sess = len(_sf_lp.sessoes)
+    r = A.app.test_client().post(f"/pagar/{_tok_anual}", base_url=_BASE_LP)
+    check("pagar: quem assina pela loja nao paga de novo",
+          r.status_code == 409 and "App Store ou pelo Google Play" in r.get_data(as_text=True) and len(_sf_lp.sessoes) == _n_sess,
+          r.status_code)
+    A.get_store().update_user(_sub_lp["_id"], {"stripe_customer_id": f"cus_sub_{_suf_lp}",
+                                                "stripe_subscription_id": f"sub_lp_{_suf_lp}_A"})
+    r = A.app.test_client().get(f"/pagar/{_tok_anual}", base_url=_BASE_LP)
+    check("pagar: quem assina pelo site ve que ja e Pro",
+          "assinatura do site está ativa" in r.get_data(as_text=True))
+    _ficha_sub = _cadm_lp.get(f"/admin/motoristas/{_sub_lp['_id']}").get_data(as_text=True)
+    check("ficha: quem ja assina nao ganha botao de gerar link", "Ele já assina pelo site" in _ficha_sub
+          and 'name="link"' not in _ficha_sub)
+
+    # Webhook: ele pagou duas sessoes (o link e o site) e ficou com duas assinaturas.
+    _dobro_lp, _orig_dobro = [], A.avisar_assinatura_duplicada
+    A.avisar_assinatura_duplicada = lambda m, ant, nova, teste=False: _dobro_lp.append((m["_id"], ant, nova)) or True
+    try:
+        r = webhook_stripe(_cp_lp, "checkout.session.completed", {
+            "id": f"cs_sub_{_suf_lp}", "object": "checkout.session", "mode": "subscription", "payment_status": "paid",
+            "customer": f"cus_sub_{_suf_lp}", "subscription": f"sub_lp_{_suf_lp}_B", "amount_total": 5990,
+            "currency": "brl", "metadata": {"user_id": _sub_lp["_id"], "plan": "pro", "ciclo": "anual"}})
+    finally:
+        A.avisar_assinatura_duplicada = _orig_dobro
+    check("webhook: segunda assinatura do mesmo motorista avisa a equipe para cancelar uma",
+          r.status_code == 200 and _dobro_lp == [(_sub_lp["_id"], f"sub_lp_{_suf_lp}_A", f"sub_lp_{_suf_lp}_B")]
+          and A.get_store().get_user_by_id(_sub_lp["_id"])["stripe_subscription_id"] == f"sub_lp_{_suf_lp}_B",
+          str(_dobro_lp))
+    r = webhook_stripe(_cp_lp, "customer.subscription.deleted",
+                       {"id": f"sub_lp_{_suf_lp}_A", "customer": f"cus_sub_{_suf_lp}", "status": "canceled"})
+    check("webhook: cancelar a outra assinatura do cliente nao tira o Pro",
+          r.status_code == 200 and A.get_store().get_user_by_id(_sub_lp["_id"])["plan"] == "pro", r.status_code)
+    r = webhook_stripe(_cp_lp, "customer.subscription.updated",
+                       {"id": f"sub_lp_{_suf_lp}_A", "customer": f"cus_sub_{_suf_lp}", "status": "unpaid"})
+    check("webhook: atraso na outra assinatura do cliente nao tira o Pro",
+          A.get_store().get_user_by_id(_sub_lp["_id"])["plan"] == "pro")
+    r = webhook_stripe(_cp_lp, "customer.subscription.deleted",
+                       {"id": f"sub_lp_{_suf_lp}_B", "customer": f"cus_sub_{_suf_lp}", "status": "canceled"})
+    check("webhook: cancelar a assinatura gravada rebaixa como sempre",
+          A.get_store().get_user_by_id(_sub_lp["_id"])["plan"] == "free")
+
+    # Plano sem preco, link adulterado e vencido.
+    os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = ""
+    r = A.app.test_client().get(f"/pagar/{_tok_anual}", base_url=_BASE_LP)
+    check("pagar: plano sem preco na Stripe aparece como indisponivel", "Plano indisponível" in r.get_data(as_text=True))
+    _ficha_sub = _cadm_lp.get(f"/admin/motoristas/{_sub_lp['_id']}?link=pro_anual").get_data(as_text=True)
+    check("ficha: plano sem preco nao gera link", "/pagar/" not in _ficha_sub)
+    os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = "price_falso_anual"
+    check("pagar: link adulterado da 404",
+          A.app.test_client().get(f"/pagar/{_tok_pix[:-2]}xx", base_url=_BASE_LP).status_code == 404)
+    check("pagar: token de criar senha nao abre pagamento",
+          A.app.test_client().get(f"/pagar/{_tok_senha}", base_url=_BASE_LP).status_code == 404)
+    A.LINK_PAGAMENTO_DIAS = -1
+    r = A.app.test_client().get(f"/pagar/{_tok_anual}", base_url=_BASE_LP)
+    check("pagar: link vencido da 410 e pede outro", r.status_code == 410 and "venceu" in r.get_data(as_text=True), r.status_code)
+    A.LINK_PAGAMENTO_DIAS = _orig_lp[4]
+
+    # Pre-pago tem rotulo proprio (antes saia como "Loja").
+    _ficha_comum = _cadm_lp.get(f"/admin/motoristas/{_comum_lp['_id']}").get_data(as_text=True)
+    check("ficha: Pix pago aparece como pre-pago, nao como loja",
+          "Pré-pago (Pix ou cartão, pagamento único)" in _ficha_comum and "Excluir cadastro e recibos" in _ficha_comum)
+    _lista = _cadm_lp.get(f"/admin/motoristas?origem=prepago&q={_email_comum_lp}").get_data(as_text=True)
+    # A busca repete o e-mail no campo de busca: o que conta e o link da ficha.
+    check("lista: filtro de pre-pago acha quem pagou por Pix",
+          f"/admin/motoristas/{_comum_lp['_id']}" in _lista and "<td>Pré-pago</td>" in _lista)
+    _geral_lp = (A.montar_dashboard_admin().get("geral") or {})
+    with A.get_store().pool.connection() as _conn:
+        _conta_lp = _conn.execute(
+            """select count(*) filter (where subscription_status in ('prepago','indicacao','cortesia')) as prepago,
+                      count(*) filter (where subscription_status not in ('prepago','indicacao','cortesia')
+                                          or subscription_status is null) as loja
+                 from public.drivers where plan = 'pro' and stripe_subscription_id is null""").fetchone()
+    check("painel: Pagantes separa pre-pago de loja (e o MRR deixa o pre-pago de fora)",
+          _geral_lp.get("pro_prepago") == _conta_lp["prepago"] and _geral_lp.get("pro_loja") == _conta_lp["loja"]
+          and _conta_lp["prepago"] >= 1, f"{_geral_lp.get('pro_prepago')}/{_geral_lp.get('pro_loja')} vs {dict(_conta_lp)}")
+    _lista = _cadm_lp.get(f"/admin/motoristas?origem=loja&q={_email_comum_lp}").get_data(as_text=True)
+    check("lista: quem pagou por Pix nao aparece como loja", f"/admin/motoristas/{_comum_lp['_id']}" not in _lista)
+
+    # Formulario publico com plano: aviso dos Termos e botao certo.
+    _h = A.app.test_client().get("/cadastro?plano=pro_anual_pix").get_data(as_text=True)
+    check("cadastro: formulario com plano leva aos Termos e diz que vai para o pagamento",
+          "Ao criar a conta, você concorda" in _h and "Criar conta e ir para o pagamento" in _h
+          and 'name="plano" value="pro_anual_pix"' in _h)
+    check("o app nao aponta para o link de pagamento nem para o criar senha",
+          "/pagar" not in _appjs and "/criar-senha" not in _appjs)
+finally:
+    (A.get_stripe, A.send_email, A.avisar_novo_cadastro, A.avisar_nova_assinatura, A.LINK_PAGAMENTO_DIAS,
+     A.CRIAR_SENHA_DIAS) = _orig_lp
+    for _k, _v in _env_lp.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

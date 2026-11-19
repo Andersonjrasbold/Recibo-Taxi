@@ -1,0 +1,16 @@
+{# Botões "Copiar" do painel: <button data-copiar="idDoCampo">. Sem onclick
+   (o CSP bloqueia handler inline); o script leva o nonce. #}
+<script nonce="{{ csp_nonce }}">
+  document.querySelectorAll('[data-copiar]').forEach(function (botao) {
+    botao.addEventListener('click', function () {
+      var campo = document.getElementById(botao.getAttribute('data-copiar'));
+      if (!campo) return;
+      var feito = function () {
+        botao.innerHTML = '<i class="bi bi-check-lg"></i>';
+        setTimeout(function () { botao.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500);
+      };
+      if (navigator.clipboard) { navigator.clipboard.writeText(campo.value).then(feito); }
+      else { campo.select(); document.execCommand('copy'); feito(); }
+    });
+  });
+</script>

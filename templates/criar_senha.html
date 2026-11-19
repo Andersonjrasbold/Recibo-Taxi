@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{# Primeiro acesso de quem o painel cadastrou (/criar-senha/<token>). O token é
+   a credencial: a prévia do WhatsApp lê título e descrição, então nada de nome
+   ou e-mail neles. #}
+{% block title %}{% if estado == 'pronto' %}Tudo pronto{% else %}Crie sua senha{% endif %}{% endblock %}
+{% block description %}Primeiro acesso à sua conta no Recibo Táxi.{% endblock %}
+{% block banner_app %}{% endblock %}
+{% block head %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-md-10 col-lg-8 col-xl-6">
+        <div class="auth-card">
+          <div class="auth-card-header">
+            <div class="auth-logo">
+              <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+            </div>
+
+          {% if estado == 'formulario' %}
+            <h1 class="auth-title">Crie sua senha</h1>
+            <p class="auth-subtitle">Olá, {{ primeiro_nome }}! Sua conta no Recibo Táxi foi criada a seu pedido. Falta só a senha.</p>
+          </div>
+
+          <div class="pagar-plano mb-3">
+            <div class="pagar-plano-nome"><i class="bi bi-person-badge me-2"></i>Seu login</div>
+            <p class="mt-2 mb-1 pagar-email">{{ email }}</p>
+            <p class="mb-0 pagar-nota">É com este e-mail e a senha que você criar agora que você entra no app. O e-mail está errado? Não continue: fale com quem te atendeu.</p>
+          </div>
+
+          {% if plano %}
+          <div class="alert alert-warning" role="status">
+            <i class="bi bi-star-fill me-2"></i>Depois de criar a senha, você vai direto para o pagamento do <strong>{{ rotulo }}</strong>.
+          </div>
+          {% elif pro_ativo %}
+          <div class="alert alert-success" role="status">
+            <i class="bi bi-star-fill me-2"></i>Seu Pro já está ativo. Falta só criar a senha.
+          </div>
+          {% endif %}
+
+          <form action="{{ url_for('criar_senha', token=token) }}" method="post" class="auth-form" id="formCriarSenha" novalidate>
+            {% if pedir_whatsapp %}
+            <div class="form-group-auth">
+              <label for="final_whatsapp" class="form-label-auth">Para confirmar que é você: os 4 últimos números do seu WhatsApp</label>
+              <div class="input-icon-wrap">
+                <i class="bi bi-whatsapp input-icon"></i>
+                <input type="text" id="final_whatsapp" name="final_whatsapp" class="form-control form-control-auth"
+                  inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="0000" required autofocus>
+              </div>
+            </div>
+            {% endif %}
+            <div class="form-group-auth">
+              <label for="senha" class="form-label-auth">Senha</label>
+              <div class="input-icon-wrap">
+                <i class="bi bi-lock input-icon"></i>
+                <input type="password" id="senha" name="senha" class="form-control form-control-auth"
+                  placeholder="Mínimo 8 caracteres" autocomplete="new-password" minlength="8" maxlength="200" required>
+              </div>
+            </div>
+            <div class="form-group-auth">
+              <label for="confirmar_senha" class="form-label-auth">Repita a senha</label>
+              <div class="input-icon-wrap">
+                <i class="bi bi-lock-fill input-icon"></i>
+                <input type="password" id="confirmar_senha" name="confirmar_senha" class="form-control form-control-auth"
+                  placeholder="Digite a senha novamente" autocomplete="new-password" minlength="8" maxlength="200" required>
+              </div>
+            </div>
+            <p class="pagar-nota mb-0">Ao criar a senha, você concorda com os <a href="{{ url_for('termos') }}">Termos de Uso</a> e a <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>.</p>
+            <button type="submit" class="btn btn-auth-submit w-100">
+              <i class="bi bi-shield-check me-2"></i>{{ 'Criar senha e ir para o pagamento' if plano else 'Criar senha' }}
+            </button>
+          </form>
+
+          {% elif estado == 'pronto' %}
+            <h1 class="auth-title">Tudo pronto, {{ primeiro_nome }}!</h1>
+            <p class="auth-subtitle">Sua senha foi criada.</p>
+          </div>
+          <div class="pagar-plano">
+            <div class="pagar-plano-nome"><i class="bi bi-phone me-2"></i>Agora, no celular</div>
+            <p class="mt-2 mb-0">Baixe o app Recibo Táxi e entre com <span class="pagar-email">{{ email }}</span> e a senha que você acabou de criar.</p>
+          </div>
+          <a href="{{ url_for('baixar_app', c='criar-senha') }}" class="btn btn-auth-submit w-100 mt-4"><i class="bi bi-download me-2"></i>Baixar o app</a>
+          {% if plano %}
+          <form action="{{ url_for('assinar', plan=plano) }}" method="post" class="mt-2">
+            <button type="submit" class="btn btn-outline-dark w-100"><i class="bi bi-star me-2"></i>Pagar o {{ rotulo }}</button>
+          </form>
+          {% endif %}
+          <p class="text-center mt-3 mb-0"><a href="{{ url_for('dashboard') }}">Ir para o meu painel no site</a></p>
+
+          {% elif estado == 'usado' %}
+            <h1 class="auth-title">Este link já foi usado</h1>
+            <p class="auth-subtitle">A senha desta conta já foi criada. Se foi você agora há pouco, ela já vale: entre no app com o seu e-mail e essa senha.</p>
+          </div>
+          {% if plano %}
+          <a href="{{ url_for('login', plano=plano) }}" class="btn btn-auth-submit w-100"><i class="bi bi-star me-2"></i>Entrar e ir para o pagamento do {{ rotulo }}</a>
+          <a href="{{ url_for('baixar_app', c='criar-senha') }}" class="btn btn-outline-dark w-100 mt-2"><i class="bi bi-download me-2"></i>Baixar o app</a>
+          {% else %}
+          <a href="{{ url_for('baixar_app', c='criar-senha') }}" class="btn btn-auth-submit w-100"><i class="bi bi-download me-2"></i>Baixar o app</a>
+          {% endif %}
+          <p class="mt-3 mb-0">Esqueceu a senha? No app ou no site, toque em "Esqueci minha senha".</p>
+
+          {% elif estado == 'sem_whatsapp' %}
+            <h1 class="auth-title">Fale com a gente</h1>
+            <p class="auth-subtitle">Não conseguimos confirmar que é você por este link.</p>
+          </div>
+          <p class="mb-0">Fale com quem te atendeu para conferir o seu WhatsApp e mandar um link novo.</p>
+
+          {% elif estado == 'bloqueado' %}
+            <h1 class="auth-title">Muitas tentativas</h1>
+            <p class="auth-subtitle">Os números do WhatsApp não conferiram várias vezes. Por segurança, este link parou de funcionar.</p>
+          </div>
+          <p class="mb-0">Peça um link novo a quem te atendeu.</p>
+
+          {% elif estado == 'vencido' %}
+            <h1 class="auth-title">Este link venceu</h1>
+            <p class="auth-subtitle">O link para criar a senha vale 7 dias.</p>
+          </div>
+          <p class="mb-0">Peça um novo a quem te atendeu, ou use "Esqueci minha senha" no app ou no site, com o seu e-mail.</p>
+
+          {% else %}
+            <h1 class="auth-title">Link inválido</h1>
+            <p class="auth-subtitle">Confira se o link chegou inteiro (às vezes ele quebra na mensagem) ou peça outro a quem te atendeu.</p>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+  // Um toque só: o segundo chegava depois de o link já ter sido usado.
+  var formSenha = document.getElementById('formCriarSenha');
+  if (formSenha) {
+    formSenha.addEventListener('submit', function () {
+      var botao = formSenha.querySelector('button[type="submit"]');
+      setTimeout(function () { if (botao) { botao.disabled = true; } }, 0);
+    });
+    // Voltou para esta página pelo "voltar" do celular: o botão volta a valer.
+    window.addEventListener('pageshow', function () {
+      var botao = formSenha.querySelector('button[type="submit"]');
+      if (botao) { botao.disabled = false; }
+    });
+  }
+</script>
+{% endblock %}

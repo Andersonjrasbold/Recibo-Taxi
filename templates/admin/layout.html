@@ -8,7 +8,7 @@
       <a href="{{ url_for('admin_dashboard') }}" class="admin-nav-link {% if request.endpoint == 'admin_dashboard' %}ativo{% endif %}">
         <i class="bi bi-speedometer2 me-1"></i>Visão geral
       </a>
-      <a href="{{ url_for('admin_motoristas') }}" class="admin-nav-link {% if request.endpoint in ('admin_motoristas', 'admin_motorista') %}ativo{% endif %}">
+      <a href="{{ url_for('admin_motoristas') }}" class="admin-nav-link {% if request.endpoint in ('admin_motoristas', 'admin_motorista', 'admin_motorista_novo') %}ativo{% endif %}">
         <i class="bi bi-people me-1"></i>Motoristas
       </a>
       <a href="{{ url_for('admin_emails') }}" class="admin-nav-link {% if request.endpoint and request.endpoint.startswith('admin_email') %}ativo{% endif %}">

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{# Link de pagamento que o painel gera para UM motorista (/pagar/<token>).
+   Não aparece em menu, busca nem no app: o app não pode levar a um pagamento
+   fora da loja (regra 3.1.3(b) da Apple). A prévia do WhatsApp lê o título e a
+   descrição: nada de nome ou e-mail neles. #}
+{% block title %}{% if estado == 'pronto' %}Pagamento recebido{% else %}Ativar o Pro{% endif %}{% endblock %}
+{% block description %}Link de pagamento do Recibo Táxi Pro.{% endblock %}
+{% block banner_app %}{% endblock %}
+{% block head %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-md-10 col-lg-8 col-xl-6">
+        <div class="auth-card">
+          <div class="auth-card-header">
+            <div class="auth-logo">
+              <img src="{{ url_for('public_static', filename='img/RECIBO.png') }}" alt="Recibo Táxi">
+            </div>
+
+          {% if estado in ('pode_pagar', 'erro') %}
+            <h1 class="auth-title">Ativar o Recibo Táxi Pro</h1>
+            <p class="auth-subtitle">Link de pagamento para <strong>{{ primeiro_nome }}</strong> ({{ email_mascarado }})</p>
+          </div>
+
+          {% if estado == 'erro' %}
+          <div class="alert alert-danger" role="alert">
+            Não conseguimos abrir o pagamento agora. Tente de novo em alguns instantes; se continuar, fale com quem te mandou o link.
+          </div>
+          {% endif %}
+
+          <div class="pagar-plano">
+            <div class="pagar-plano-nome"><i class="bi bi-star-fill me-2"></i>{{ rotulo }}</div>
+            <ul class="pagar-itens">
+              <li><i class="bi bi-check-lg"></i>Recibos ilimitados no app e no site</li>
+              <li><i class="bi bi-check-lg"></i>Histórico de todos os meses</li>
+              {% if renova %}
+              <li><i class="bi bi-arrow-repeat"></i>Renova sozinho {{ 'a cada ano' if plano == 'pro_anual' else 'todo mês' }}, no cartão. Cancele quando quiser pelo site, em "Gerenciar plano".</li>
+              {% else %}
+              <li><i class="bi bi-check-lg"></i>Pagamento único, por Pix ou cartão: vale 12 meses e não renova sozinho</li>
+              {% endif %}
+              <li><i class="bi bi-check-lg"></i>7 dias para desistir, com devolução integral: é só pedir por suporte@recibotaxi.com.br</li>
+            </ul>
+            {% if pro_until %}
+            <p class="pagar-nota mt-3 mb-0">Seu Pro atual vale até <strong>{{ pro_until | data_br(false) }}</strong>.
+              {% if renova %}A assinatura começa a valer já; os dias que sobraram ficam guardados para quando ela acabar.{% else %}Este pagamento soma mais 12 meses a partir dessa data.{% endif %}</p>
+            {% endif %}
+          </div>
+
+          <form action="{{ url_for('pagar_link_confirmar', token=token) }}" method="post" class="mt-4" id="formPagar">
+            <button type="submit" class="btn btn-auth-submit w-100">
+              {% if renova %}<i class="bi bi-credit-card me-2"></i>Ir para o pagamento{% else %}<i class="bi bi-qr-code me-2"></i>Pagar por Pix ou cartão{% endif %}
+            </button>
+          </form>
+          <p class="pagar-nota mt-3 mb-1">Pagamento processado pela Stripe, em reais. Ao pagar, você concorda com os <a href="{{ url_for('termos') }}">Termos de Uso</a>.</p>
+          <p class="pagar-nota mb-0">Este link é só seu e vale até {{ vence | data_br(false) }}. Não é você? Não pague e avise quem te mandou.</p>
+
+          {% elif estado == 'pronto' %}
+            <h1 class="auth-title">{% if confirmado %}Pronto, {{ primeiro_nome }}!{% else %}Pagamento recebido{% endif %}</h1>
+            <p class="auth-subtitle">
+              {% if confirmado %}Seu Pro está ativo{% if pro_until %} até {{ pro_until | data_br(false) }}{% endif %}.
+              {% else %}A Stripe confirma em alguns segundos. Atualize esta página para ver o Pro{% if pro_ativo %} com a data nova{% endif %}.{% endif %}
+            </p>
+          </div>
+          <div class="pagar-plano">
+            <div class="pagar-plano-nome"><i class="bi bi-phone me-2"></i>Como usar no celular</div>
+            <p class="mt-2 mb-2">Abra o app Recibo Táxi e entre com o seu e-mail ({{ email_mascarado }}) e a sua senha. O Pro aparece sozinho.</p>
+            <p class="mb-0 small">Ainda não criou a senha ou esqueceu? No app, toque em "Esqueci minha senha".</p>
+          </div>
+          <a href="{{ url_for('baixar_app', c='pagamento') }}" class="btn btn-auth-submit w-100 mt-4"><i class="bi bi-download me-2"></i>Baixar o app</a>
+          {% if renova %}
+          <p class="pagar-nota mt-3 mb-0">Para cancelar a renovação ou trocar o cartão, entre no site com o seu e-mail e senha e use "Gerenciar plano" (isso não devolve o que já foi pago). Para desistir em até 7 dias, com devolução integral, peça por <a href="mailto:suporte@recibotaxi.com.br">suporte@recibotaxi.com.br</a>.</p>
+          {% else %}
+          <p class="pagar-nota mt-3 mb-0">Pagamento único: não renova sozinho. Perto do fim, a gente avisa por e-mail. Para desistir em até 7 dias, com devolução integral, peça por <a href="mailto:suporte@recibotaxi.com.br">suporte@recibotaxi.com.br</a>.</p>
+          {% endif %}
+
+          {% elif estado == 'pago' %}
+            <h1 class="auth-title">Este link já foi pago</h1>
+            <p class="auth-subtitle">O Pro já está na sua conta. É só abrir o app Recibo Táxi.</p>
+          </div>
+          <a href="{{ url_for('baixar_app', c='pagamento') }}" class="btn btn-auth-submit w-100"><i class="bi bi-download me-2"></i>Baixar o app</a>
+
+          {% elif estado == 'ja_assina_stripe' %}
+            <h1 class="auth-title">Você já é Pro</h1>
+            <p class="auth-subtitle">Sua assinatura do site está ativa: não precisa pagar de novo.</p>
+          </div>
+          <p class="mb-0">Para trocar de plano ou cancelar, entre no site com o seu e-mail e senha e use "Gerenciar plano".</p>
+
+          {% elif estado == 'ja_assina_loja' %}
+            <h1 class="auth-title">Você já é Pro</h1>
+            <p class="auth-subtitle">Sua assinatura pela App Store ou pelo Google Play está ativa: não precisa pagar de novo.</p>
+          </div>
+          <p class="mb-0">Se preferir pagar por aqui, desligue a renovação na loja do seu celular. Quando acabar o período que você já pagou lá, peça um link novo a quem te atendeu.</p>
+
+          {% elif estado == 'indisponivel' %}
+            <h1 class="auth-title">Plano indisponível</h1>
+            <p class="auth-subtitle">Este plano não está disponível agora. Fale com quem te mandou o link.</p>
+          </div>
+
+          {% elif estado == 'vencido' %}
+            <h1 class="auth-title">Este link venceu</h1>
+            <p class="auth-subtitle">Os links de pagamento valem 7 dias. Peça um novo a quem te atendeu.</p>
+          </div>
+
+          {% else %}
+            <h1 class="auth-title">Link inválido</h1>
+            <p class="auth-subtitle">Confira se o link chegou inteiro (às vezes ele quebra na mensagem) ou peça outro a quem te atendeu.</p>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+  // Um toque só: dois toques abriam duas sessões na Stripe.
+  var formPagar = document.getElementById('formPagar');
+  if (formPagar) {
+    formPagar.addEventListener('submit', function () {
+      var botao = formPagar.querySelector('button[type="submit"]');
+      setTimeout(function () { if (botao) { botao.disabled = true; } }, 0);
+    });
+    // Voltou da Stripe pelo "voltar" do celular: o botão volta a valer.
+    window.addEventListener('pageshow', function () {
+      var botao = formPagar.querySelector('button[type="submit"]');
+      if (botao) { botao.disabled = false; }
+    });
+  }
+</script>
+{% endblock %}

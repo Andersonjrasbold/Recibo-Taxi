@@ -87,9 +87,12 @@ class _Admin:
             if c.execute("select 1 from auth.users where lower(email) = %s", (email,)).fetchone():
                 raise AuthApiError("User already registered", 422, "email_exists")
             linha = c.execute(
-                """insert into auth.users (email, encrypted_password, raw_user_meta_data, email_confirmed_at)
-                   values (%s, %s, %s::jsonb, now()) returning id""",
-                (email, _hash(attrs.get("password") or ""), json.dumps(attrs.get("user_metadata") or {}))).fetchone()
+                """insert into auth.users (email, encrypted_password, raw_user_meta_data, raw_app_meta_data,
+                                           email_confirmed_at)
+                   values (%s, %s, %s::jsonb, %s::jsonb, now()) returning id""",
+                (email, _hash(attrs.get("password") or ""), json.dumps(attrs.get("user_metadata") or {}),
+                 json.dumps({"provider": "email", "providers": ["email"], **(attrs.get("app_metadata") or {})}))
+            ).fetchone()
         return _Obj(user=_Obj(id=str(linha["id"]), email=email))
 
     def update_user_by_id(self, uid, attrs):

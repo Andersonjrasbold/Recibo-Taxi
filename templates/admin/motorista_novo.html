@@ -1,0 +1,116 @@
+{% extends "admin/layout.html" %}
+{% import "_pais_moeda.html" as pm with context %}
+{% block title %}Novo motorista — Painel{% endblock %}
+{% block admin %}
+<p><a href="{{ url_for('admin_motoristas') }}" class="adm-link"><i class="bi bi-arrow-left me-1"></i>Motoristas</a></p>
+<h1 class="admin-titulo">Novo motorista</h1>
+<p class="adm-suave">Para quem ainda não tem conta. Quem já tem: procure na lista de motoristas e gere o link de pagamento na ficha dele.</p>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <section class="adm-painel">
+      <h2 class="adm-h2"><i class="bi bi-person-plus-fill me-2"></i>Cadastrar pelo painel</h2>
+      <p class="adm-suave">Só com o pedido do motorista e os dados que ele passou. A conta nasce sem senha conhecida: ele cria a dele pelo link que aparece na ficha, para mandar pelo WhatsApp (vale 7 dias e pede os 4 últimos números do WhatsApp dele). Não existe senha padrão. O e-mail não sai sozinho: leia o endereço de volta para ele, letra por letra, antes de usar o botão de e-mail da ficha.</p>
+      {% set f = form or {} %}
+      <form action="{{ url_for('admin_motorista_novo') }}" method="post" novalidate>
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <div class="row g-3">
+          <div class="col-12">
+            <label for="nome_completo" class="adm-h3">Nome completo *</label>
+            <input type="text" id="nome_completo" name="nome_completo" class="form-control form-control-auth" maxlength="120" required value="{{ f.get('nome_completo', '') }}">
+          </div>
+          <div class="col-sm-6">
+            <label for="email" class="adm-h3">E-mail (é o login dele) *</label>
+            <input type="email" id="email" name="email" class="form-control form-control-auth" maxlength="254" autocomplete="off" required value="{{ f.get('email', '') }}">
+          </div>
+          <div class="col-sm-6">
+            <label for="whatsapp" class="adm-h3">WhatsApp *</label>
+            <input type="tel" id="whatsapp" name="whatsapp" class="form-control form-control-auth" maxlength="20" placeholder="(11) 99999-9999" required value="{{ f.get('whatsapp', '') }}">
+          </div>
+          {{ pm.campos(f.get('pais'), f.get('moeda'), 'adm-h3', 'form-control-auth', 'col-sm-6') }}
+          <div class="col-sm-6">
+            <label for="cpf" class="adm-h3" data-rotulo-documento>CPF *</label>
+            <input type="text" id="cpf" name="cpf" class="form-control form-control-auth" maxlength="14" inputmode="numeric" required value="{{ f.get('cpf', '') }}">
+          </div>
+          <div class="col-sm-6">
+            <label for="cidade" class="adm-h3">Cidade *</label>
+            <input type="text" id="cidade" name="cidade" class="form-control form-control-auth" maxlength="80" required value="{{ f.get('cidade', '') }}">
+          </div>
+          <div class="col-sm-4">
+            <label for="placa" class="adm-h3">Placa *</label>
+            <input type="text" id="placa" name="placa" class="form-control form-control-auth mono" maxlength="10" autocapitalize="characters" required value="{{ f.get('placa', '') }}">
+          </div>
+          <div class="col-sm-8">
+            <label for="modelo_veiculo" class="adm-h3">Modelo do veículo</label>
+            <input type="text" id="modelo_veiculo" name="modelo_veiculo" class="form-control form-control-auth" maxlength="80" value="{{ f.get('modelo_veiculo', '') }}">
+          </div>
+          <div class="col-sm-6">
+            <label for="prefixo_taxi" class="adm-h3">Prefixo do táxi</label>
+            <input type="text" id="prefixo_taxi" name="prefixo_taxi" class="form-control form-control-auth" maxlength="20" value="{{ f.get('prefixo_taxi', '') }}">
+          </div>
+          <div class="col-sm-6">
+            <label for="numero_alvara" class="adm-h3">Alvará</label>
+            <input type="text" id="numero_alvara" name="numero_alvara" class="form-control form-control-auth" maxlength="40" value="{{ f.get('numero_alvara', '') }}">
+          </div>
+          <div class="col-sm-7">
+            <label for="cooperativa" class="adm-h3">Cooperativa</label>
+            <input type="text" id="cooperativa" name="cooperativa" class="form-control form-control-auth" maxlength="120" value="{{ f.get('cooperativa', '') }}">
+          </div>
+          <div class="col-sm-5">
+            <label for="cnpj_cooperativa" class="adm-h3">CNPJ da cooperativa</label>
+            <input type="text" id="cnpj_cooperativa" name="cnpj_cooperativa" class="form-control form-control-auth" maxlength="18" value="{{ f.get('cnpj_cooperativa', '') }}">
+          </div>
+          <div class="col-12">
+            <label for="plano_link" class="adm-h3">Depois de criar a senha, ele vai para o pagamento de</label>
+            <select id="plano_link" name="plano_link" class="form-select form-control-auth">
+              <option value="">Nenhum plano: só a conta (Grátis)</option>
+              {% for codigo, rotulo in todos.items() %}
+              <option value="{{ codigo }}" {% if codigo not in planos %}disabled{% endif %} {% if f.get('plano_link') == codigo %}selected{% endif %}>{{ rotulo }}{% if codigo not in planos %} (indisponível: falta o preço na Stripe){% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="adm-check"><input type="checkbox" name="pediu" value="1" {% if f.get('pediu') == '1' %}checked{% endif %}> O motorista pediu o cadastro e passou estes dados (ele vai conferir o e-mail e aceitar os Termos ao criar a senha).</label>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-auth-submit mt-3"><i class="bi bi-person-check-fill me-1"></i>Criar a conta e gerar o link da senha</button>
+      </form>
+    </section>
+  </div>
+
+  <div class="col-lg-5">
+    <section class="adm-painel">
+      <h2 class="adm-h2"><i class="bi bi-ui-checks me-2"></i>Ou mandar o formulário</h2>
+      <p class="adm-suave">O motorista preenche sozinho, com a senha dele, no site. Se escolher um plano, ele vai direto para o pagamento no final.</p>
+      <form method="get" action="{{ url_for('admin_motorista_novo') }}" class="d-flex gap-2 align-items-end flex-wrap">
+        <div class="flex-grow-1">
+          <label for="formulario" class="adm-h3">Plano</label>
+          <select id="formulario" name="formulario" class="form-select form-control-auth">
+            <option value="">Só o cadastro (Grátis)</option>
+            {% for codigo, rotulo in todos.items() %}
+            <option value="{{ codigo }}" {% if codigo not in planos %}disabled{% endif %} {% if formulario and formulario.plano == codigo %}selected{% endif %}>{{ rotulo }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-nav-primary"><i class="bi bi-link-45deg me-1"></i>Gerar link</button>
+      </form>
+      {% if formulario %}
+      <div class="mt-3">
+        <label for="linkFormulario" class="adm-h3">Link do formulário</label>
+        <div class="d-flex gap-2">
+          <input type="text" id="linkFormulario" class="form-control form-control-auth adm-quebra" value="{{ formulario.url }}" readonly>
+          <button type="button" class="adm-botao" data-copiar="linkFormulario" title="Copiar"><i class="bi bi-clipboard"></i></button>
+        </div>
+        <a href="{{ formulario.whatsapp }}" class="adm-botao adm-botao-primario mt-2" target="_blank" rel="noopener noreferrer"><i class="bi bi-whatsapp me-1"></i>Abrir no WhatsApp com a mensagem</a>
+        <pre class="adm-texto mt-2">{{ formulario.texto }}</pre>
+      </div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ pm.script() }}
+{% include "admin/_copiar.html" %}
+{% endblock %}

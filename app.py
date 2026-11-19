@@ -33,7 +33,7 @@ from flask import (
     session,
     url_for,
 )
-from itsdangerous import BadSignature, URLSafeSerializer, URLSafeTimedSerializer
+from itsdangerous import BadSignature, SignatureExpired, URLSafeSerializer, URLSafeTimedSerializer
 from markupsafe import Markup, escape
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -358,6 +358,35 @@ PLANOS_ROTULO = {
     "pro_anual": f"Pro anual ({PRECO_PRO_ANUAL} por ano)",
     "pro_anual_pix": f"Pro anual por Pix ({PRECO_PRO_ANUAL_PIX}, pagamento único)",
 }
+
+# Venda pelo painel (pedido do Anderson em 2026-11-19: um vendedor liga para os
+# motoristas e, fechado o negócio, o painel manda o link). Dois links assinados
+# com a SECRET_KEY, cada um com o seu sal e o seu prazo:
+# - /pagar/<token>: leva ao pagamento de UM motorista, sem login. Só abre o
+#   pagamento; não dá acesso à conta, então um link encaminhado para a pessoa
+#   errada no máximo deixa alguém pagar o Pro de outro.
+# - /criar-senha/<token>: só para conta criada pelo painel que ainda não tem
+#   senha. Cria a senha, entra no site e, se veio com plano, segue para o
+#   pagamento. Morre no primeiro uso (a digital da senha muda).
+# Prévia do WhatsApp e antivírus de e-mail abrem os links sozinhos: o GET só
+# mostra a página; quem cobra ou grava é o POST.
+LINK_PAGAMENTO_SALT = "recibo-taxi-link-de-pagamento"
+LINK_PAGAMENTO_DIAS = 7
+CRIAR_SENHA_SALT = "recibo-taxi-criar-senha"
+CRIAR_SENHA_DIAS = 7
+# Erros na confirmação pelos 4 últimos dígitos do WhatsApp, por link: 5 em
+# 10.000 combinações. Depois disso, só com um link novo do painel.
+CRIAR_SENHA_TENTATIVAS = 5
+# Ordem e texto das opções do painel. O preço vem das constantes acima; o valor
+# cobrado é o do Price na Stripe.
+PLANOS_DO_LINK = {
+    "pro_anual_pix": f"Anual no Pix ou cartão: {PRECO_PRO_ANUAL_PIX}, pagamento único, vale 12 meses e não renova",
+    "pro_anual": f"Anual no cartão: {PRECO_PRO_ANUAL} por ano, renova sozinho",
+    "pro": f"Mensal no cartão: {PRECO_PRO_MENSAL} por mês, renova sozinho",
+}
+# Marca, no app_metadata do Supabase Auth, a conta que o painel criou. O
+# app_metadata o motorista não consegue editar (o user_metadata, sim).
+MARCA_CRIADO_PELO_PAINEL = "criado_pelo_painel"
 
 # Indicação: o colega indicado emite o primeiro recibo e quem indicou ganha um
 # mês de Pro (até INDICACAO_MAX_MESES, um por colega ativo). Só quem indica
@@ -1079,6 +1108,13 @@ def enviar_link_de_redefinicao(user: dict) -> bool:
     vive no Supabase Auth e a troca acontece no servidor. O motorista cria a
     senha nova no navegador e volta ao app para entrar.
     """
+    if senha_pendente(user):
+        # Conta do painel que ainda não tem senha: o e-mail foi ditado por
+        # telefone e ninguém o confirmou. O link de 1 hora entraria na conta só
+        # com a caixa de e-mail; vai o de criar senha, que pede os 4 últimos
+        # números do WhatsApp. O nonce fixo faz os links pedidos por aqui
+        # dividirem um teto de tentativas só (senão cada pedido renovaria o teto).
+        return enviar_link_criar_senha(user, gerar_link_criar_senha(user, nonce=f"r-{user['_id']}"))
     link = absolute_url("redefinir_senha", token=build_reset_token(user))
     return send_email(
         user["email"],
@@ -1206,6 +1242,34 @@ def avisar_nova_assinatura(motorista: dict, ciclo: str, onde: str, valor: str = 
         return send_email(destino, assunto, corpo, timeout=4)
     except Exception as exc:
         app.logger.error("Aviso de assinatura nova falhou para %s: %s", motorista.get("_id"), exc)
+        return False
+
+
+def avisar_assinatura_duplicada(motorista: dict, anterior: str, nova: str, teste: bool = False) -> bool:
+    """Duas assinaturas da Stripe para o mesmo motorista: as duas cobram.
+
+    Acontece se ele pagar duas sessões abertas ao mesmo tempo (o link do painel
+    e o site, ou dois links). O banco guarda só a última, e o webhook passa a
+    ignorar os eventos da outra; alguém precisa cancelar e devolver uma delas.
+    """
+    destino = destino_dos_avisos(motorista.get("email", ""))
+    if not destino:
+        return False
+    try:
+        nome = (motorista.get("full_name") or "").strip() or "(sem nome)"
+        corpo = "\n".join([
+            f"{nome} ficou com DUAS assinaturas do Pro na Stripe, e as duas cobram.",
+            "",
+            f"Anterior: https://dashboard.stripe.com/subscriptions/{anterior}",
+            f"Nova (é a que o app e o painel usam): https://dashboard.stripe.com/subscriptions/{nova}",
+            "",
+            "Cancele a anterior na Stripe e devolva o que ela cobrou a mais.",
+            f"Ficha no painel: {absolute_url('admin_motorista', driver_id=motorista['_id'])}",
+        ])
+        assunto = ("[TESTE] " if teste else "") + f"Atenção: assinatura em dobro — {nome}"
+        return send_email(destino, assunto, corpo, timeout=4)
+    except Exception as exc:
+        app.logger.error("Aviso de assinatura em dobro falhou para %s: %s", motorista.get("_id"), exc)
         return False
 
 
@@ -1825,7 +1889,8 @@ def _auth_indisponivel(exc):
     return redirect(destino, code=303)
 
 
-def auth_criar_usuario(email: str, password: str, metadata: dict) -> str:
+def auth_criar_usuario(email: str, password: str, metadata: dict,
+                       app_metadata: dict | None = None) -> str:
     """Cria o usuário já confirmado e devolve o id.
 
     Usa a admin API em vez de sign_up por dois motivos: não dispara e-mail de
@@ -1833,16 +1898,18 @@ def auth_criar_usuario(email: str, password: str, metadata: dict) -> str:
     limite de 30 cadastros a cada 5 minutos por IP.
 
     O perfil em `drivers` nasce pelo trigger on_auth_user_created.
+    `app_metadata` (só o servidor escreve) marca a conta criada pelo painel.
     """
+    atributos = {
+        "email": email,
+        "password": password,
+        "email_confirm": True,
+        "user_metadata": metadata,
+    }
+    if app_metadata:
+        atributos["app_metadata"] = app_metadata
     try:
-        resposta = supabase_admin().auth.admin.create_user(
-            {
-                "email": email,
-                "password": password,
-                "email_confirm": True,
-                "user_metadata": metadata,
-            }
-        )
+        resposta = supabase_admin().auth.admin.create_user(atributos)
     except Exception as exc:
         texto = str(exc).lower()
         if "already" in texto or "registered" in texto or "exists" in texto:
@@ -2569,6 +2636,10 @@ def recuperar_senha():
 @app.route("/redefinir-senha/<token>", methods=["GET", "POST"])
 def redefinir_senha(token: str):
     user = load_reset_token(token)
+    # Conta do painel ainda sem senha só ganha senha pelo /criar-senha, que
+    # pede o WhatsApp: pedir de novo manda esse link (enviar_link_de_redefinicao).
+    if user and senha_pendente(user):
+        user = None
     if not user:
         flash("Link inválido ou expirado. Peça um novo link de redefinição.", "danger")
         return redirect(url_for("recuperar_senha"))
@@ -3314,7 +3385,50 @@ def iniciar_checkout(usuario: dict, plan: str):
     success_url = url_for("dashboard", subscribed=1, _external=True)
     cancel_url = url_for("oferta_anual" if plan in PLANOS_PREPAGOS else "planos", _external=True)
 
-    metadata = {"user_id": usuario["_id"], "plan": plano_base(plan),
+    try:
+        checkout = criar_sessao_de_checkout(
+            stripe, usuario, plan, price_id, success_url=success_url, cancel_url=cancel_url,
+            # O domínio entra na chave: a mesma chave com outra success_url
+            # seria recusada pela Stripe por "parâmetros diferentes".
+            idempotency_key=f"assinar:{usuario['_id']}:{plan}:{request.host}",
+        )
+    except CupomIndisponivel:
+        flash("Não conseguimos aplicar o seu desconto de indicação agora. "
+              "Tente de novo em alguns instantes ou fale com o suporte.", "danger")
+        return redirect(url_for("planos"))
+    except Exception as exc:
+        # A mensagem crua da Stripe pode conter identificadores internos.
+        app.logger.error("Falha ao criar checkout para %s: %s", usuario["_id"], exc)
+        flash(
+            "Não conseguimos iniciar o pagamento agora. Tente de novo em "
+            "alguns instantes ou fale com o suporte.",
+            "danger",
+        )
+        return redirect(url_for("planos"))
+
+    return redirect(checkout.url, code=303)
+
+
+class CupomIndisponivel(Exception):
+    """O cupom de indicação não pôde ser lido nem criado na Stripe."""
+
+
+# Chaves do metadata que o webhook lê para decidir o que liberar. Quem chama
+# criar_sessao_de_checkout com metadata_extra não consegue sobrescrevê-las.
+METADATA_DO_WEBHOOK = ("user_id", "plan", "ciclo", "modo", "cupom")
+
+
+def criar_sessao_de_checkout(stripe, usuario: dict, plan: str, price_id: str, *, success_url: str,
+                             cancel_url: str, idempotency_key: str, metadata_extra: dict | None = None):
+    """Cria o Customer (se faltar) e a sessão do Checkout. Devolve a sessão.
+
+    Serve ao botão "Assinar" do site (iniciar_checkout) e ao link de pagamento
+    do painel (/pagar). Levanta CupomIndisponivel quando o desconto de
+    indicação devia entrar e a Stripe não o entrega; qualquer outra falha da
+    Stripe sobe como veio, para quem chamou decidir a mensagem.
+    """
+    extra = {k: str(v) for k, v in (metadata_extra or {}).items() if k not in METADATA_DO_WEBHOOK}
+    metadata = {**extra, "user_id": usuario["_id"], "plan": plano_base(plan),
                 "ciclo": PLAN_CYCLES.get(plan, "mensal")}
     extras: dict = {}
     if plan in PLANOS_PREPAGOS:
@@ -3328,52 +3442,44 @@ def iniciar_checkout(usuario: dict, plan: str):
         if plan == "pro" and tem_cupom_de_indicacao(usuario):
             cupom = cupom_de_indicacao(stripe)
             if not cupom:
-                flash("Não conseguimos aplicar o seu desconto de indicação agora. "
-                      "Tente de novo em alguns instantes ou fale com o suporte.", "danger")
-                return redirect(url_for("planos"))
+                raise CupomIndisponivel()
             extras["discounts"] = [{"coupon": cupom}]
             metadata["cupom"] = "indicacao"
+        if extra:
+            # Renovação e cancelamento chegam como eventos da assinatura, que só
+            # carregam o metadata dela: é assim que a venda continua rastreável.
+            extras["subscription_data"] = {"metadata": dict(extra)}
 
-    try:
-        # Sem o parâmetro `customer`, o Checkout cria um Customer NOVO a cada
-        # sessão — customer_email só preenche o campo. Dois checkouts virariam
-        # dois clientes, com duas assinaturas cobrando em paralelo.
-        customer_id = usuario.get("stripe_customer_id")
-        if not customer_id:
-            customer = stripe.Customer.create(
-                email=usuario["email"],
-                name=usuario.get("full_name") or None,
-                metadata={"user_id": usuario["_id"]},
-            )
-            customer_id = customer.id
-            get_store().update_user(usuario["_id"], {"stripe_customer_id": customer_id})
-
-        # Sem payment_method_types: as versões novas da API recusam o parâmetro.
-        # As formas de pagamento vêm de Configurações → Formas de pagamento no
-        # painel da Stripe; no modo assinatura ele só oferece as compatíveis.
-        checkout = stripe.checkout.Session.create(
-            customer=customer_id,
-            line_items=[{"price": price_id, "quantity": 1}],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            metadata=metadata,
-            locale="pt-BR",
-            # O domínio entra na chave: a mesma chave com outra success_url
-            # seria recusada pela Stripe por "parâmetros diferentes".
-            idempotency_key=f"assinar:{usuario['_id']}:{plan}:{request.host}",
-            **extras,
+    # Sem o parâmetro `customer`, o Checkout cria um Customer NOVO a cada
+    # sessão — customer_email só preenche o campo. Dois checkouts virariam
+    # dois clientes, com duas assinaturas cobrando em paralelo.
+    customer_id = usuario.get("stripe_customer_id")
+    if not customer_id:
+        customer = stripe.Customer.create(
+            email=usuario["email"],
+            name=usuario.get("full_name") or None,
+            metadata={"user_id": usuario["_id"]},
+            # Dois toques em "Pagar" antes de o id ser gravado criavam dois
+            # clientes; a sessão do segundo, com a mesma chave e outro cliente,
+            # era recusada pela Stripe, e o link ficava com erro por 24 h.
+            idempotency_key=f"cliente:{usuario['_id']}",
         )
-    except Exception as exc:
-        # A mensagem crua da Stripe pode conter identificadores internos.
-        app.logger.error("Falha ao criar checkout para %s: %s", usuario["_id"], exc)
-        flash(
-            "Não conseguimos iniciar o pagamento agora. Tente de novo em "
-            "alguns instantes ou fale com o suporte.",
-            "danger",
-        )
-        return redirect(url_for("planos"))
+        customer_id = customer.id
+        get_store().update_user(usuario["_id"], {"stripe_customer_id": customer_id})
 
-    return redirect(checkout.url, code=303)
+    # Sem payment_method_types: as versões novas da API recusam o parâmetro.
+    # As formas de pagamento vêm de Configurações → Formas de pagamento no
+    # painel da Stripe; no modo assinatura ele só oferece as compatíveis.
+    return stripe.checkout.Session.create(
+        customer=customer_id,
+        line_items=[{"price": price_id, "quantity": 1}],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+        locale="pt-BR",
+        idempotency_key=idempotency_key,
+        **extras,
+    )
 
 
 def _migrar_para_anual(stripe, price_id: str, usuario: dict):
@@ -3462,11 +3568,75 @@ def liberar_pro_prepago(obj: dict, evento: dict) -> tuple[str, str | None]:
     fim = conceder_pro_prepago(motorista, PRO_PREPAGO_DIAS, "prepago")
     if obj.get("customer") and not motorista.get("stripe_customer_id"):
         store.update_user(motorista["_id"], {"stripe_customer_id": obj["customer"]})
+    marcar_link_pago(meta)
     avisar_nova_assinatura(
-        motorista, "anual", "site (Pix ou cartão, pagamento único)",
+        motorista, "anual", onde_foi_vendido(meta, "site (Pix ou cartão, pagamento único)"),
         valor_da_compra((obj.get("amount_total") or 0) / 100, obj.get("currency")),
         teste=not evento.get("livemode", False), evento_id=str(evento.get("id") or ""))
     return f"pro (pré-pago até {fim.astimezone(BR_TZ).strftime('%d/%m/%Y')})", motorista["_id"]
+
+
+def onde_foi_vendido(meta: dict, padrao: str) -> str:
+    """Rótulo do aviso de venda: o link do painel aparece separado do site."""
+    if meta.get("origem") == "link_painel":
+        return "link de pagamento do painel" + (" (Pix ou cartão, pagamento único)"
+                                               if meta.get("modo") == "prepago" else " (Stripe)")
+    return padrao
+
+
+def marcar_link_pago(meta: dict) -> None:
+    """Pagamento que veio de um /pagar: o link para de oferecer o botão.
+
+    O contador vive em rate_limits, que o cron limpa 7 dias depois de criado, e
+    o link pode durar até o fim do 7º dia (mais a folga do /pronto). Por isso
+    link_ja_pago também procura o pagamento no registro de cobranças, que fica.
+    """
+    nonce = str(meta.get("link") or "")
+    if meta.get("origem") != "link_painel" or not nonce:
+        return
+    try:
+        get_store().bump_counter(f"link_pago:{nonce}")
+    except Exception as exc:
+        app.logger.warning("não marquei o link de pagamento como pago: %s", exc)
+
+
+def link_ja_pago(nonce: str) -> bool:
+    """O pagamento deste /pagar já foi confirmado pelo webhook?
+
+    Primeiro o contador (rápido); se ele já foi limpo, o registro de cobranças,
+    onde o webhook guarda o metadata da sessão e o que liberou ("pro...").
+    """
+    if not nonce:
+        return False
+    try:
+        if get_store().get_counter(f"link_pago:{nonce}") > 0:
+            return True
+    except Exception as exc:
+        app.logger.warning("contador do link de pagamento indisponível: %s", exc)
+    try:
+        with get_store().pool.connection() as conn:
+            linha = conn.execute(
+                """select exists(select 1 from public.billing_events
+                                   where source = 'stripe' and driver_id is not null
+                                     and payload -> 'object' -> 'metadata' ->> 'link' = %s
+                                     and outcome like 'pro%%') as pago""", (nonce,)).fetchone()
+        return bool(linha and linha["pago"])
+    except Exception as exc:
+        app.logger.warning("não consegui procurar o link %s nas cobranças: %s", nonce[:6], exc)
+        return False
+
+
+def assinatura_de_outra_compra(usuario: dict | None, obj: dict) -> bool:
+    """O evento é de uma assinatura da Stripe que não é a gravada no motorista.
+
+    Só decide quando os dois ids existem: evento sem id (como os da suíte) ou
+    motorista sem assinatura gravada seguem o caminho de sempre.
+    """
+    if not usuario:
+        return False
+    gravada = usuario.get("stripe_subscription_id") or ""
+    do_evento = str(obj.get("id") or "")
+    return bool(gravada and do_evento.startswith("sub_") and do_evento != gravada)
 
 
 @app.post("/webhook/stripe")
@@ -3509,6 +3679,9 @@ def stripe_webhook():
         plan = plano_base(meta_sessao.get("plan", "pro")) or "pro"
         resultado = "ignorado: sem_user_id"
         if user_id:
+            # A assinatura que estava gravada antes desta: se for outra, o
+            # motorista pagou duas sessões e as duas assinaturas cobram.
+            anterior = (store.get_user_by_id(user_id) or {}).get("stripe_subscription_id") or ""
             store.update_user(user_id, {
                 "plan": plan,
                 "stripe_customer_id": obj.get("customer"),
@@ -3523,8 +3696,15 @@ def stripe_webhook():
                 motorista_id, resultado = motorista["_id"], plan
                 if meta_sessao.get("cupom") == "indicacao":
                     resultado += " (cupom de indicação)"
+                if anterior and obj.get("subscription") and anterior != obj.get("subscription"):
+                    resultado += f" — EM DOBRO com {anterior[:40]}"
+                    app.logger.error("assinatura em dobro para %s: %s e %s", user_id, anterior, obj.get("subscription"))
+                    avisar_assinatura_duplicada(motorista, anterior, str(obj.get("subscription")),
+                                                teste=not evento.get("livemode", False))
+                marcar_link_pago(meta_sessao)
                 avisar_nova_assinatura(
-                    motorista, "anual" if meta_sessao.get("ciclo") == "anual" else "mensal", "site (Stripe)",
+                    motorista, "anual" if meta_sessao.get("ciclo") == "anual" else "mensal",
+                    onde_foi_vendido(meta_sessao, "site (Stripe)"),
                     valor_da_compra((obj.get("amount_total") or 0) / 100, obj.get("currency")),
                     # Sem livemode = evento de teste (inclusive o da suíte).
                     teste=not evento.get("livemode", False), evento_id=str(evento.get("id") or ""))
@@ -3537,6 +3717,17 @@ def stripe_webhook():
                 stripe.Subscription.modify(obj["subscription"], cancel_at_period_end=True)
             except Exception as exc:
                 app.logger.error("cancel_at_period_end falhou para %s: %s", user_id, exc)
+
+    elif tipo in ("customer.subscription.deleted", "customer.subscription.updated") \
+            and (dono := store.get_user_by_stripe_customer(obj.get("customer"))) \
+            and assinatura_de_outra_compra(dono, obj):
+        # O cliente tem mais de uma assinatura (pagou pelo site e pelo link, por
+        # exemplo) e o evento é da que não está gravada: encerrar aquela não
+        # pode derrubar a que vale.
+        motorista_id = dono["_id"]
+        resultado = f"ignorado: outra_assinatura ({str(obj.get('id'))[:40]})"
+        app.logger.warning("webhook Stripe: %s de %s ignorado; a assinatura gravada é outra",
+                           tipo, obj.get("id"))
 
     elif tipo == "customer.subscription.deleted":
         user = store.get_user_by_stripe_customer(obj.get("customer"))
@@ -3592,6 +3783,413 @@ def stripe_webhook():
                      "id", "customer", "subscription", "status", "metadata", "amount_total",
                      "currency", "cancel_at_period_end", "current_period_end") if k in obj}})
     return jsonify({"ok": True})
+
+
+# ── Venda pelo painel: link de pagamento e criar senha ───────────────────────
+
+def _serializador(salt: str) -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(app.config["SECRET_KEY"], salt=salt)
+
+
+def planos_do_link_disponiveis() -> dict[str, str]:
+    """Planos que o painel pode vender agora: Stripe configurada e Price na Vercel.
+
+    Oferecer um plano sem Price deixaria o motorista num "não está disponível"
+    depois de ter aceitado pagar.
+    """
+    if not get_stripe():
+        return {}
+    return {plano: rotulo for plano, rotulo in PLANOS_DO_LINK.items()
+            if os.environ.get(STRIPE_PRICE_IDS[plano], "").strip()}
+
+
+def gerar_link_de_pagamento(driver_id: str, plano: str) -> tuple[str, datetime]:
+    """URL pública do /pagar para um motorista e um plano, e quando ela vence.
+
+    O `n` é a identidade do link: entra na chave de idempotência da Stripe e na
+    marca de "já pago". Dois links gerados para o mesmo motorista são dois.
+    """
+    token = _serializador(LINK_PAGAMENTO_SALT).dumps(
+        {"u": str(driver_id), "p": plano, "n": secrets.token_urlsafe(9)})
+    return absolute_url("pagar_link", token=token), _fim_do_link(datetime.now(timezone.utc))
+
+
+def _fim_do_link(emitido: datetime) -> datetime:
+    """"Vale até DD/MM" vale o dia inteiro, no horário de Brasília: o motorista
+    lê a data, não a hora em que o painel gerou o link."""
+    return (emitido + timedelta(days=LINK_PAGAMENTO_DIAS)).astimezone(BR_TZ).replace(
+        hour=23, minute=59, second=59, microsecond=0)
+
+
+def ler_link_de_pagamento(token: str, folga_dias: int = 0) -> tuple[dict | None, str]:
+    """(dados do link, "") se ele vale; (None, "vencido" ou "invalido") se não."""
+    try:
+        # O max_age é só o teto da assinatura; quem decide é o fim do dia abaixo.
+        dados, emitido = _serializador(LINK_PAGAMENTO_SALT).loads(
+            token, max_age=(LINK_PAGAMENTO_DIAS + 1 + folga_dias) * 86400, return_timestamp=True)
+    except SignatureExpired:
+        return None, "vencido"
+    except BadSignature:
+        return None, "invalido"
+    if not isinstance(dados, dict) or dados.get("p") not in PLANOS_DO_LINK \
+            or not dados.get("u") or not dados.get("n"):
+        return None, "invalido"
+    vence = _fim_do_link(emitido)
+    if datetime.now(timezone.utc) > vence + timedelta(days=folga_dias):
+        return None, "vencido"
+    return {"uid": str(dados["u"]), "plano": dados["p"], "nonce": str(dados["n"]), "vence": vence}, ""
+
+
+def situacao_do_link(motorista: dict, plano: str, nonce: str) -> str:
+    """O que a página do link oferece, na ordem em que as regras valem.
+
+    "pago" vence tudo: o mesmo link não cobra duas vezes (o Pix anual, por
+    regra, deixaria comprar outro ano). Quem já assina pelo site ou pela loja
+    não paga de novo; quem tem Pro pré-pago (Pix, cortesia, indicação) pode,
+    como no botão do site.
+    """
+    if link_ja_pago(nonce):
+        return "pago"
+    if plano not in planos_do_link_disponiveis():
+        return "indisponivel"
+    return ja_assina(motorista) or "pode_pagar"
+
+
+def _contexto_do_link(motorista: dict, link: dict) -> dict:
+    plano = link["plano"]
+    prepago = motorista.get("subscription_status") in STATUS_PREPAGO
+    return {
+        "plano": plano,
+        "rotulo": PLANOS_ROTULO.get(plano, ""),
+        "descricao": PLANOS_DO_LINK.get(plano, ""),
+        "renova": plano not in PLANOS_PREPAGOS,
+        "primeiro_nome": _primeiro_nome(motorista.get("full_name", "")),
+        "email_mascarado": filtro_mascarar_email(motorista.get("email", "")),
+        "vence": link.get("vence"),
+        "pro_ativo": motorista.get("plan") in PAID_PLANS,
+        "pro_until": _instante(motorista.get("pro_until")) if prepago else None,
+    }
+
+
+def _pagina_com_token(template: str, status: int = 200, **contexto):
+    # O token é a credencial: não pode ir para o canonical nem para o og:url.
+    return render_template(template, canonical_url=SITE_URL + "/", **contexto), status
+
+
+@app.after_request
+def paginas_com_token_sem_rastro(response):
+    """Páginas com credencial na URL: fora da busca, do cache e do Referer."""
+    if request.path.startswith(("/pagar/", "/criar-senha/", "/redefinir-senha/")):
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _carregar_link_de_pagamento(token: str, folga_dias: int = 0):
+    """(link, motorista, None) ou (None, None, resposta de erro pronta)."""
+    link, erro = ler_link_de_pagamento(token, folga_dias)
+    if not link:
+        return None, None, _pagina_com_token("pagar.html", 410 if erro == "vencido" else 404,
+                                             token=token, estado=erro)
+    motorista = get_store().get_user_by_id(link["uid"])
+    if not motorista:
+        return None, None, _pagina_com_token("pagar.html", 404, token=token, estado="invalido")
+    return link, motorista, None
+
+
+@app.get("/pagar/<token>")
+def pagar_link(token: str):
+    """Link de pagamento que o painel gerou para um motorista.
+
+    Só mostra o plano, o preço e as regras. A sessão da Stripe nasce no POST:
+    a prévia do WhatsApp e o antivírus do e-mail também abrem este endereço.
+    """
+    link, motorista, erro = _carregar_link_de_pagamento(token)
+    if erro:
+        return erro
+    estado = situacao_do_link(motorista, link["plano"], link["nonce"])
+    return _pagina_com_token("pagar.html", token=token, estado=estado,
+                             **_contexto_do_link(motorista, link))
+
+
+@app.post("/pagar/<token>")
+def pagar_link_confirmar(token: str):
+    """O motorista confirmou: abre o Checkout da Stripe na conta dele, sem login.
+
+    O webhook de sempre libera o Pro pelo user_id do metadata; o "origem" e o
+    "link" no metadata marcam a venda do painel e deixam o link como pago.
+    """
+    link, motorista, erro = _carregar_link_de_pagamento(token)
+    if erro:
+        return erro
+    contexto = _contexto_do_link(motorista, link)
+    estado = situacao_do_link(motorista, link["plano"], link["nonce"])
+    if estado != "pode_pagar":
+        return _pagina_com_token("pagar.html", 409, token=token, estado=estado, **contexto)
+    plano = link["plano"]
+    try:
+        checkout = criar_sessao_de_checkout(
+            get_stripe(), motorista, plano, os.environ.get(STRIPE_PRICE_IDS[plano], "").strip(),
+            success_url=url_for("pagar_pronto", token=token, _external=True),
+            cancel_url=url_for("pagar_link", token=token, _external=True),
+            # Uma chave por link e domínio: tocar de novo em 24 h devolve a
+            # mesma sessão, e o link não colide com o "Assinar" do site.
+            idempotency_key=f"pagar:{link['nonce']}:{motorista['_id']}:{plano}:{request.host}",
+            metadata_extra={"origem": "link_painel", "link": link["nonce"]},
+        )
+    except Exception as exc:
+        # CupomIndisponivel também cai aqui: a página só diz para tentar de novo.
+        app.logger.error("Falha ao criar checkout do link para %s: %s", motorista["_id"], exc)
+        return _pagina_com_token("pagar.html", 503, token=token, estado="erro", **contexto)
+    app.logger.info("link de pagamento: %s foi para a Stripe (%s)", motorista["_id"], plano)
+    return redirect(checkout.url, code=303)
+
+
+@app.get("/pagar/<token>/pronto")
+def pagar_pronto(token: str):
+    """Volta da Stripe depois de pagar. Pública: o motorista do link não tem
+    sessão no site, e o /dashboard pediria login logo depois de ele pagar."""
+    # Dois dias de folga: quem pagou no último dia do link ainda vê esta página.
+    link, motorista, erro = _carregar_link_de_pagamento(token, folga_dias=2)
+    if erro:
+        return erro
+    contexto = _contexto_do_link(motorista, link)
+    # "Confirmado" é ESTE pagamento, não o plano de agora: quem já tinha Pro
+    # (cortesia, indicação) veria a data antiga como se fosse a nova. O webhook
+    # só marca o link depois de gravar o Pro, então a data já é a nova.
+    contexto["confirmado"] = link_ja_pago(link["nonce"])
+    return _pagina_com_token("pagar.html", token=token, estado="pronto", **contexto)
+
+
+def criado_pelo_painel(driver_id: str) -> bool:
+    """A conta nasceu pelo painel (marca no app_metadata do Auth)?"""
+    try:
+        with get_store().pool.connection() as conn:
+            linha = conn.execute(
+                "select coalesce(raw_app_meta_data ->> %s, '') = 'true' as painel from auth.users where id = %s",
+                (MARCA_CRIADO_PELO_PAINEL, str(driver_id))).fetchone()
+        return bool(linha and linha["painel"])
+    except Exception as exc:
+        app.logger.warning("não consegui ler a marca do painel de %s: %s", driver_id, exc)
+        return False
+
+
+def senha_pendente(usuario: dict) -> bool:
+    """Conta criada pelo painel que ainda não tem a senha do motorista.
+
+    O carimbo password_changed_at só é gravado quando alguém cria ou redefine a
+    senha; enquanto ele estiver vazio, ninguém além do servidor sabe a senha.
+    """
+    return not usuario.get("password_changed_at") and criado_pelo_painel(usuario["_id"])
+
+
+def gerar_link_criar_senha(usuario: dict, plano: str = "", nonce: str | None = None) -> str:
+    """URL do /criar-senha. A digital da senha faz o link morrer no primeiro uso.
+
+    O `n` identifica o link no teto de tentativas da confirmação pelo WhatsApp:
+    cada link do painel tem o seu (só o admin gera); os que saem pelo "Esqueci
+    minha senha" usam um fixo por conta, para pedir de novo não renovar o teto.
+    """
+    token = _serializador(CRIAR_SENHA_SALT).dumps(
+        {"u": str(usuario["_id"]), "fp": _password_fingerprint(usuario),
+         "p": plano if plano in PLANOS_DO_LINK else "", "n": nonce or secrets.token_urlsafe(6)})
+    return absolute_url("criar_senha", token=token)
+
+
+def ler_link_criar_senha(token: str) -> dict:
+    """{"usuario": dict ou None, "uid", "plano", "nonce", "motivo"}.
+
+    motivo: "" (vale), "vencido", "usado" (a senha já existe) ou "invalido".
+    """
+    vazio = {"usuario": None, "uid": "", "plano": "", "nonce": "", "motivo": "invalido"}
+    try:
+        dados = _serializador(CRIAR_SENHA_SALT).loads(token, max_age=CRIAR_SENHA_DIAS * 86400)
+    except SignatureExpired:
+        return {**vazio, "motivo": "vencido"}
+    except BadSignature:
+        return vazio
+    if not isinstance(dados, dict) or not dados.get("u"):
+        return vazio
+    uid = str(dados["u"])
+    plano = dados.get("p") if dados.get("p") in PLANOS_DO_LINK else ""
+    nonce = str(dados.get("n") or "")
+    usuario = get_store().get_user_by_id(uid)
+    if not usuario:
+        return vazio
+    if not hmac.compare_digest(_password_fingerprint(usuario), str(dados.get("fp", ""))):
+        return {**vazio, "uid": uid, "plano": plano, "motivo": "usado"}
+    # Só o painel gera este link, e só para conta que ele criou; conferir de
+    # novo aqui impede que um link desses vire porta para uma conta antiga.
+    if not criado_pelo_painel(uid):
+        return vazio
+    return {"usuario": usuario, "uid": uid, "plano": plano, "nonce": nonce, "motivo": ""}
+
+
+def final_do_whatsapp(usuario: dict) -> str:
+    """Os 4 últimos dígitos do WhatsApp do cadastro, ou "" se não houver 4.
+
+    É a prova de posse do /criar-senha: o e-mail foi ditado por telefone e
+    ninguém o confirmou. Se ele saiu errado, o dono daquela caixa pode receber
+    o link (pelo botão do painel ou pelo "Esqueci minha senha", que para estas
+    contas manda este mesmo link), mas não sabe o número do motorista. Vale
+    também para um link encaminhado. Só dígitos ASCII: o compare_digest recusa
+    texto com outros caracteres.
+    """
+    digitos = re.sub(r"[^0-9]", "", usuario.get("whatsapp") or "")
+    return digitos[-4:] if len(digitos) >= 4 else ""
+
+
+def plano_do_primeiro_acesso(usuario: dict, plano: str) -> str:
+    """O plano do link de senha só vale para quem ainda está no Grátis.
+
+    O link pode ter saído dias antes; se nesse meio-tempo ele pagou pelo link
+    de pagamento (ou ganhou cortesia), mandá-lo ao pagamento de novo cobraria
+    outro ano de Pix ou, no anual do cartão, a troca imediata do plano.
+    """
+    if plano not in planos_do_link_disponiveis() or usuario.get("plan") in PAID_PLANS:
+        return ""
+    return plano
+
+
+def enviar_link_criar_senha(usuario: dict, link: str, plano: str = "") -> bool:
+    """E-mail com o link de criar senha. Texto puro, como o de redefinição."""
+    linhas = [
+        f"Olá, {_primeiro_nome(usuario.get('full_name', ''))}!",
+        "",
+        f"A equipe do {APP_NAME} criou a sua conta, como combinado com você.",
+        "Falta só criar a sua senha, neste link:",
+        "",
+        link,
+        "",
+    ]
+    if plano in PLANOS_ROTULO:
+        linhas += [f"Logo depois de criar a senha, você vai direto para o pagamento do {PLANOS_ROTULO[plano]}.", ""]
+    linhas += [
+        f"O link vale por {CRIAR_SENHA_DIAS} dias e só pode ser usado uma vez.",
+        f"Para entrar no app, use este e-mail ({usuario.get('email', '')}) e a senha que você criar.",
+        f"Baixe o app: {absolute_url('baixar_app', c='criar-senha')}",
+        "",
+        f"Não pediu esta conta? Escreva para {EMAIL_AVISOS_PADRAO} que a gente apaga.",
+    ]
+    try:
+        return send_email(usuario["email"], f"Sua conta no {APP_NAME} está pronta: crie sua senha",
+                          "\n".join(linhas))
+    except Exception as exc:
+        app.logger.error("Falha ao enviar o link de criar senha para %s: %s", usuario.get("_id"), exc)
+        return False
+
+
+def _pagina_criar_senha(token: str, estado: str, status: int = 200, **contexto):
+    return _pagina_com_token("criar_senha.html", status, token=token, estado=estado, **contexto)
+
+
+@app.route("/criar-senha/<token>", methods=["GET", "POST"])
+def criar_senha(token: str):
+    """Primeiro acesso de quem o painel cadastrou: cria a senha e entra.
+
+    Diferente do /redefinir-senha, termina com o motorista logado no site: o
+    link pode trazer um plano, e o pagamento precisa da sessão para voltar ao
+    painel dele.
+    """
+    link = ler_link_criar_senha(token)
+    usuario = link["usuario"]
+    if not usuario:
+        if link["motivo"] == "usado":
+            # Já usado por ele mesmo (voltou à página, tocou duas vezes): mostra
+            # o "tudo pronto" em vez de um erro.
+            if g.user and g.user["_id"] == link["uid"]:
+                plano = plano_do_primeiro_acesso(g.user, link["plano"])
+                return _pagina_criar_senha(token, "pronto", usuario=g.user, email=g.user.get("email", ""),
+                                           primeiro_nome=_primeiro_nome(g.user.get("full_name", "")),
+                                           plano=plano, rotulo=PLANOS_ROTULO.get(plano, ""))
+            # A senha foi criada, mas a resposta não chegou a este navegador
+            # (recarregou, a rede caiu, abriu o link em outro lugar): o caminho
+            # é entrar com a senha nova, levando o plano para o pagamento.
+            dono = get_store().get_user_by_id(link["uid"]) or {}
+            plano = plano_do_primeiro_acesso(dono, link["plano"]) if dono else ""
+            if request.method == "POST":
+                flash("Sua senha já foi criada. Entre com ela para continuar.", "info")
+                return redirect(url_for("login", plano=plano or None))
+            return _pagina_criar_senha(token, "usado", 410, plano=plano, rotulo=PLANOS_ROTULO.get(plano, ""))
+        status = 404 if link["motivo"] == "invalido" else 410
+        return _pagina_criar_senha(token, link["motivo"], status)
+
+    plano = plano_do_primeiro_acesso(usuario, link["plano"])
+    final_whatsapp = final_do_whatsapp(usuario)
+    if not final_whatsapp:
+        # O painel exige WhatsApp com DDD; sem ele, não há como provar que é o
+        # motorista. Fecha em vez de pular a prova.
+        return _pagina_criar_senha(token, "sem_whatsapp", 409)
+    chave_tentativas = f"criar_senha_falha:{link['nonce'] or usuario['_id']}"
+    contexto = {"email": usuario.get("email", ""), "primeiro_nome": _primeiro_nome(usuario.get("full_name", "")),
+                "plano": plano, "rotulo": PLANOS_ROTULO.get(plano, ""), "pedir_whatsapp": True,
+                "pro_ativo": usuario.get("plan") in PAID_PLANS}
+    try:
+        tentativas = get_store().get_counter(chave_tentativas)
+    except Exception as exc:
+        app.logger.warning("contador do criar senha indisponível: %s", exc)
+        tentativas = 0
+    if tentativas >= CRIAR_SENHA_TENTATIVAS:
+        return _pagina_criar_senha(token, "bloqueado", 429)
+
+    if request.method == "POST":
+        senha = request.form.get("senha", "")
+        confirmacao = request.form.get("confirmar_senha", "")
+        erro = None
+        if len(senha) < 8:
+            erro = "A senha precisa ter pelo menos 8 caracteres."
+        elif len(senha) > SIGNUP_FIELD_LIMITS["senha"][1]:
+            erro = f"A senha passa do limite de {SIGNUP_FIELD_LIMITS['senha'][1]} caracteres."
+        elif senha != confirmacao:
+            erro = "As senhas não conferem."
+        else:
+            # A tentativa conta ANTES de conferir, num passo só: ler e somar
+            # depois deixava pedidos simultâneos passarem todos pelo teto (o
+            # mesmo cuidado do conferir_senha_atual). Erro de senha não gasta.
+            try:
+                if get_store().bump_counter(chave_tentativas) > CRIAR_SENHA_TENTATIVAS:
+                    return _pagina_criar_senha(token, "bloqueado", 429)
+            except Exception as exc:
+                app.logger.warning("contador do criar senha indisponível: %s", exc)
+            digitado = re.sub(r"[^0-9]", "", request.form.get("final_whatsapp", ""))[-4:]
+            if not hmac.compare_digest(digitado.encode(), final_whatsapp.encode()):
+                erro = "Os 4 últimos números do WhatsApp não conferem com o do cadastro."
+        if erro:
+            flash(erro, "danger")
+            return _pagina_criar_senha(token, "formulario", 400, **contexto)
+
+        store = get_store()
+        try:
+            auth_definir_senha(usuario["_id"], senha)
+            store.update_user(usuario["_id"], {"password_changed_at": now_iso()})
+        except Exception as exc:
+            app.logger.error("criar senha: não salvou a senha de %s: %s", usuario["_id"], exc)
+            flash("Não conseguimos salvar a senha agora. Tente de novo em alguns instantes.", "danger")
+            return _pagina_criar_senha(token, "formulario", 503, **contexto)
+        zerar_falhas_de_login(usuario["email"])
+        try:
+            store.reset_counter(chave_de_reconfirmacao(usuario["_id"]))
+        except Exception as exc:
+            app.logger.warning("contador de senha indisponível: %s", exc)
+
+        # Entra já logado. O carimbo novo vai para a sessão, ou a próxima
+        # página (a volta da Stripe, por exemplo) derrubaria a sessão. Qualquer
+        # sessão anterior neste navegador (de outra conta ou do painel) sai.
+        usuario = store.get_user_by_id(usuario["_id"]) or usuario
+        session.clear()
+        session["user_id"] = usuario["_id"]
+        session["pw_stamp"] = usuario.get("password_changed_at") or ""
+        registrar_acesso(usuario["_id"], "site_criar_senha")
+        app.logger.info("motorista %s criou a senha pelo link do painel", usuario["_id"])
+        if plano:
+            # O aviso aparece na volta da Stripe, no painel: por isso é neutro.
+            flash("Senha criada! No celular, entre no app Recibo Táxi com este e-mail e esta senha.",
+                  "success")
+            return iniciar_checkout(usuario, plano)
+        return redirect(url_for("criar_senha", token=token))
+
+    return _pagina_criar_senha(token, "formulario", **contexto)
 
 
 # ── API do app (fila offline) ─────────────────────────────────────────────────
@@ -5016,6 +5614,11 @@ def _sql_candidatos(gatilho: str, restringir: bool) -> str:
          where d.plan = 'free'
            and d.marketing_optout_at is null
            and d.email like '%%_@_%%'
+           -- Conta do painel ainda sem senha: o e-mail foi ditado por telefone e
+           -- pode ser de outra pessoa. A régua começa quando ele cria a senha.
+           and not (d.password_changed_at is null and exists (
+                    select 1 from auth.users u where u.id = d.id
+                       and coalesce(u.raw_app_meta_data ->> '{MARCA_CRIADO_PELO_PAINEL}', '') = 'true'))
            and {quem}
            and {condicao}
            and not exists (select 1 from public.email_sends s
@@ -5595,7 +6198,10 @@ _SQL_ADMIN = {
                count(*) filter (where created_at >= %(ini_mes)s) as novos_mes,
                count(*) filter (where plan in ('pro','business')) as pagantes,
                count(*) filter (where plan='pro' and stripe_subscription_id is not null) as pro_stripe,
-               count(*) filter (where plan='pro' and stripe_subscription_id is null) as pro_loja,
+               count(*) filter (where plan='pro' and stripe_subscription_id is null
+                                  and coalesce(subscription_status, '') not in ('prepago','indicacao','cortesia')) as pro_loja,
+               count(*) filter (where plan='pro' and stripe_subscription_id is null
+                                  and subscription_status in ('prepago','indicacao','cortesia')) as pro_prepago,
                count(*) filter (where plan='business') as business,
                count(*) filter (where subscription_status='past_due') as past_due,
                count(*) filter (where subscription_status='canceled_pendente') as cancel_pendente,
@@ -5613,6 +6219,7 @@ _SQL_ADMIN = {
     "pagantes": """
         select id, full_name, email, city, plan, subscription_status,
                case when stripe_subscription_id is not null then 'Stripe'
+                    when subscription_status in ('prepago','indicacao','cortesia') then 'Pré-pago'
                     when stripe_customer_id is not null then 'Loja (ex-Stripe)'
                     else 'Loja' end as origem,
                created_at, updated_at
@@ -5843,6 +6450,8 @@ def _saude_do_sistema() -> dict:
             ("Stripe (webhook)", tem("STRIPE_WEBHOOK_SECRET"), ""),
             ("Stripe (preço Pro mensal)", tem("STRIPE_PRO_PRICE_ID"), ""),
             ("Stripe (preço Pro anual)", tem("STRIPE_PRO_ANUAL_PRICE_ID"), ""),
+            ("Stripe (preço Pro anual por Pix, pagamento único)", tem("STRIPE_PRO_ANUAL_PIX_PRICE_ID"),
+             "Pix ligado também em Configurações → Formas de pagamento"),
             ("Resend (e-mail)", tem("RESEND_API_KEY"), os.environ.get("EMAIL_FROM", "").strip()),
             ("RevenueCat (webhook)", tem("REVENUECAT_WEBHOOK_SECRET"), ""),
             ("Cron de limpeza", tem("CRON_SECRET"), "04:00 UTC, diário"),
@@ -6004,7 +6613,7 @@ def admin_motoristas():
     q = request.args.get("q", "").strip()[:80]
     plano = request.args.get("plano", "") if request.args.get("plano") in ("free", "pro", "business") else ""
     status = request.args.get("status", "").strip()[:40]
-    origem = request.args.get("origem", "") if request.args.get("origem") in ("stripe", "loja") else ""
+    origem = request.args.get("origem", "") if request.args.get("origem") in ("stripe", "loja", "prepago") else ""
     so_teto = request.args.get("so_teto") == "1"
     sem_recibo = request.args.get("sem_recibo") == "1"
     filtro = request.args.get("filtro", "") if request.args.get("filtro") in _FILTROS_ENGAJAMENTO else ""
@@ -6028,7 +6637,9 @@ def admin_motoristas():
     sql = f"""
         select d.id, d.full_name, d.email, d.city, d.plate, d.plan, d.subscription_status,
                case when d.plan = 'free' then '-'
-                    when d.stripe_subscription_id is not null then 'Stripe' else 'Loja' end as origem,
+                    when d.stripe_subscription_id is not null then 'Stripe'
+                    when d.subscription_status in ('prepago','indicacao','cortesia') then 'Pré-pago'
+                    else 'Loja' end as origem,
                d.created_at, u.last_sign_in_at, s.n as recibos, s.ultimo as ultimo_recibo, q.used as uso_mes
           from public.drivers d
           left join auth.users u on u.id = d.id
@@ -6041,7 +6652,10 @@ def admin_motoristas():
            and (%(status)s::text is null or d.subscription_status = %(status)s)
            and (%(origem)s::text is null
                 or (%(origem)s = 'stripe' and d.stripe_subscription_id is not null)
-                or (%(origem)s = 'loja' and d.plan <> 'free' and d.stripe_subscription_id is null))
+                or (%(origem)s = 'loja' and d.plan <> 'free' and d.stripe_subscription_id is null
+                    and coalesce(d.subscription_status, '') not in ('prepago','indicacao','cortesia'))
+                or (%(origem)s = 'prepago' and d.plan <> 'free' and d.stripe_subscription_id is null
+                    and d.subscription_status in ('prepago','indicacao','cortesia')))
            and (%(q)s::text is null or d.email ilike %(q)s or d.full_name ilike %(q)s
                 or d.plate ilike %(q)s
                 or (%(qdig)s::text is not null
@@ -6138,6 +6752,9 @@ def admin_motorista(driver_id):
             indicacoes = None  # migração 0012 ainda não aplicada
     recibos = store.list_receipts_by_driver(did, limit=20)
     app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
+    # Os links saem do motorista como o store devolve (datas em ISO, id em
+    # texto): a digital do link de senha é calculada sobre esse formato.
+    motorista = store.get_user_by_id(did) or {}
     return render_template(
         "admin/motorista.html", m=dict(perfil), totais=dict(totais), cotas=[dict(c) for c in cotas],
         valor_emitido=" · ".join(formatar_valor(l["valor"], l["currency"]) for l in por_moeda)
@@ -6146,6 +6763,8 @@ def admin_motorista(driver_id):
         automacao=dict(automacao) if automacao else None,
         eventos=eventos, indicacoes=indicacoes,
         limite=FREE_MONTHLY_LIMIT,
+        assina_loja=assina_pela_loja(motorista), status_prepago=STATUS_PREPAGO,
+        venda=_venda_na_ficha(motorista, request.args) if motorista else None,
     )
 
 
@@ -6237,6 +6856,207 @@ def admin_pro_cortesia(driver_id):
     flash(f"{dias} dias de Pro liberados para {motorista.get('full_name') or motorista.get('email')}, "
           f"até {fim.astimezone(BR_TZ).strftime('%d/%m/%Y')}.", "success")
     return voltar
+
+
+# ── Painel: vender o Pro (link de pagamento, cadastro e formulário) ──────────
+
+def ja_assina(motorista: dict) -> str:
+    """"ja_assina_stripe", "ja_assina_loja" ou "" (pode comprar). Pro pré-pago
+    (Pix, cortesia, indicação) pode comprar, como no botão do site."""
+    if motorista.get("plan") in PAID_PLANS and motorista.get("subscription_status") not in STATUS_PREPAGO:
+        return "ja_assina_stripe" if motorista.get("stripe_subscription_id") else "ja_assina_loja"
+    return ""
+
+
+def link_whatsapp(fone: str, texto: str) -> str:
+    """wa.me com a mensagem pronta. Sem telefone, o WhatsApp pede o contato."""
+    return f"https://wa.me/{fone}?text={quote(texto)}" if fone else f"https://wa.me/?text={quote(texto)}"
+
+
+def mensagem_link_de_pagamento(motorista: dict, plano: str, url: str, vence: datetime) -> str:
+    return "\n".join([
+        f"Olá, {_primeiro_nome(motorista.get('full_name', ''))}! Aqui é do {APP_NAME}.",
+        f"Este é o link para ativar o seu Pro ({PLANOS_DO_LINK[plano]}):",
+        url,
+        f"O link é só seu e vale até {vence.astimezone(BR_TZ).strftime('%d/%m/%Y')}. "
+        "Depois de pagar, é só abrir o app: o Pro aparece sozinho.",
+    ])
+
+
+def mensagem_criar_senha(motorista: dict, url: str, plano: str = "") -> str:
+    passo = (f"Crie sua senha neste link; logo depois você ativa o Pro ({PLANOS_DO_LINK[plano]}):"
+             if plano in PLANOS_DO_LINK else "Crie sua senha neste link:")
+    return "\n".join([
+        f"Olá, {_primeiro_nome(motorista.get('full_name', ''))}! Aqui é do {APP_NAME}. Sua conta está pronta.",
+        passo,
+        url,
+        f"Depois é só baixar o app e entrar com o e-mail {motorista.get('email', '')} e a sua senha: "
+        f"{absolute_url('baixar_app', c='whatsapp')}",
+    ])
+
+
+def mensagem_formulario(plano: str, url: str) -> str:
+    passo = (f"Faça o seu cadastro neste link; no final você já ativa o Pro ({PLANOS_DO_LINK[plano]}):"
+             if plano in PLANOS_DO_LINK else "Faça o seu cadastro neste link:")
+    return "\n".join([f"Olá! Aqui é do {APP_NAME}.", passo, url])
+
+
+def _venda_na_ficha(motorista: dict, args) -> dict:
+    """Os cartões "Vender o Pro" e "Primeiro acesso" da ficha.
+
+    Gerar link não grava nada (o token é assinado, não guardado), por isso é
+    GET: ?link=<plano> gera o de pagamento, ?senha_plano=<plano> põe o plano
+    no de criar senha.
+    """
+    disponiveis = planos_do_link_disponiveis()
+    fone = phone_e164(motorista.get("whatsapp", ""), motorista.get("country") or PAIS_PADRAO)
+    venda = {"planos": disponiveis, "todos": PLANOS_DO_LINK, "bloqueio": ja_assina(motorista),
+             "stripe": bool(get_stripe()), "fone": fone, "link": None, "senha": None, "erro": ""}
+    plano = args.get("link", "")
+    if plano:
+        if plano in disponiveis:
+            url, vence = gerar_link_de_pagamento(motorista["_id"], plano)
+            texto = mensagem_link_de_pagamento(motorista, plano, url, vence)
+            venda["link"] = {"plano": plano, "url": url, "vence": vence, "texto": texto,
+                             "whatsapp": link_whatsapp(fone, texto)}
+            # O link é uma credencial de pagamento: no log vai só que ele existiu.
+            app.logger.warning("admin %s gerou link de pagamento (%s) para %s (%s)", g.admin["email"], plano,
+                               motorista["_id"], filtro_mascarar_email(motorista.get("email")))
+        else:
+            venda["erro"] = "Este plano não está disponível agora. Escolha outro da lista."
+    if senha_pendente(motorista):
+        # Plano só para quem ainda está no Grátis: quem já pagou pelo link de
+        # pagamento não pode ser mandado a pagar de novo depois da senha.
+        plano_senha = plano_do_primeiro_acesso(motorista, args.get("senha_plano", ""))
+        url = gerar_link_criar_senha(motorista, plano_senha)
+        texto = mensagem_criar_senha(motorista, url, plano_senha)
+        venda["senha"] = {"plano": plano_senha, "url": url, "texto": texto, "whatsapp": link_whatsapp(fone, texto),
+                          "ja_e_pro": motorista.get("plan") in PAID_PLANS}
+    return venda
+
+
+@app.post("/admin/motoristas/<uuid:driver_id>/criar-senha")
+@admin_required
+def admin_reenviar_criar_senha(driver_id):
+    """Manda por e-mail o link de criar senha de uma conta feita pelo painel.
+
+    É um botão, e não automático: o e-mail foi ditado por telefone, e o link
+    entra na conta. O admin confere o endereço com o motorista antes.
+    """
+    did = str(driver_id)
+    motorista = get_store().get_user_by_id(did)
+    if not motorista:
+        abort(404)
+    plano = plano_do_primeiro_acesso(motorista, request.form.get("plano_link", ""))
+    voltar = redirect(url_for("admin_motorista", driver_id=did, senha_plano=plano or None) + "#primeiro-acesso")
+    if not senha_pendente(motorista):
+        flash("Esta conta já tem senha (ou não foi criada pelo painel). Se ele esqueceu, "
+              "o caminho é o \"Esqueci minha senha\" no app ou no site.", "warning")
+        return voltar
+    if enviar_link_criar_senha(motorista, gerar_link_criar_senha(motorista, plano), plano):
+        app.logger.warning("admin %s mandou por e-mail o link de criar senha a %s (%s)", g.admin["email"], did,
+                           filtro_mascarar_email(motorista.get("email")))
+        flash(f"Link para criar a senha enviado para {motorista.get('email')}.", "success")
+    else:
+        flash("O e-mail não saiu. Mande o link pelo WhatsApp.", "danger")
+    return voltar
+
+
+@app.route("/admin/motoristas/novo", methods=["GET", "POST"])
+@admin_required
+def admin_motorista_novo():
+    """Cadastro feito pelo painel, a pedido do motorista (venda por telefone).
+
+    A conta nasce com uma senha aleatória que ninguém conhece e a marca do
+    painel no app_metadata. O motorista cria a própria senha pelo link de 7
+    dias, que aparece na ficha para mandar pelo WhatsApp (o número que o
+    vendedor acabou de usar). O e-mail não sai sozinho: foi ditado por telefone,
+    e um endereço errado entregaria a conta ao dono daquela caixa. O botão
+    "Enviar por e-mail" fica na ficha, para depois de conferir o endereço.
+    Senha padrão ("123") não: o site exige 8 caracteres, e quem soubesse o
+    e-mail entraria na conta e veria o CPF dele e os recibos dos passageiros.
+    """
+    disponiveis = planos_do_link_disponiveis()
+    formulario = None
+    if "formulario" in request.args:
+        # Link do formulário público, para o motorista preencher sozinho.
+        plano_form = request.args.get("formulario", "")
+        plano_form = plano_form if plano_form in disponiveis else ""
+        url = absolute_url("cadastro", plano=plano_form) if plano_form else absolute_url("cadastro")
+        texto = mensagem_formulario(plano_form, url)
+        formulario = {"plano": plano_form, "url": url, "texto": texto, "whatsapp": link_whatsapp("", texto)}
+
+    def tela(status: int = 200):
+        return render_template("admin/motorista_novo.html", form=request.form, planos=disponiveis,
+                               todos=PLANOS_DO_LINK, formulario=formulario), status
+
+    if request.method == "GET":
+        return tela()
+
+    erro_tamanho = field_limit_error(SIGNUP_FIELD_LIMITS)
+    if erro_tamanho:
+        flash(erro_tamanho, "danger")
+        return tela(400)
+    full_name = request.form.get("nome_completo", "").strip()
+    email = normalize_email(request.form.get("email", ""))
+    whatsapp = request.form.get("whatsapp", "").strip()
+    cpf = request.form.get("cpf", "").strip()
+    city = request.form.get("cidade", "").strip()
+    plate = request.form.get("placa", "").strip().upper()
+    vehicle_model = request.form.get("modelo_veiculo", "").strip()
+    taxi_prefix = request.form.get("prefixo_taxi", "").strip()
+    license_number = request.form.get("numero_alvara", "").strip()
+    plano = request.form.get("plano_link", "")
+
+    erro = None
+    if not all([full_name, email, whatsapp, cpf, city, plate]):
+        erro = "Preencha todos os campos obrigatórios."
+    elif not email_valido(email):
+        erro = "Confira o e-mail: ele não parece válido."
+    elif request.form.get("pediu") != "1":
+        erro = "Confirme que o motorista pediu o cadastro e passou estes dados."
+    elif plano and plano not in disponiveis:
+        erro = "Este plano não está disponível agora. Escolha outro da lista."
+    if erro:
+        flash(erro, "danger")
+        return tela(400)
+    try:
+        pais, moeda = pais_e_moeda(request.form.get("pais"), request.form.get("moeda"))
+        if not phone_e164(whatsapp, pais):
+            # É para onde vai o link, e o link de senha pede os 4 últimos números dele.
+            raise ValueError("Confira o WhatsApp: com DDD (fora do Brasil, com + e o código do país).")
+        if pais == PAIS_PADRAO and not cpf_valido(cpf):
+            raise ValueError("Confira o CPF: os dígitos não conferem.")
+        coop_name, coop_cnpj = cooperativa_informada(
+            request.form.get("cooperativa", ""), request.form.get("cnpj_cooperativa", ""), pais)
+    except ValueError as exc:  # CooperativaInvalida também é ValueError
+        flash(str(exc), "danger")
+        return tela(400)
+
+    dados = {"full_name": full_name, "cpf": cpf, "whatsapp": whatsapp, "city": city, "plate": plate,
+             "vehicle_model": vehicle_model, "taxi_prefix": taxi_prefix, "license_number": license_number,
+             "country": pais, "currency": moeda}
+    try:
+        # Senha que ninguém vê nem guarda; os sufixos cobrem uma política de
+        # senha mais exigente no Supabase.
+        user_id = auth_criar_usuario(email, secrets.token_urlsafe(32) + "Aa1!", dados,
+                                     app_metadata={MARCA_CRIADO_PELO_PAINEL: True})
+    except ValueError:
+        flash("Já existe uma conta com este e-mail. Procure o motorista na lista e gere o link de "
+              "pagamento na ficha dele.", "danger")
+        return tela(409)
+    except RuntimeError as exc:
+        flash(str(exc), "danger")
+        return tela(503)
+
+    guardar_cooperativa(user_id, coop_name, coop_cnpj)
+    avisar_novo_cadastro(user_id, {**dados, "email": email}, "painel")
+    _ADMIN_CACHE.pop("dashboard", None)
+    app.logger.warning("admin %s cadastrou o motorista %s (%s) pelo painel", g.admin["email"], user_id,
+                       filtro_mascarar_email(email))
+    flash(f"Conta de {full_name} criada. Agora mande para ele, pelo WhatsApp, o link para criar a senha "
+          "(logo abaixo). Antes de mandar por e-mail, confira o endereço com ele, letra por letra.", "success")
+    return redirect(url_for("admin_motorista", driver_id=user_id, senha_plano=plano or None) + "#primeiro-acesso")
 
 
 # ── Painel: automação de e-mails ─────────────────────────────────────────────

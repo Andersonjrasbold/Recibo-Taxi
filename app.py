@@ -4026,18 +4026,26 @@ def ler_link_criar_senha(token: str) -> dict:
     return {"usuario": usuario, "uid": uid, "plano": plano, "nonce": nonce, "motivo": ""}
 
 
-def final_do_whatsapp(usuario: dict) -> str:
-    """Os 4 últimos dígitos do WhatsApp do cadastro, ou "" se não houver 4.
+def prova_de_posse(usuario: dict) -> tuple[str, str]:
+    """O que o /criar-senha pede para confirmar que é o motorista: ("cpf" ou
+    "whatsapp", os 4 dígitos certos), ou ("", "") se não houver como provar.
 
-    É a prova de posse do /criar-senha: o e-mail foi ditado por telefone e
-    ninguém o confirmou. Se ele saiu errado, o dono daquela caixa pode receber
-    o link (pelo botão do painel ou pelo "Esqueci minha senha", que para estas
-    contas manda este mesmo link), mas não sabe o número do motorista. Vale
-    também para um link encaminhado. Só dígitos ASCII: o compare_digest recusa
-    texto com outros caracteres.
+    O e-mail foi ditado por telefone e ninguém o confirmou; se ele saiu errado,
+    o dono daquela caixa pode receber o link (pelo botão do painel ou pelo
+    "Esqueci minha senha", que para estas contas manda este mesmo link). Vale
+    também para um link encaminhado.
+    - No Brasil, os 4 primeiros números do CPF: o CPF passou pelo dígito
+      verificador no cadastro (erro de digitação quase nunca passa) e não vai
+      em nenhuma mensagem, nem na página. O WhatsApp não servia: digitado
+      errado, levava o link e a resposta a um estranho, e travava o motorista.
+    - Fora do Brasil o documento é texto livre: os 4 últimos do WhatsApp.
+    Só dígitos ASCII: o compare_digest recusa texto com outros caracteres.
     """
+    if (usuario.get("country") or PAIS_PADRAO) == PAIS_PADRAO:
+        cpf = re.sub(r"[^0-9]", "", usuario.get("cpf") or "")
+        return ("cpf", cpf[:4]) if len(cpf) == 11 else ("", "")
     digitos = re.sub(r"[^0-9]", "", usuario.get("whatsapp") or "")
-    return digitos[-4:] if len(digitos) >= 4 else ""
+    return ("whatsapp", digitos[-4:]) if len(digitos) >= 4 else ("", "")
 
 
 def plano_do_primeiro_acesso(usuario: dict, plano: str) -> str:
@@ -4116,14 +4124,14 @@ def criar_senha(token: str):
         return _pagina_criar_senha(token, link["motivo"], status)
 
     plano = plano_do_primeiro_acesso(usuario, link["plano"])
-    final_whatsapp = final_do_whatsapp(usuario)
-    if not final_whatsapp:
-        # O painel exige WhatsApp com DDD; sem ele, não há como provar que é o
-        # motorista. Fecha em vez de pular a prova.
-        return _pagina_criar_senha(token, "sem_whatsapp", 409)
+    prova, digitos_certos = prova_de_posse(usuario)
+    if not digitos_certos:
+        # O painel exige CPF válido (Brasil) e WhatsApp com DDD; sem eles, não
+        # há como provar que é o motorista. Fecha em vez de pular a prova.
+        return _pagina_criar_senha(token, "sem_prova", 409)
     chave_tentativas = f"criar_senha_falha:{link['nonce'] or usuario['_id']}"
     contexto = {"email": usuario.get("email", ""), "primeiro_nome": _primeiro_nome(usuario.get("full_name", "")),
-                "plano": plano, "rotulo": PLANOS_ROTULO.get(plano, ""), "pedir_whatsapp": True,
+                "plano": plano, "rotulo": PLANOS_ROTULO.get(plano, ""), "prova": prova,
                 "pro_ativo": usuario.get("plan") in PAID_PLANS}
     try:
         tentativas = get_store().get_counter(chave_tentativas)
@@ -4147,14 +4155,21 @@ def criar_senha(token: str):
             # A tentativa conta ANTES de conferir, num passo só: ler e somar
             # depois deixava pedidos simultâneos passarem todos pelo teto (o
             # mesmo cuidado do conferir_senha_atual). Erro de senha não gasta.
+            # Sem o contador, não confere: conferir sem contar tiraria o teto.
             try:
-                if get_store().bump_counter(chave_tentativas) > CRIAR_SENHA_TENTATIVAS:
-                    return _pagina_criar_senha(token, "bloqueado", 429)
+                tentativa = get_store().bump_counter(chave_tentativas)
             except Exception as exc:
                 app.logger.warning("contador do criar senha indisponível: %s", exc)
-            digitado = re.sub(r"[^0-9]", "", request.form.get("final_whatsapp", ""))[-4:]
-            if not hmac.compare_digest(digitado.encode(), final_whatsapp.encode()):
-                erro = "Os 4 últimos números do WhatsApp não conferem com o do cadastro."
+                flash("Não conseguimos conferir agora. Tente de novo em alguns instantes.", "danger")
+                return _pagina_criar_senha(token, "formulario", 503, **contexto)
+            if tentativa > CRIAR_SENHA_TENTATIVAS:
+                return _pagina_criar_senha(token, "bloqueado", 429)
+            so_digitos = re.sub(r"[^0-9]", "", request.form.get("digitos", ""))
+            # Quem digitar o CPF inteiro também passa: valem os 4 primeiros.
+            digitado = so_digitos[:4] if prova == "cpf" else so_digitos[-4:]
+            if not hmac.compare_digest(digitado.encode(), digitos_certos.encode()):
+                erro = ("Os 4 primeiros números do CPF não conferem com o do cadastro." if prova == "cpf"
+                        else "Os 4 últimos números do WhatsApp não conferem com o do cadastro.")
         if erro:
             flash(erro, "danger")
             return _pagina_criar_senha(token, "formulario", 400, **contexto)
@@ -7023,7 +7038,7 @@ def admin_motorista_novo():
     try:
         pais, moeda = pais_e_moeda(request.form.get("pais"), request.form.get("moeda"))
         if not phone_e164(whatsapp, pais):
-            # É para onde vai o link, e o link de senha pede os 4 últimos números dele.
+            # É para onde vai o link (e, fora do Brasil, o link de senha pede os 4 últimos números dele).
             raise ValueError("Confira o WhatsApp: com DDD (fora do Brasil, com + e o código do país).")
         if pais == PAIS_PADRAO and not cpf_valido(cpf):
             raise ValueError("Confira o CPF: os dígitos não conferem.")

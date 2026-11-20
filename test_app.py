@@ -3395,15 +3395,17 @@ try:
     _h = r.get_data(as_text=True)
     check("criar senha: GET mostra o login, pede o final do WhatsApp, os Termos e o plano, sem gravar nada",
           r.status_code == 200 and _email_novo_lp in _h and "Ao criar a senha, você concorda" in _h
-          and 'name="final_whatsapp"' in _h and "Criar senha e ir para o pagamento" in _h
+          and 'name="digitos"' in _h and "os 4 primeiros números do seu CPF" in _h
+          and "Criar senha e ir para o pagamento" in _h
           and not (A.get_store().get_user_by_id(_novo_lp["_id"]) or {}).get("password_changed_at"), r.status_code)
     check("criar senha: pagina com token fora da busca, do cache e do Referer",
           "noindex" in r.headers.get("X-Robots-Tag", "") and r.headers.get("Cache-Control") == "no-store"
           and r.headers.get("Referrer-Policy") == "no-referrer" and _tok_senha not in _h.split("<body")[0],
           str(dict(r.headers))[:200])
-    _boa_lp = {"final_whatsapp": "7777", "senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"}
-    r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data={**_boa_lp, "final_whatsapp": "1234"}, base_url=_BASE_LP)
-    check("criar senha: sem o final certo do WhatsApp nao cria a senha (e-mail digitado errado, link encaminhado)",
+    # CPF do cadastro: 529.982.247-25. A prova sao os 4 primeiros numeros (nao vao em mensagem nenhuma).
+    _boa_lp = {"digitos": "5299", "senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"}
+    r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data={**_boa_lp, "digitos": "7777"}, base_url=_BASE_LP)
+    check("criar senha: sem os 4 primeiros do CPF nao cria a senha (nem com o final do WhatsApp, que vai na mensagem)",
           r.status_code == 400 and not (A.get_store().get_user_by_id(_novo_lp["_id"]) or {}).get("password_changed_at"),
           r.status_code)
     r = _cm_lp.post(f"/criar-senha/{_tok_senha}", data={**_boa_lp, "senha": "curta", "confirmar_senha": "curta"},
@@ -3455,10 +3457,10 @@ try:
     _novo2 = A.get_store().get_user_by_email(_email_novo2) or {}
     _tok_bloq = _token_de(_cadm_lp.get(f"/admin/motoristas/{_novo2.get('_id')}").get_data(as_text=True), "criar-senha")
     for _i in range(A.CRIAR_SENHA_TENTATIVAS):
-        A.app.test_client().post(f"/criar-senha/{_tok_bloq}", data={**_boa_lp, "final_whatsapp": f"{_i:04d}"},
+        A.app.test_client().post(f"/criar-senha/{_tok_bloq}", data={**_boa_lp, "digitos": f"{_i:04d}"},
                                  base_url=_BASE_LP)
-    r = A.app.test_client().post(f"/criar-senha/{_tok_bloq}", data={**_boa_lp, "final_whatsapp": "5432"}, base_url=_BASE_LP)
-    check("criar senha: depois de 5 erros no WhatsApp o link para, mesmo com o numero certo",
+    r = A.app.test_client().post(f"/criar-senha/{_tok_bloq}", data=_boa_lp, base_url=_BASE_LP)
+    check("criar senha: depois de 5 erros o link para, mesmo com os numeros certos",
           r.status_code == 429 and "Muitas tentativas" in r.get_data(as_text=True)
           and not (A.get_store().get_user_by_id(_novo2["_id"]) or {}).get("password_changed_at"), r.status_code)
     _ficha2 = _cadm_lp.get(f"/admin/motoristas/{_novo2['_id']}?senha_plano=pro_anual_pix").get_data(as_text=True)
@@ -3476,7 +3478,7 @@ try:
     check("criar senha: link velho com plano, para quem ja pagou, nao promete outro pagamento",
           r.status_code == 200 and "Seu Pro já está ativo" in _h and "ir para o pagamento" not in _h, r.status_code)
     _n_sess = len(_sf_lp.sessoes)
-    r = _c2.post(f"/criar-senha/{_tok_novo2}", data={**_boa_lp, "final_whatsapp": "5432"}, base_url=_BASE_LP)
+    r = _c2.post(f"/criar-senha/{_tok_novo2}", data=_boa_lp, base_url=_BASE_LP)
     check("criar senha: quem ja pagou cria a senha sem ser cobrado de novo",
           r.status_code == 302 and len(_sf_lp.sessoes) == _n_sess
           and "Tudo pronto" in _c2.get(r.headers.get("Location", "/"), base_url=_BASE_LP).get_data(as_text=True)
@@ -3529,16 +3531,39 @@ try:
     check("esqueci a senha: o link de 1 hora nao cria a senha de conta do painel",
           r.status_code == 302 and "/recuperar-senha" in r.headers.get("Location", "")
           and not (A.get_store().get_user_by_id(_novo3["_id"]) or {}).get("password_changed_at"), r.status_code)
-    r = A.app.test_client().post(f"/criar-senha/{_tok3}", data={**_boa_lp, "final_whatsapp": "\u0663\u0662\u0661\u0660"},
+    r = A.app.test_client().post(f"/criar-senha/{_tok3}", data={**_boa_lp, "digitos": "\u0665\u0662\u0669\u0669"},
                                  base_url=_BASE_LP)
-    check("criar senha: digitos fora do ASCII sao recusados sem erro 500", r.status_code == 400, r.status_code)
-    with A.get_store().pool.connection() as _conn:
-        _cands = A.candidatos_do_modelo(
-            _conn, {"id": str(A.uuid4()), "trigger": "signup", "trigger_value": 0, "send_hour": 0, "scheduled_at": None},
-            A.datetime.now(A.timezone.utc), 0, 50, restringir_a=[_novo3["_id"], _comum_lp["_id"]])
-    _ids_cands = {str(c["id"]) for c in _cands}
-    check("regua de e-mails: conta do painel sem senha fica de fora ate criar a senha; cadastro comum entra",
+    check("criar senha: digitos fora do ASCII (5299 em arabe) sao recusados sem erro 500", r.status_code == 400, r.status_code)
+    def _na_regua(ids):
+        with A.get_store().pool.connection() as _conn:
+            return {str(c["id"]) for c in A.candidatos_do_modelo(
+                _conn, {"id": str(A.uuid4()), "trigger": "signup", "trigger_value": 0, "send_hour": 0,
+                        "scheduled_at": None},
+                A.datetime.now(A.timezone.utc), 0, 50, restringir_a=ids)}
+    _ids_cands = _na_regua([_novo3["_id"], _comum_lp["_id"]])
+    check("regua de e-mails: conta do painel sem senha fica de fora; cadastro comum entra",
           _novo3["_id"] not in _ids_cands and _comum_lp["_id"] in _ids_cands, str(_ids_cands))
+    # Banco fora para o contador: nao confere (conferir sem contar tiraria o teto).
+    _st_lp = A.get_store()
+    _bump_orig = _st_lp.bump_counter
+    _st_lp.bump_counter = lambda chave: (_ for _ in ()).throw(RuntimeError("banco caiu"))
+    try:
+        r = A.app.test_client().post(f"/criar-senha/{_tok3}", data=_boa_lp, base_url=_BASE_LP)
+    finally:
+        _st_lp.bump_counter = _bump_orig
+    check("criar senha: sem o contador de tentativas, nao confere nem cria a senha (503)",
+          r.status_code == 503 and not (A.get_store().get_user_by_id(_novo3["_id"]) or {}).get("password_changed_at"),
+          r.status_code)
+    r = A.app.test_client().post(f"/criar-senha/{_tok3}", data={**_boa_lp, "digitos": "529.982.247-25"}, base_url=_BASE_LP)
+    check("criar senha: o link do 'Esqueci minha senha' cria a senha com o CPF (digitado inteiro tambem vale)",
+          r.status_code == 302 and bool((A.get_store().get_user_by_id(_novo3["_id"]) or {}).get("password_changed_at")),
+          r.status_code)
+    check("regua de e-mails: criada a senha, a conta do painel entra na regua",
+          _novo3["_id"] in _na_regua([_novo3["_id"]]))
+    check("prova de posse: CPF no Brasil, final do WhatsApp fora; sem dado valido, nada",
+          A.prova_de_posse({"country": "BR", "cpf": "529.982.247-25", "whatsapp": "11 98888-7777"}) == ("cpf", "5299")
+          and A.prova_de_posse({"country": "CR", "cpf": "", "whatsapp": "+506 8888-1234"}) == ("whatsapp", "1234")
+          and A.prova_de_posse({"country": "BR", "cpf": "123", "whatsapp": "11 98888-7777"}) == ("", ""))
 
     # Link de pagamento, sem login.
     _ficha_comum = _cadm_lp.get(f"/admin/motoristas/{_comum_lp['_id']}?link=pro_anual_pix").get_data(as_text=True)
@@ -3611,8 +3636,20 @@ try:
     if _agora_br.hour or _agora_br.minute >= 2:
         r = A.app.test_client().get(f"/pagar/{_token_antigo(7 * 86400 + 60, 'antigo1' + _suf_lp)}", base_url=_BASE_LP)
         check("pagar: no ultimo dia o link vale ate as 23:59, mesmo depois de 7 x 24 h", r.status_code == 200, r.status_code)
-    r = A.app.test_client().get(f"/pagar/{_token_antigo(8 * 86400 + 3600, 'antigo2' + _suf_lp)}", base_url=_BASE_LP)
-    check("pagar: no dia seguinte ao ultimo, o link venceu", r.status_code == 410, r.status_code)
+    # Gerado as 23:59 de 8 dias atras: o ultimo dia foi ontem, e o token ainda
+    # esta dentro do teto de 8 x 24 h da assinatura (quem decide e o fim do dia).
+    _desde_meia_noite = (_agora_br - _agora_br.replace(hour=0, minute=0, second=0, microsecond=0)).seconds
+    _seg_ontem = 7 * 86400 + _desde_meia_noite + 60
+    if _seg_ontem < 8 * 86400 - 60:
+        _tok_ontem = _token_antigo(_seg_ontem, "antigo2" + _suf_lp)
+        r = A.app.test_client().get(f"/pagar/{_tok_ontem}", base_url=_BASE_LP)
+        check("pagar: no dia seguinte ao ultimo, o link venceu (pelo fim do dia, nao pelo teto da assinatura)",
+              r.status_code == 410, r.status_code)
+        r = A.app.test_client().get(f"/pagar/{_tok_ontem}/pronto", base_url=_BASE_LP)
+        check("pagar: a pagina de volta da Stripe tem 2 dias de folga depois do ultimo dia", r.status_code == 200,
+              r.status_code)
+    r = A.app.test_client().get(f"/pagar/{_token_antigo(8 * 86400 + 3600, 'antigo3' + _suf_lp)}", base_url=_BASE_LP)
+    check("pagar: passado o teto de 8 x 24 h, o link venceu", r.status_code == 410, r.status_code)
     # O contador "ja pago" e limpo em 7 dias; o registro de cobrancas segura o link.
     A.get_store().reset_counter(f"link_pago:{_meta_pix.get('link')}")
     _n_sess = len(_sf_lp.sessoes)

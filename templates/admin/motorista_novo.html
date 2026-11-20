@@ -10,7 +10,7 @@
   <div class="col-lg-7">
     <section class="adm-painel">
       <h2 class="adm-h2"><i class="bi bi-person-plus-fill me-2"></i>Cadastrar pelo painel</h2>
-      <p class="adm-suave">Só com o pedido do motorista e os dados que ele passou. A conta nasce sem senha conhecida: ele cria a dele pelo link que aparece na ficha, para mandar pelo WhatsApp (vale 7 dias e pede os 4 últimos números do WhatsApp dele). Não existe senha padrão. O e-mail não sai sozinho: leia o endereço de volta para ele, letra por letra, antes de usar o botão de e-mail da ficha.</p>
+      <p class="adm-suave">Só com o pedido do motorista e os dados que ele passou. A conta nasce sem senha conhecida: ele cria a dele pelo link que aparece na ficha, para mandar pelo WhatsApp (vale 7 dias e pede os 4 primeiros números do CPF dele; fora do Brasil, os 4 últimos do WhatsApp). Não existe senha padrão. O e-mail não sai sozinho: leia o endereço de volta para ele, letra por letra, antes de usar o botão de e-mail da ficha.</p>
       {% set f = form or {} %}
       <form action="{{ url_for('admin_motorista_novo') }}" method="post" novalidate>
         <input type="hidden" name="csrf" value="{{ admin_csrf }}">

@@ -226,8 +226,9 @@ todos só do admin:
   nasce com senha aleatória que ninguém vê e com `criado_pelo_painel` no
   `app_metadata` do Auth (o motorista não edita). A ficha mostra o link
   `/criar-senha/<token>` para mandar pelo WhatsApp: vale 7 dias, morre no
-  primeiro uso, pede os 4 últimos números do WhatsApp do cadastro (5 erros por
-  link, contados antes de conferir), cria a senha, entra no site e, se o admin
+  primeiro uso, pede os 4 primeiros números do CPF do cadastro (fora do Brasil, os
+  4 últimos do WhatsApp; o CPF tem dígito verificador e não vai em nenhuma
+  mensagem), com 5 erros por link, contados antes de conferir, cria a senha, entra no site e, se o admin
   escolheu um plano e ele ainda está no Grátis, segue para o pagamento. O e-mail
   não sai sozinho: foi ditado por telefone, e um endereço errado entregaria a
   conta a outra pessoa. Por isso, enquanto a conta não tem senha, o "Esqueci

@@ -3560,6 +3560,15 @@ try:
           r.status_code)
     check("regua de e-mails: criada a senha, a conta do painel entra na regua",
           _novo3["_id"] in _na_regua([_novo3["_id"]]))
+    # Ele pediu para nao ser procurado: a marca da conta para todas as ofertas.
+    r = _cadm_lp.post(f"/admin/motoristas/{_novo3['_id']}/sem-ofertas", data={"csrf": ""})
+    check("ficha: parar ofertas sem csrf da 400", r.status_code == 400, r.status_code)
+    r = _cadm_lp.post(f"/admin/motoristas/{_novo3['_id']}/sem-ofertas", data={"csrf": _csrf_lp})
+    _f3 = _cadm_lp.get(f"/admin/motoristas/{_novo3['_id']}").get_data(as_text=True)
+    check("ficha: parar ofertas marca a conta, avisa no Vender o Pro e tira da regua de e-mails",
+          r.status_code == 302 and "descadastrado em" in _f3 and "não ofereça nada a ele" in _f3
+          and "Ele pediu para não receber ofertas" in _f3 and _novo3["_id"] not in _na_regua([_novo3["_id"]]),
+          r.status_code)
     check("prova de posse: CPF no Brasil, final do WhatsApp fora; sem dado valido, nada",
           A.prova_de_posse({"country": "BR", "cpf": "529.982.247-25", "whatsapp": "11 98888-7777"}) == ("cpf", "5299")
           and A.prova_de_posse({"country": "CR", "cpf": "", "whatsapp": "+506 8888-1234"}) == ("whatsapp", "1234")
@@ -3773,6 +3782,24 @@ finally:
             os.environ.pop(_k, None)
         else:
             os.environ[_k] = _v
+
+# -- Politica e Termos: venda por telefone (2026-11-19) -----------------------
+# O representante de vendas e as ligacoes so comecam 15 dias depois da
+# publicacao, como a propria Politica promete para mudanca relevante.
+print("\n-- Politica e Termos: venda por telefone --")
+_pol = A.app.test_client().get("/privacidade").get_data(as_text=True)
+check("politica: aviso do que mudou, com a data de inicio das ligacoes",
+      "O que mudou em" in _pol and A.POLITICA_ATUALIZADA_EM in _pol and A.CONTATO_DE_VENDAS_A_PARTIR in _pol)
+check("politica: representante de vendas como operador, com sigilo, sem CPF nem pagamentos",
+      "Representante de vendas" in _pol and "dever de sigilo" in _pol and "não recebe pagamentos" in _pol
+      and "Não acessa" in _pol)
+check("politica: pagamento so pelo link do Recibo Taxi (contra golpe)", "https://www.recibotaxi.com.br/pagar/" in _pol)
+check("politica: conta criada pela equipe e o direito de se opor as ofertas",
+      "Conta criada pela nossa equipe" in _pol and "Se opor ao contato com ofertas" in _pol)
+_ter = A.app.test_client().get("/termos").get_data(as_text=True)
+check("termos: venda por telefone e link de pagamento (6.9) e conta criada pela equipe",
+      "6.9 Venda por telefone e link de pagamento" in _ter and "A conta pode ser criada pela nossa equipe" in _ter
+      and A.CONTATO_DE_VENDAS_A_PARTIR in _ter and A.POLITICA_ATUALIZADA_EM in _ter)
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

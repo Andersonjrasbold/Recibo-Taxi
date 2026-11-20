@@ -25,7 +25,11 @@
         <tr><td>Último login</td><td>{{ m.last_sign_in_at | data_br }}</td></tr>
         <tr><td>Sessões vivas</td><td>{{ sessoes if sessoes is not none else '-' }}</td></tr>
         <tr><td>E-mails enviados hoje</td><td>{{ emails_hoje }}</td></tr>
-        <tr><td>E-mails automáticos</td><td>{% if automacao is none %}-{% elif automacao.marketing_optout_at %}<span class="adm-falha">descadastrado em {{ automacao.marketing_optout_at | data_br }}</span>{% else %}{{ automacao.recebidos }} recebido(s){% if automacao.ultimo %}, o último em {{ automacao.ultimo | data_br }}{% endif %}{% endif %}</td></tr>
+        <tr><td>Ofertas (e-mail, WhatsApp, telefone)</td><td>{% if automacao is none %}-{% elif automacao.marketing_optout_at %}<span class="adm-falha">descadastrado em {{ automacao.marketing_optout_at | data_br }}</span>: não ofereça nada a ele{% else %}{{ automacao.recebidos }} e-mail(s) recebido(s){% if automacao.ultimo %}, o último em {{ automacao.ultimo | data_br }}{% endif %}
+          <form action="{{ url_for('admin_sem_ofertas', driver_id=m['_id']) }}" method="post" class="mt-1" id="formSemOfertas">
+            <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+            <button type="submit" class="adm-botao adm-botao-perigo" title="Ele pediu para não ser procurado"><i class="bi bi-slash-circle me-1"></i>Parar ofertas</button>
+          </form>{% endif %}</td></tr>
         {% if m.banned_until %}<tr><td>Bloqueado até</td><td class="adm-falha">{{ m.banned_until | data_br }}</td></tr>{% endif %}
       </table>
       <p class="adm-suave">CPF mascarado de propósito: o painel não precisa do número inteiro para dar suporte.</p>
@@ -105,6 +109,7 @@
       <p class="adm-suave">Ele já assina pela App Store ou pelo Google Play. Para mudar para o site, ele desliga a renovação na loja e espera o período pago acabar; até lá, o link só mostraria que ele já é Pro.</p>
       {% endif %}
       {% else %}
+      {% if automacao and automacao.marketing_optout_at %}<p class="adm-falha">Ele pediu para não receber ofertas: só mande link se ele mesmo pedir.</p>{% endif %}
       <p class="adm-suave">Link de pagamento só deste motorista, sem login: ele confere o plano, paga na Stripe e vira Pro sozinho (o app mostra na próxima abertura). Vale 7 dias e não cobra duas vezes. Gerar não grava nada.</p>
       <form method="get" action="{{ url_for('admin_motorista', driver_id=m['_id']) }}#vender" class="d-flex gap-2 align-items-end flex-wrap">
         {# Mantém o plano do link de senha que já estava na tela. #}
@@ -208,6 +213,14 @@
 {% block scripts %}
 {% include "admin/_copiar.html" %}
 <script nonce="{{ csp_nonce }}">
+  var formSemOfertas = document.getElementById('formSemOfertas');
+  if (formSemOfertas) {
+    formSemOfertas.addEventListener('submit', function (event) {
+      if (!window.confirm('Ele pediu para não ser procurado? Ele sai da régua de e-mails e não deve mais receber ligação nem mensagem de venda.')) {
+        event.preventDefault();
+      }
+    });
+  }
   var formExcluir = document.getElementById('formExcluirMotorista');
   if (formExcluir) {
     formExcluir.addEventListener('submit', function (event) {

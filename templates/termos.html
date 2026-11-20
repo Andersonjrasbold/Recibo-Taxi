@@ -27,7 +27,8 @@
 
           <h2 class="legal-h2">1. Aceitação</h2>
           <p>
-            Ao criar uma conta, gerar um recibo ou usar de qualquer forma o {{ app_name }}, você
+            Ao criar uma conta (ou a sua senha, quando a nossa equipe criou a conta a seu pedido), gerar
+            um recibo ou usar de qualquer forma o {{ app_name }}, você
             concorda com estes Termos de Uso e com a
             <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>. Se não concordar,
             não utilize o serviço.
@@ -60,6 +61,8 @@
           <ul class="legal-list">
             <li>Você precisa ter 18 anos ou mais e ser motorista de táxi habilitado.</li>
             <li>As informações do cadastro devem ser verdadeiras, completas e atualizadas.</li>
+            <li>A conta pode ser criada pela nossa equipe, a seu pedido, com os dados que você informar.
+                Ao criar a senha, você confere esses dados e aceita estes Termos.</li>
             <li>A senha é pessoal e intransferível. Você responde pelo que for feito na sua conta.</li>
             <li>Avise imediatamente em caso de suspeita de acesso indevido.</li>
             <li>Uma conta por motorista. Contas compartilhadas podem ser suspensas.</li>
@@ -191,6 +194,20 @@
             <li>Os meses de Pro ganhos não são assinatura: têm data de fim, somam-se entre si e não geram cobrança. Quem já assina o Pro não recebe o mês grátis.</li>
             <li>Contas criadas só para obter a recompensa (sem uso real, dados falsos ou repetidos) podem ser removidas junto com a recompensa.</li>
             <li>O programa pode ser alterado ou encerrado a qualquer momento, com aviso no site. O que já foi concedido continua valendo até o fim do prazo.</li>
+          </ul>
+
+          <h3 class="legal-h3">6.9 Venda por telefone e link de pagamento</h3>
+          <ul class="legal-list">
+            <li>A nossa equipe pode oferecer o Pro por WhatsApp e, a partir de {{ vendas_a_partir }}, também por
+                telefone e por um representante de vendas contratado por nós (veja a
+                <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>).</li>
+            <li>O pagamento é feito sempre na Stripe, por um link pessoal do recibotaxi.com.br
+                (<code>https://www.recibotaxi.com.br/pagar/...</code>), que vale até o fim do 7º dia. A
+                página do link mostra o plano, o preço e as regras antes de cobrar.</li>
+            <li>Valem as mesmas regras deste item 6: renovação, cancelamento e direito de arrependimento.</li>
+            <li>Ninguém da nossa equipe, nem o representante, pede pagamento em dinheiro, transferência ou
+                Pix para outra pessoa. Se pedirem, não pague e avise em
+                <a href="mailto:suporte@recibotaxi.com.br">suporte@recibotaxi.com.br</a>.</li>
           </ul>
 
           <h2 class="legal-h2">7. Encerramento da conta</h2>

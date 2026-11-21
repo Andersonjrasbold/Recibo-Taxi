@@ -384,11 +384,11 @@ PLANOS_DO_LINK = {
     "pro_anual": f"Anual no cartão: {PRECO_PRO_ANUAL} por ano, renova sozinho",
     "pro": f"Mensal no cartão: {PRECO_PRO_MENSAL} por mês, renova sozinho",
 }
-# Política e Termos de 2026-11-19 (venda por telefone com representante). A
+# Política e Termos de 2026-11-21 (venda por telefone com representante). A
 # própria Política promete 15 dias de aviso para mudança relevante: as ligações e
 # o representante de vendas só começam nesta data, e o aviso vai por e-mail.
-POLITICA_ATUALIZADA_EM = "19 de novembro de 2026"
-CONTATO_DE_VENDAS_A_PARTIR = "04/12/2026"
+POLITICA_ATUALIZADA_EM = "21 de novembro de 2026"
+CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
 # Marca, no app_metadata do Supabase Auth, a conta que o painel criou. O
 # app_metadata o motorista não consegue editar (o user_metadata, sim).
 MARCA_CRIADO_PELO_PAINEL = "criado_pelo_painel"

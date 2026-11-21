@@ -1,7 +1,9 @@
 import atexit
+import calendar
 import hashlib
 import json
 import hmac
+import math
 import os
 import re
 import secrets
@@ -6212,6 +6214,305 @@ def _com_maximo(serie: list[dict], campo: str) -> list[dict]:
     return serie
 
 
+# ── Painel: faturamento mês a mês e cliques do /baixar (gráficos) ────────────
+# Pedido do Anderson em 2026-11-21. Os gráficos são SVG montado aqui e no
+# template (o painel não carrega biblioteca de gráfico); o JavaScript só faz o
+# destaque ao passar o mouse, e a tabela embaixo de cada um vale sem ele.
+
+# O gráfico mostra sempre 12 meses antes, o mês atual no centro e 12 depois
+# (pedido do Anderson em 2026-11-21).
+FATURAMENTO_MESES_PASSADOS = 12
+FATURAMENTO_MESES_FUTUROS = 12
+# Cobrança da Stripe a partir deste valor é do anual. Os preços são 9,90 e
+# 19,90 (mensal) e 59,90 e 119,90 (anual); a troca do mensal pelo anual cobra o
+# anual menos o que sobrou do mês, sempre acima disto.
+FATURAMENTO_ANUAL_MINIMO = Decimal("30")
+# Ordem de baixo para cima na pilha e nas legendas; a cor segue o tipo.
+FATURAMENTO_TIPOS = (
+    ("mensal", "Assinatura mensal"),
+    ("anual", "Assinatura anual"),
+    ("unico", "Anual pago uma vez (Pix ou cartão)"),
+)
+CLIQUES_DIAS = 60
+CLIQUES_CANAIS = 6          # os demais somam em "outros"
+GRAFICO_LARGURA, GRAFICO_ALTURA = 960, 300
+GRAFICO_MARGEM = {"esq": 60, "dir": 16, "topo": 18, "base": 46}
+
+
+def _somar_meses(ano: int, mes: int, n: int) -> tuple[int, int]:
+    total = ano * 12 + (mes - 1) + n
+    return total // 12, total % 12 + 1
+
+
+def _datahora_mais_meses(quando: datetime, n: int) -> datetime:
+    ano, mes = _somar_meses(quando.year, quando.month, n)
+    return quando.replace(year=ano, month=mes, day=min(quando.day, calendar.monthrange(ano, mes)[1]))
+
+
+def _chave_mes(quando: datetime) -> str:
+    return quando.astimezone(BR_TZ).strftime("%Y-%m")
+
+
+MESES_CURTOS = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
+
+
+def _campo(obj, *caminho, padrao=None):
+    """obj[a][b]... de um objeto da Stripe (ou dict), sem estourar no que falta."""
+    atual = obj
+    for chave in caminho:
+        try:
+            atual = atual[chave]
+        except (KeyError, IndexError, TypeError, AttributeError):
+            return padrao
+        if atual is None:
+            return padrao
+    return atual
+
+
+def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]:
+    """(cobranças pagas das assinaturas do site, próximas cobranças, erro).
+
+    O webhook não assina invoice.*, então as renovações da Stripe não chegam
+    ao servidor: o painel pergunta à própria Stripe. Faturas pagas trazem a
+    primeira cobrança e as renovações; o pagamento único (Pix ou cartão) não
+    gera fatura e vem do registro de cobranças. As assinaturas que não foram
+    canceladas dizem quanto e quando cobram de novo.
+    """
+    stripe = get_stripe()
+    if not stripe:
+        return [], [], "a Stripe não está configurada"
+    pagas, proximas = [], []
+    try:
+        for fatura in stripe.Invoice.list(status="paid", created={"gte": int(desde.timestamp())},
+                                          limit=100).auto_paging_iter():
+            valor = Decimal(int(_campo(fatura, "amount_paid", padrao=0))) / 100
+            if valor <= 0 or not _campo(fatura, "livemode", padrao=False) \
+                    or str(_campo(fatura, "currency", padrao="")).lower() != "brl":
+                continue
+            momento = int(_campo(fatura, "status_transitions", "paid_at", padrao=0)
+                          or _campo(fatura, "created", padrao=0))
+            pagas.append({"mes": _chave_mes(datetime.fromtimestamp(momento, timezone.utc)), "valor": valor,
+                          "tipo": "anual" if valor >= FATURAMENTO_ANUAL_MINIMO else "mensal",
+                          "origem": "Stripe (site)"})
+        # Sem `status`, a Stripe devolve as que não foram canceladas.
+        for assinatura in stripe.Subscription.list(limit=100).auto_paging_iter():
+            if _campo(assinatura, "status") not in ACTIVE_SUBSCRIPTION_STATUSES \
+                    or _campo(assinatura, "cancel_at_period_end", padrao=False) \
+                    or not _campo(assinatura, "livemode", padrao=False):
+                continue
+            item = _campo(assinatura, "items", "data", 0, padrao={})
+            valor = Decimal(int(_campo(item, "price", "unit_amount", padrao=0))) \
+                * int(_campo(item, "quantity", padrao=1)) / 100
+            # Desde a API de 2025 o fim do período mora no item da assinatura.
+            fim = _campo(item, "current_period_end") or _campo(assinatura, "current_period_end")
+            if valor <= 0 or not fim or str(_campo(item, "price", "currency", padrao="brl")).lower() != "brl":
+                continue
+            proximas.append({
+                "valor": valor, "proxima": datetime.fromtimestamp(int(fim), timezone.utc),
+                "tipo": "anual" if _campo(item, "price", "recurring", "interval") == "year" else "mensal",
+                "origem": "Stripe (site)"})
+    except Exception as exc:
+        app.logger.warning("admin: faturamento da Stripe indisponível: %s", exc)
+        return pagas, proximas, "a Stripe não respondeu; o que veio do site pode estar faltando"
+    return pagas, proximas, ""
+
+
+def _escala(maximo: float, passos: int = 4) -> tuple[float, list[float]]:
+    """Topo do eixo e marcas redondas (1, 2, 2,5, 5 × 10^n)."""
+    if maximo <= 0:
+        return 1.0, [0.0, 1.0]
+    bruto = maximo / passos
+    potencia = 10 ** math.floor(math.log10(bruto))
+    passo = next(m * potencia for m in (1, 2, 2.5, 5, 10) if m * potencia >= bruto)
+    topo = passo * math.ceil(maximo / passo - 1e-9)
+    return topo, [passo * i for i in range(int(round(topo / passo)) + 1)]
+
+
+def _barra_arredondada(x: float, topo: float, largura: float, base: float, raio: float = 4) -> str:
+    """Caminho SVG de barra com o topo arredondado e a base reta."""
+    altura = base - topo
+    raio = max(0.0, min(raio, largura / 2, altura))
+    return (f"M{x:.1f},{base:.1f}V{topo + raio:.1f}Q{x:.1f},{topo:.1f} {x + raio:.1f},{topo:.1f}"
+            f"H{x + largura - raio:.1f}Q{x + largura:.1f},{topo:.1f} {x + largura:.1f},{topo + raio:.1f}"
+            f"V{base:.1f}Z")
+
+
+def montar_faturamento(d: dict, agora: datetime | None = None, da_stripe=None) -> dict:
+    """Faturamento bruto mês a mês: o que entrou nos FATURAMENTO_MESES_PASSADOS
+    meses anteriores, o mês atual no centro e o que as assinaturas ativas vão
+    cobrar nos FATURAMENTO_MESES_FUTUROS meses seguintes.
+
+    O mensal entra todo mês; o anual entra uma vez, no mês da cobrança (e de
+    novo 12 meses depois, se renovar); o pago uma vez não se repete. A previsão
+    supõe que ninguém cancela e ninguém novo entra.
+    """
+    agora = agora or datetime.now(timezone.utc)
+    local = agora.astimezone(BR_TZ)
+    mes_atual = (local.year, local.month)
+    inicio = _somar_meses(*mes_atual, -FATURAMENTO_MESES_PASSADOS)
+    zero = {tipo: Decimal(0) for tipo, _ in FATURAMENTO_TIPOS}
+    realizado: dict[str, dict] = {}
+    previsto: dict[str, dict] = {}
+
+    def somar(alvo: dict, mes: str, tipo: str, valor) -> None:
+        alvo.setdefault(mes, dict(zero))[tipo] += Decimal(str(valor or 0))
+
+    for linha in d.get("fat_loja") or []:
+        somar(realizado, linha["mes"], linha["tipo"], linha["valor"])
+    for linha in d.get("fat_unico") or []:
+        somar(realizado, linha["mes"], "unico", linha["valor"])
+    pagas, proximas, erro = da_stripe if da_stripe is not None else faturamento_da_stripe(
+        datetime(inicio[0], inicio[1], 1, tzinfo=BR_TZ))
+    for paga in pagas:
+        somar(realizado, paga["mes"], paga["tipo"], paga["valor"])
+    proximas = list(proximas)
+    for linha in d.get("fat_loja_ativas") or []:
+        if linha.get("vence_ms") and linha.get("price"):
+            proximas.append({"valor": Decimal(str(linha["price"])), "origem": "loja",
+                             "proxima": datetime.fromtimestamp(int(linha["vence_ms"]) / 1000, timezone.utc),
+                             "tipo": "anual" if linha.get("cycle") == "anual" else "mensal"})
+
+    fim = _somar_meses(*mes_atual, FATURAMENTO_MESES_FUTUROS)
+    for cobranca in proximas:
+        passo = 12 if cobranca["tipo"] == "anual" else 1
+        quando = cobranca["proxima"]
+        # Venceu sem a renovação chegar (webhook atrasado): conta como renovada.
+        while quando < agora:
+            quando = _datahora_mais_meses(quando, passo)
+        while (quando.astimezone(BR_TZ).year, quando.astimezone(BR_TZ).month) <= fim:
+            somar(previsto, _chave_mes(quando), cobranca["tipo"], cobranca["valor"])
+            quando = _datahora_mais_meses(quando, passo)
+
+    # Janela fixa: o mês atual fica sempre no centro do gráfico.
+    primeiro = inicio
+    meses = []
+    ano, mes = primeiro
+    while (ano, mes) <= fim:
+        chave = f"{ano:04d}-{mes:02d}"
+        r, p = realizado.get(chave, dict(zero)), previsto.get(chave, dict(zero))
+        meses.append({
+            "chave": chave, "rotulo": f"{MESES_CURTOS[mes - 1]}/{ano % 100:02d}",
+            "nome": f"{MESES_CURTOS[mes - 1]} {ano}", "mes_curto": MESES_CURTOS[mes - 1], "ano": ano,
+            "mostra_ano": mes == 1 or (ano, mes) == primeiro,
+            "futuro": (ano, mes) > mes_atual, "atual": (ano, mes) == mes_atual,
+            "realizado": r, "previsto": p,
+            "total_realizado": sum(r.values()), "total_previsto": sum(p.values()),
+        })
+        ano, mes = _somar_meses(ano, mes, 1)
+    for m in meses:
+        m["total"] = m["total_realizado"] + m["total_previsto"]
+        linhas = []
+        for tipo, rotulo in FATURAMENTO_TIPOS:
+            if m["realizado"][tipo]:
+                linhas.append({"tipo": tipo, "previsto": False, "rotulo": rotulo,
+                               "valor": filtro_brl(m["realizado"][tipo])})
+            if m["previsto"][tipo]:
+                linhas.append({"tipo": tipo, "previsto": True, "rotulo": f"{rotulo} (previsão)",
+                               "valor": filtro_brl(m["previsto"][tipo])})
+        m["dica"] = {"titulo": m["nome"] + (" · previsão" if m["futuro"] else " · até agora e previsão" if m["atual"] else ""),
+                     "total": filtro_brl(m["total"]), "linhas": linhas}
+
+    # Geometria do gráfico (coordenadas do viewBox).
+    margem = GRAFICO_MARGEM
+    largura_util = GRAFICO_LARGURA - margem["esq"] - margem["dir"]
+    altura_util = GRAFICO_ALTURA - margem["topo"] - margem["base"]
+    base = margem["topo"] + altura_util
+    topo_eixo, marcas = _escala(float(max((m["total"] for m in meses), default=0)))
+    vaga = largura_util / max(len(meses), 1)
+    largura_barra = min(24.0, vaga * 0.6)
+    for i, m in enumerate(meses):
+        x = margem["esq"] + i * vaga + (vaga - largura_barra) / 2
+        m["x"], m["x_centro"], m["vaga_x"], m["vaga"] = x, x + largura_barra / 2, margem["esq"] + i * vaga, vaga
+        pilha = [(tipo, "realizado", m["realizado"][tipo]) for tipo, _ in FATURAMENTO_TIPOS] \
+            + [(tipo, "previsto", m["previsto"][tipo]) for tipo, _ in FATURAMENTO_TIPOS]
+        pilha = [(t, f, v) for t, f, v in pilha if v > 0]
+        segmentos, y = [], base
+        for k, (tipo, fase, valor) in enumerate(pilha):
+            altura = float(valor) / topo_eixo * altura_util
+            de, ate = y - altura, y
+            # 2 unidades de fundo entre segmentos vizinhos (1 de cada lado).
+            if k > 0 and altura > 3:
+                ate -= 1
+            if k < len(pilha) - 1 and altura > 3:
+                de += 1
+            ultimo = k == len(pilha) - 1
+            segmentos.append({"tipo": tipo, "fase": fase, "y": de, "altura": max(ate - de, 0.5),
+                              "caminho": _barra_arredondada(x, de, largura_barra, ate) if ultimo else ""})
+            y -= altura
+        m["segmentos"], m["y_topo"] = segmentos, y
+    divisa = next((m["vaga_x"] + m["vaga"] for m in meses if m["atual"]), None)
+    return {
+        "meses": meses, "tipos": FATURAMENTO_TIPOS, "erro_stripe": erro,
+        "marcas": [{"valor": v, "y": base - v / topo_eixo * altura_util} for v in marcas],
+        "largura": GRAFICO_LARGURA, "altura": GRAFICO_ALTURA, "base": base, "margem": margem,
+        "largura_barra": largura_barra, "divisa_x": divisa,
+        # Tudo o que já entrou na janela: os 12 meses anteriores e o atual até agora.
+        "ultimos_12m": sum((m["total_realizado"] for m in meses if not m["futuro"]), Decimal(0)),
+        "este_mes": next((m["total_realizado"] for m in meses if m["atual"]), Decimal(0)),
+        "previsto_12m": sum((m["total_previsto"] for m in meses), Decimal(0)),
+        "assinaturas_previstas": len(proximas),
+        # Seções do banco que falharam: o gráfico sairia menor sem dizer por quê.
+        "faltando": [n for n in ("fat_loja", "fat_unico", "fat_loja_ativas") if n in d and d[n] is None],
+    }
+
+
+def montar_cliques_por_dia(linhas: list[dict] | None, hoje=None) -> dict | None:
+    """Cliques no /baixar por dia: o total e os canais que mais trouxeram."""
+    if linhas is None:
+        return None
+    hoje = hoje or datetime.now(BR_TZ).date()
+    por_canal: dict[str, int] = {}
+    for linha in linhas:
+        por_canal[linha["canal"]] = por_canal.get(linha["canal"], 0) + int(linha["n"] or 0)
+    # Ordem fixa pelo volume do período: a cor segue o canal, não a posição do dia.
+    ordem = sorted(por_canal, key=lambda c: (-por_canal[c], c))
+    canais = ordem[:CLIQUES_CANAIS]
+    nomes = canais + (["outros"] if len(ordem) > len(canais) else [])
+    # Começa no primeiro dia com clique: antes disso não havia contagem, e um
+    # trecho zerado pareceria "ninguém clicou".
+    primeiro = min((l["dia"] for l in linhas), default=hoje)
+    primeiro = max(primeiro, hoje - timedelta(days=CLIQUES_DIAS - 1))
+    dias = [primeiro + timedelta(days=i) for i in range((hoje - primeiro).days + 1)]
+    valores: dict[tuple[str, str], int] = {}
+    for linha in linhas:
+        chave = (str(linha["dia"]), linha["canal"] if linha["canal"] in canais else "outros")
+        valores[chave] = valores.get(chave, 0) + int(linha["n"] or 0)
+    serie = []
+    for dia in dias:
+        por_dia = {nome: valores.get((dia.isoformat(), nome), 0) for nome in nomes}
+        serie.append({"dia": dia, "rotulo": dia.strftime("%d/%m"), "canais": por_dia, "total": sum(por_dia.values())})
+
+    margem = GRAFICO_MARGEM
+    largura_util = GRAFICO_LARGURA - margem["esq"] - margem["dir"]
+    altura_util = GRAFICO_ALTURA - margem["topo"] - margem["base"]
+    base = margem["topo"] + altura_util
+    topo_eixo, marcas = _escala(float(max((p["total"] for p in serie), default=0)))
+    passo_x = largura_util / max(len(serie) - 1, 1)
+    for i, p in enumerate(serie):
+        p["x"] = margem["esq"] + i * passo_x if len(serie) > 1 else margem["esq"] + largura_util / 2
+
+    def linha_de(chave_valor) -> str:
+        return " ".join(f"{p['x']:.1f},{base - chave_valor(p) / topo_eixo * altura_util:.1f}" for p in serie)
+
+    linhas_svg = [{"nome": "total", "rotulo": "Total", "pontos": linha_de(lambda p: p["total"]),
+                   "fim_y": base - serie[-1]["total"] / topo_eixo * altura_util if serie else base,
+                   "soma": sum(p["total"] for p in serie)}]
+    for i, nome in enumerate(nomes):
+        linhas_svg.append({"nome": nome, "rotulo": nome, "serie": i + 1,
+                           "pontos": linha_de(lambda p, n=nome: p["canais"][n]),
+                           "soma": sum(p["canais"][nome] for p in serie)})
+    rotulos_x = [p for i, p in enumerate(serie) if i % 7 == (len(serie) - 1) % 7]
+    # O que a dica mostra em cada dia (o JavaScript só lê; tudo está na tabela).
+    dados_js = [{"x": round(p["x"], 1), "titulo": p["dia"].strftime("%d/%m/%Y"), "total": p["total"],
+                 "canais": [[nome, p["canais"][nome]] for nome in nomes]} for p in serie]
+    return {
+        "serie": serie, "canais": nomes, "linhas": linhas_svg, "rotulos_x": rotulos_x, "dados_js": dados_js,
+        "marcas": [{"valor": v, "y": base - v / topo_eixo * altura_util} for v in marcas],
+        "largura": GRAFICO_LARGURA, "altura": GRAFICO_ALTURA, "base": base, "margem": margem,
+        "total": sum(p["total"] for p in serie), "dias": len(serie),
+    }
+
+
 _SQL_ADMIN = {
     "geral": """
         select count(*) as total,
@@ -6308,6 +6609,50 @@ _SQL_ADMIN = {
                sum(clicks) as n
           from public.download_clicks where day >= %(dia_30d)s
          group by channel, store order by n desc, channel limit 20""",
+    # O mesmo, dia a dia e só por canal (o aparelho fica de fora), para o gráfico.
+    "cliques_dia": """
+        select day as dia, channel as canal, sum(clicks) as n
+          from public.download_clicks where day >= %(dia_cliques)s
+         group by 1, 2 order by 1, 2""",
+    # Faturamento que entrou pelas lojas (RevenueCat): compras e renovações de
+    # produção, em reais. Reembolso chega como CANCELLATION com preço negativo.
+    # PRODUCT_CHANGE fica fora: a cobrança da troca chega como compra ou renovação.
+    "fat_loja": """
+        select to_char(public.br_period(received_at), 'YYYY-MM') as mes,
+               case when type = 'NON_RENEWING_PURCHASE' then 'unico'
+                    when cycle = 'anual' then 'anual' else 'mensal' end as tipo,
+               sum(price) as valor, count(*) as n
+          from public.billing_events
+         where source = 'revenuecat' and environment = 'PRODUCTION' and price is not null
+           and upper(coalesce(currency, '')) = 'BRL'
+           and (type in ('INITIAL_PURCHASE', 'RENEWAL', 'NON_RENEWING_PURCHASE')
+                or (type = 'CANCELLATION' and price < 0))
+           and received_at >= %(ini_fat)s
+         group by 1, 2""",
+    # Anual pago uma vez pelo site (Pix ou cartão, mode=payment): o webhook grava
+    # o valor e "pro (pré-pago até ...)" quando libera. Não gera fatura na Stripe.
+    "fat_unico": """
+        select to_char(public.br_period(received_at), 'YYYY-MM') as mes, sum(price) as valor, count(*) as n
+          from public.billing_events
+         where source = 'stripe' and environment = 'PRODUCTION' and price > 0
+           and type in ('checkout.session.completed', 'checkout.session.async_payment_succeeded')
+           and outcome like 'pro (pré-pago%%'
+           and received_at >= %(ini_fat)s
+         group by 1""",
+    # Quem assina pela loja e segue renovando: a última cobrança diz o valor, o
+    # ciclo e o vencimento, que é a próxima cobrança. Cancelou a renovação
+    # (canceled_pendente) ou é teste: fora da previsão.
+    "fat_loja_ativas": """
+        select distinct on (e.driver_id) e.driver_id, e.price, e.cycle,
+               (e.payload ->> 'expiration_at_ms')::bigint as vence_ms
+          from public.billing_events e
+          join public.drivers d on d.id = e.driver_id
+         where e.source = 'revenuecat' and e.environment = 'PRODUCTION'
+           and e.type in ('INITIAL_PURCHASE', 'RENEWAL') and e.price > 0
+           and upper(coalesce(e.currency, '')) = 'BRL'
+           and d.plan = 'pro' and d.stripe_subscription_id is null
+           and d.subscription_status in ('active', 'trialing', 'past_due')
+         order by e.driver_id, e.received_at desc, e.seq desc""",
     "cidades_recibos": """
         select coalesce(nullif(initcap(trim(driver_snapshot->>'city')), ''), '(sem cidade)') as cidade,
                count(*) as n, count(distinct driver_id) as motoristas
@@ -6516,8 +6861,10 @@ def _params_dashboard_admin() -> dict:
         "ini_30d": _inicio_dia_br(29),
         # download_clicks guarda a data (dia de Brasília), não o instante.
         "dia_30d": (datetime.now(BR_TZ) - timedelta(days=29)).date().isoformat(),
+        "dia_cliques": (datetime.now(BR_TZ) - timedelta(days=CLIQUES_DIAS - 1)).date().isoformat(),
         "ini_mes": _inicio_mes_br(0),
         "ini_12m": _inicio_mes_br(11),
+        "ini_fat": _inicio_mes_br(FATURAMENTO_MESES_PASSADOS),
         "limite": FREE_MONTHLY_LIMIT,
         "teto_email": EMAIL_DAILY_LIMIT,
         "teto_reset_ip": RESET_DAILY_LIMIT_IP,
@@ -6558,6 +6905,12 @@ def montar_dashboard_admin() -> dict:
         d[nome] = _com_maximo(d.get(nome) or [], "n")
     if d.get("cliques_canal") is not None:
         d["cliques_canal"] = _com_maximo(d["cliques_canal"], "n")
+    d["cliques_grafico"] = montar_cliques_por_dia(d.get("cliques_dia"))
+    # A Stripe fica fora da transação do banco: é uma ida à API, com o cache
+    # de 60 s do painel em cima.
+    t0 = _time.perf_counter()
+    d["faturamento"] = montar_faturamento(d)
+    d["_tempos"]["faturamento"] = round((_time.perf_counter() - t0) * 1000)
     if d.get("ultimos_eventos") is not None:
         d["ultimos_eventos"] = [dict(e, origem=nome_da_loja(e.get("store"), e.get("source")))
                                 for e in d["ultimos_eventos"]]
@@ -7449,6 +7802,15 @@ def filtro_brl(valor) -> str:
         return "-"
     inteiro, _, dec = f"{n:,.2f}".partition(".")
     return "R$ " + inteiro.replace(",", ".") + "," + dec
+
+
+@app.template_filter("brl_eixo")
+def filtro_brl_eixo(valor) -> str:
+    """Marca do eixo em reais: redonda, sem centavos quando não precisa."""
+    n = float(valor or 0)
+    if n >= 1000:
+        return f"R$ {n / 1000:g} mil".replace(".", ",")
+    return f"R$ {n:,.0f}".replace(",", ".") if n == int(n) else filtro_brl(n)
 
 
 @app.template_filter("valor")

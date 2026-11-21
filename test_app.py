@@ -3801,6 +3801,161 @@ check("termos: venda por telefone e link de pagamento (6.9) e conta criada pela 
       "6.9 Venda por telefone e link de pagamento" in _ter and "A conta pode ser criada pela nossa equipe" in _ter
       and A.CONTATO_DE_VENDAS_A_PARTIR in _ter and A.POLITICA_ATUALIZADA_EM in _ter)
 
+# -- Visao geral: faturamento mes a mes e cliques por dia (2026-11-21) ---------
+# O mensal entra todo mes; o anual, uma vez no mes da cobranca; o pago uma vez
+# nao se repete. A previsao sao as assinaturas ativas renovando no preco atual.
+print("\n-- Visao geral: faturamento mes a mes e cliques por dia --")
+from decimal import Decimal as _Dec
+_agora_fat = A.datetime(2026, 11, 21, 15, 0, tzinfo=A.timezone.utc)   # 12h em Brasilia
+_ms = lambda dt: int(dt.timestamp() * 1000)
+_d_fat = {
+    "fat_loja": [{"mes": "2026-10", "tipo": "mensal", "valor": _Dec("9.90")},
+                 {"mes": "2026-11", "tipo": "anual", "valor": _Dec("59.90")}],
+    "fat_unico": [{"mes": "2026-11", "valor": _Dec("59.90")}],
+    "fat_loja_ativas": [{"price": _Dec("9.90"), "cycle": "mensal",
+                         "vence_ms": _ms(A.datetime(2026, 11, 28, 12, 0, tzinfo=A.timezone.utc))}],
+}
+_stripe_fat = ([{"mes": "2026-11", "valor": _Dec("19.90"), "tipo": "mensal"}],
+               [{"valor": _Dec("59.90"), "proxima": A.datetime(2027, 3, 5, 12, 0, tzinfo=A.timezone.utc),
+                 "tipo": "anual"}], "")
+_fat = A.montar_faturamento(_d_fat, agora=_agora_fat, da_stripe=_stripe_fat)
+_m = {m["chave"]: m for m in _fat["meses"]}
+check("faturamento: 12 meses antes, o mes atual no centro e 12 depois",
+      _fat["meses"][0]["chave"] == "2025-11" and _fat["meses"][-1]["chave"] == "2027-11" and len(_fat["meses"]) == 25
+      and _fat["meses"][12]["atual"] and _fat["meses"][12]["chave"] == "2026-11",
+      [m["chave"] for m in _fat["meses"]][:3])
+check("faturamento: o mes atual soma loja, Stripe e Pix, e a renovacao que ainda vem fica como previsao",
+      _m["2026-11"]["realizado"] == {"mensal": _Dec("19.90"), "anual": _Dec("59.90"), "unico": _Dec("59.90")}
+      and _m["2026-11"]["previsto"]["mensal"] == _Dec("9.90") and _m["2026-11"]["atual"], str(_m["2026-11"]["realizado"]))
+check("faturamento: a mensal da loja se repete todo mes da previsao",
+      all(_m[c]["previsto"]["mensal"] == _Dec("9.90") for c in ("2026-12", "2027-01", "2027-06", "2027-11")))
+check("faturamento: a anual entra uma vez so, no mes da cobranca",
+      _m["2027-03"]["previsto"]["anual"] == _Dec("59.90")
+      and sum(m["previsto"]["anual"] for m in _fat["meses"]) == _Dec("59.90"))
+check("faturamento: o pago uma vez nao entra na previsao", sum(m["previsto"]["unico"] for m in _fat["meses"]) == 0)
+check("faturamento: totais do painel (12 meses, mes atual e previsao)",
+      _fat["ultimos_12m"] == _Dec("149.60") and _fat["este_mes"] == _Dec("139.70")
+      and _fat["previsto_12m"] == _Dec("188.60"), f"{_fat['ultimos_12m']} {_fat['este_mes']} {_fat['previsto_12m']}")
+check("faturamento: a divisa da previsao fica logo depois do mes atual",
+      abs(_fat["divisa_x"] - (_m["2026-11"]["vaga_x"] + _m["2026-11"]["vaga"])) < 0.01)
+_barra = max(_fat["meses"], key=lambda m: m["total"])
+check("faturamento: barras finas (ate 24) e o topo da maior no topo do eixo, sem passar dele",
+      _fat["largura_barra"] <= 24 and _barra["y_topo"] >= _fat["marcas"][-1]["y"] - 0.5
+      and _fat["marcas"][-1]["valor"] >= float(_barra["total"]))
+_venceu = A.montar_faturamento({"fat_loja_ativas": [{"price": _Dec("9.90"), "cycle": "mensal",
+                                                    "vence_ms": _ms(A.datetime(2026, 10, 2, tzinfo=A.timezone.utc))}]},
+                               agora=_agora_fat, da_stripe=([], [], ""))
+# Venceu em 02/10 e a renovacao nao chegou: conta como renovada; a de 02/11 ja
+# passou (seria realizada), entao a previsao comeca em 02/12: 12 cobrancas.
+_m_v = {m["chave"]: m for m in _venceu["meses"]}
+check("faturamento: vencimento passado sem a renovacao registrada conta como renovado",
+      sum(m["previsto"]["mensal"] for m in _venceu["meses"]) == _Dec("9.90") * 12
+      and _m_v["2026-11"]["previsto"]["mensal"] == 0 and _m_v["2026-12"]["previsto"]["mensal"] == _Dec("9.90"),
+      str(_venceu["previsto_12m"]))
+check("faturamento: sem nenhum dado, so o mes atual e a previsao vazia, sem erro",
+      A.montar_faturamento({}, agora=_agora_fat, da_stripe=([], [], ""))["previsto_12m"] == 0)
+
+
+class _ListaStripe(list):
+    def auto_paging_iter(self):
+        return iter(self)
+
+
+class _StripeFat:
+    class Invoice:
+        @staticmethod
+        def list(**kw):
+            _StripeFat.pedidos.append(("Invoice", kw))
+            return _ListaStripe([
+                {"amount_paid": 990, "livemode": True, "currency": "brl", "status_transitions": {"paid_at": 1795000000}},
+                {"amount_paid": 5990, "livemode": True, "currency": "brl", "status_transitions": {"paid_at": 1795000000}},
+                {"amount_paid": 990, "livemode": False, "currency": "brl", "status_transitions": {"paid_at": 1795000000}},
+                {"amount_paid": 0, "livemode": True, "currency": "brl", "created": 1795000000},
+            ])
+
+    class Subscription:
+        @staticmethod
+        def list(**kw):
+            _StripeFat.pedidos.append(("Subscription", kw))
+            item = lambda valor, intervalo: {"data": [{"price": {"unit_amount": valor, "currency": "brl",
+                                                                 "recurring": {"interval": intervalo}},
+                                                       "quantity": 1, "current_period_end": 1797000000}]}
+            return _ListaStripe([
+                {"status": "active", "livemode": True, "cancel_at_period_end": False, "items": item(990, "month")},
+                {"status": "active", "livemode": True, "cancel_at_period_end": True, "items": item(990, "month")},
+                {"status": "past_due", "livemode": True, "cancel_at_period_end": False, "items": item(5990, "year")},
+                {"status": "active", "livemode": False, "cancel_at_period_end": False, "items": item(990, "month")},
+            ])
+
+    pedidos = []
+
+
+_get_stripe_fat = A.get_stripe
+A.get_stripe = lambda: _StripeFat
+try:
+    _pagas, _prox, _erro = A.faturamento_da_stripe(A.datetime(2026, 1, 1, tzinfo=A.timezone.utc))
+finally:
+    A.get_stripe = _get_stripe_fat
+check("stripe: faturas pagas de producao, a de 59,90 como anual (teste e zerada ficam fora)",
+      _erro == "" and sorted((p["valor"], p["tipo"]) for p in _pagas) == [(_Dec("9.9"), "mensal"), (_Dec("59.9"), "anual")],
+      str(_pagas))
+check("stripe: previsao so das que seguem renovando (cancelando no fim do periodo e teste ficam fora)",
+      sorted((p["valor"], p["tipo"]) for p in _prox) == [(_Dec("9.9"), "mensal"), (_Dec("59.9"), "anual")], str(_prox))
+check("stripe: lista as assinaturas sem filtro de status (a Stripe devolve as nao canceladas)",
+      all("status" not in kw for nome, kw in _StripeFat.pedidos if nome == "Subscription"))
+A.get_stripe = lambda: None
+try:
+    check("stripe: sem chave, o painel diz que falta a Stripe em vez de quebrar",
+          A.faturamento_da_stripe(A.datetime(2026, 1, 1, tzinfo=A.timezone.utc))[2] != "")
+finally:
+    A.get_stripe = _get_stripe_fat
+
+_hoje_c = A.date(2026, 11, 21) if hasattr(A, "date") else A.datetime(2026, 11, 21).date()
+_linhas_c = []
+for _i, _canal in enumerate(["whatsapp", "site", "google-ads", "meta", "email", "direto", "indicacao", "tiktok"]):
+    _linhas_c.append({"dia": _hoje_c - A.timedelta(days=_i % 3), "canal": _canal, "n": 10 - _i})
+_cg = A.montar_cliques_por_dia(_linhas_c, hoje=_hoje_c)
+check("cliques: seis canais com mais cliques e o resto em 'outros', em ordem fixa",
+      _cg["canais"] == ["whatsapp", "site", "google-ads", "meta", "email", "direto", "outros"], _cg["canais"])
+check("cliques: comeca no primeiro dia com clique e o total soma os canais",
+      _cg["dias"] == 3 and _cg["total"] == sum(l["n"] for l in _linhas_c)
+      and all(p["total"] == sum(p["canais"].values()) for p in _cg["serie"]), _cg["dias"])
+check("cliques: linha do total mais uma por canal, e a dica de cada dia",
+      [l["nome"] for l in _cg["linhas"]][0] == "total" and len(_cg["linhas"]) == 8 and len(_cg["dados_js"]) == 3)
+check("cliques: sem tabela, o painel mostra indisponivel em vez de quebrar", A.montar_cliques_por_dia(None) is None)
+
+# Na pagina: os dois graficos, a tabela de cada um e a dica sem innerHTML.
+_suf_g = os.urandom(3).hex()
+_hoje_br = A.datetime.now(A.BR_TZ).date()
+with A.get_store().pool.connection() as _conn:
+    for _dias, _n in ((0, 3), (1, 5)):
+        _conn.execute("""insert into public.download_clicks (day, channel, store, clicks) values (%s, %s, 'play', %s)
+                         on conflict (day, channel, store) do update set clicks = excluded.clicks""",
+                      (_hoje_br - A.timedelta(days=_dias), f"teste-suite-{_suf_g}", _n))
+_email_adm_g = f"admin-graf-{_suf_g}@teste.invalid"
+A.get_store().upsert_admin(_email_adm_g, _gph("senha-da-suite-123"))
+_cadm_g = A.app.test_client()
+_cadm_g.post("/admin/login", data={"email": _email_adm_g, "senha": "senha-da-suite-123"},
+             environ_base={"REMOTE_ADDR": "203.0.113.254"})
+_get_stripe_g = A.get_stripe
+A.get_stripe = lambda: _StripeFat
+try:
+    _html_g = _cadm_g.get("/admin?atualizar=1").get_data(as_text=True)
+finally:
+    A.get_stripe = _get_stripe_g
+check("painel: grafico de faturamento com legenda, divisa da previsao e tabela",
+      "Faturamento mês a mês" in _html_g and "previsão →" in _html_g and "Ver os números em tabela" in _html_g
+      and 'class="seg seg-mensal' in _html_g and "Anual pago uma vez (Pix ou cartão)" in _html_g)
+check("painel: grafico de cliques por dia com o total e o canal, e a tabela",
+      "Cliques no link de download por dia" in _html_g and "linha-total" in _html_g
+      and f"teste-suite-{_suf_g}" in _html_g and "Ver os cliques em tabela" in _html_g)
+_js_g = _html_g[_html_g.find("function montarDica"):]
+_js_g = _js_g[:_js_g.find("</script>")]
+check("painel: a dica dos graficos monta o texto com textContent, nunca innerHTML",
+      "textContent" in _js_g and "innerHTML" not in _js_g, len(_js_g))
+with A.get_store().pool.connection() as _conn:
+    _conn.execute("delete from public.download_clicks where channel = %s", (f"teste-suite-{_suf_g}",))
+
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:
     _sem_rls = [l["relname"] for l in _conn.execute(

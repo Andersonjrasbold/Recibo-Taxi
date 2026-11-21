@@ -1,0 +1,193 @@
+{# Gráficos da visão geral (SVG montado no servidor). O JavaScript só faz o
+   destaque e a dica ao passar o mouse ou o teclado; cada gráfico tem a tabela
+   com os mesmos números logo abaixo. Importar "with context" (csp_nonce). #}
+{% import "admin/_macros.html" as ui %}
+
+{% macro faturamento(fat) %}
+<section class="adm-painel" id="faturamento">
+  <h2 class="adm-h2"><i class="bi bi-bar-chart-line me-2"></i>Faturamento mês a mês</h2>
+  <div class="db-stats adm-kpis">
+    {{ ui.kpi(fat.ultimos_12m | brl, 'Faturado de ' ~ fat.meses[0].nome ~ ' até agora', 'cash-stack', 'green') }}
+    {{ ui.kpi(fat.este_mes | brl, 'Faturado neste mês, até agora', 'calendar-check', 'blue') }}
+    {{ ui.kpi(fat.previsto_12m | brl, 'Previsto até ' ~ fat.meses[-1].nome, 'graph-up-arrow', 'orange', ' (' ~ fat.assinaturas_previstas ~ ' assinatura(s) ativas)') }}
+  </div>
+  <div class="adm-legenda">
+    {% for tipo, rotulo in fat.tipos %}<span class="adm-legenda-item"><span class="adm-amostra seg-{{ tipo }}"></span>{{ rotulo }}</span>{% endfor %}
+    <span class="adm-legenda-item"><span class="adm-amostra seg-mensal previsto"></span>Tom apagado: previsão</span>
+  </div>
+  <div class="adm-grafico" data-grafico="barras">
+    <div class="adm-grafico-rolagem">
+      <svg viewBox="0 0 {{ fat.largura }} {{ fat.altura }}" role="img"
+           aria-label="Faturamento bruto por mês, de {{ fat.meses[0].nome }} a {{ fat.meses[-1].nome }}. Os números estão na tabela abaixo.">
+        <g class="grade">
+          {% for t in fat.marcas %}
+          <line x1="{{ fat.margem.esq }}" x2="{{ fat.largura - fat.margem.dir }}" y1="{{ '%.1f' | format(t.y) }}" y2="{{ '%.1f' | format(t.y) }}"></line>
+          <text class="marca" x="{{ fat.margem.esq - 8 }}" y="{{ '%.1f' | format(t.y + 4) }}" text-anchor="end">{{ t.valor | brl_eixo }}</text>
+          {% endfor %}
+        </g>
+        {% if fat.divisa_x %}
+        <line class="divisa" x1="{{ '%.1f' | format(fat.divisa_x) }}" x2="{{ '%.1f' | format(fat.divisa_x) }}" y1="{{ fat.margem.topo }}" y2="{{ fat.base }}"></line>
+        <text class="marca" x="{{ '%.1f' | format(fat.divisa_x + 6) }}" y="{{ fat.margem.topo + 10 }}">previsão →</text>
+        {% endif %}
+        {% for m in fat.meses %}
+        <g class="coluna" tabindex="0" data-dica='{{ m.dica | tojson }}'>
+          <rect class="alvo" x="{{ '%.1f' | format(m.vaga_x) }}" y="{{ fat.margem.topo }}" width="{{ '%.1f' | format(m.vaga) }}" height="{{ fat.base - fat.margem.topo }}"></rect>
+          {% for s in m.segmentos %}
+          {% if s.caminho %}<path class="seg seg-{{ s.tipo }}{% if s.fase == 'previsto' %} previsto{% endif %}" d="{{ s.caminho }}"></path>
+          {% else %}<rect class="seg seg-{{ s.tipo }}{% if s.fase == 'previsto' %} previsto{% endif %}" x="{{ '%.1f' | format(m.x) }}" y="{{ '%.1f' | format(s.y) }}" width="{{ '%.1f' | format(fat.largura_barra) }}" height="{{ '%.1f' | format(s.altura) }}"></rect>{% endif %}
+          {% endfor %}
+          <text class="marca{% if m.atual %} marca-forte{% endif %}" x="{{ '%.1f' | format(m.x_centro) }}" y="{{ fat.base + 17 }}" text-anchor="middle">{{ m.mes_curto }}</text>
+          {% if m.mostra_ano %}<text class="marca" x="{{ '%.1f' | format(m.x_centro) }}" y="{{ fat.base + 32 }}" text-anchor="middle">{{ m.ano }}</text>{% endif %}
+        </g>
+        {% endfor %}
+        <line class="eixo" x1="{{ fat.margem.esq }}" x2="{{ fat.largura - fat.margem.dir }}" y1="{{ fat.base }}" y2="{{ fat.base }}"></line>
+      </svg>
+    </div>
+    <div class="adm-dica" aria-hidden="true"></div>
+  </div>
+  <p class="adm-suave">
+    Valor bruto, em reais: o que o cliente pagou (a App Store e o Google Play ficam com 15%; a Stripe, com a taxa dela).
+    A mensal entra todo mês; a anual entra uma vez, no mês em que é cobrada (e de novo 12 meses depois, se renovar);
+    o anual pago uma vez não se repete. A previsão são as assinaturas ativas renovando no preço atual, sem
+    cancelamentos nem vendas novas; descontos não entram.
+    {% if fat.erro_stripe %}<span class="adm-falha">Stripe: {{ fat.erro_stripe }}.</span>{% endif %}
+    {% if fat.faltando %}<span class="adm-falha">Parte do registro de cobranças não carregou ({{ fat.faltando | join(', ') }}).</span>{% endif %}
+  </p>
+  <details class="adm-detalhes">
+    <summary>Ver os números em tabela</summary>
+    <div class="table-responsive"><table class="adm-tabela adm-tabela-mini">
+      <thead><tr><th>Mês</th>{% for tipo, rotulo in fat.tipos %}<th class="adm-num">{{ rotulo }}</th>{% endfor %}<th class="adm-num">Total</th></tr></thead>
+      <tbody>{% for m in fat.meses %}
+      <tr><td>{{ m.nome }}{% if m.futuro %} <small class="adm-suave">previsão</small>{% elif m.atual %} <small class="adm-suave">até agora + previsão</small>{% endif %}</td>
+        {% for tipo, _ in fat.tipos %}<td class="adm-num">{% if m.realizado[tipo] %}{{ m.realizado[tipo] | brl }}{% endif %}{% if m.previsto[tipo] %}{% if m.realizado[tipo] %} + {% endif %}<span class="adm-suave">{{ m.previsto[tipo] | brl }}</span>{% endif %}{% if not m.realizado[tipo] and not m.previsto[tipo] %}<span class="adm-suave">-</span>{% endif %}</td>{% endfor %}
+        <td class="adm-num"><strong>{{ m.total | brl }}</strong></td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+  </details>
+</section>
+{% endmacro %}
+
+{% macro cliques(cg) %}
+<h3 class="adm-h3 mt-4">Cliques no link de download por dia ({{ cg.dias }} dia{{ '' if cg.dias == 1 else 's' }}, {{ cg.total }} no total)</h3>
+<div class="adm-legenda">
+  {% for l in cg.linhas %}<span class="adm-legenda-item"><span class="adm-amostra adm-amostra-linha {{ 'linha-total' if l.nome == 'total' else ('linha-outros' if l.nome == 'outros' else 'linha-' ~ l.serie) }}"></span>{{ l.rotulo }} <span class="adm-suave">({{ l.soma }})</span></span>{% endfor %}
+</div>
+<div class="adm-grafico" data-grafico="linhas">
+  <div class="adm-grafico-rolagem">
+    <svg viewBox="0 0 {{ cg.largura }} {{ cg.altura }}" role="img" tabindex="0"
+         aria-label="Cliques por dia no link de download, total e por canal. Os números estão na tabela abaixo; use as setas para andar pelos dias.">
+      <g class="grade">
+        {% for t in cg.marcas %}
+        <line x1="{{ cg.margem.esq }}" x2="{{ cg.largura - cg.margem.dir }}" y1="{{ '%.1f' | format(t.y) }}" y2="{{ '%.1f' | format(t.y) }}"></line>
+        <text class="marca" x="{{ cg.margem.esq - 8 }}" y="{{ '%.1f' | format(t.y + 4) }}" text-anchor="end">{{ t.valor | int }}</text>
+        {% endfor %}
+      </g>
+      {% for p in cg.rotulos_x %}<text class="marca" x="{{ '%.1f' | format(p.x) }}" y="{{ cg.base + 17 }}" text-anchor="middle">{{ p.rotulo }}</text>{% endfor %}
+      {% for l in cg.linhas | reverse %}
+      <polyline class="linha {{ 'linha-total' if l.nome == 'total' else ('linha-outros' if l.nome == 'outros' else 'linha-' ~ l.serie) }}" points="{{ l.pontos }}"></polyline>
+      {% endfor %}
+      {% set total = cg.linhas[0] %}
+      {% if cg.serie %}<text class="rotulo" x="{{ '%.1f' | format(cg.serie[-1].x - 4) }}" y="{{ '%.1f' | format(total.fim_y - 8) }}" text-anchor="end">Total: {{ cg.serie[-1].total }} hoje</text>{% endif %}
+      <line class="mira" x1="0" x2="0" y1="{{ cg.margem.topo }}" y2="{{ cg.base }}"></line>
+      <line class="eixo" x1="{{ cg.margem.esq }}" x2="{{ cg.largura - cg.margem.dir }}" y1="{{ cg.base }}" y2="{{ cg.base }}"></line>
+      <rect class="alvo-mira" x="{{ cg.margem.esq }}" y="{{ cg.margem.topo }}" width="{{ cg.largura - cg.margem.esq - cg.margem.dir }}" height="{{ cg.base - cg.margem.topo }}"></rect>
+    </svg>
+  </div>
+  <div class="adm-dica" aria-hidden="true"></div>
+  <script type="application/json" class="adm-dados" nonce="{{ csp_nonce }}">{{ cg.dados_js | tojson }}</script>
+</div>
+<details class="adm-detalhes">
+  <summary>Ver os cliques em tabela</summary>
+  <div class="table-responsive"><table class="adm-tabela adm-tabela-mini">
+    <thead><tr><th>Dia</th><th class="adm-num">Total</th>{% for c in cg.canais %}<th class="adm-num">{{ c }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for p in cg.serie | reverse %}
+    <tr><td>{{ p.dia.strftime('%d/%m/%Y') }}</td><td class="adm-num"><strong>{{ p.total }}</strong></td>{% for c in cg.canais %}<td class="adm-num">{{ p.canais[c] }}</td>{% endfor %}</tr>
+    {% endfor %}</tbody>
+  </table></div>
+</details>
+{% endmacro %}
+
+{% macro script() %}
+<script nonce="{{ csp_nonce }}">
+  (function () {
+    // A dica é montada com textContent: rótulos e canais vêm do banco.
+    function montarDica(dica, titulo, total, linhas) {
+      dica.textContent = '';
+      var cab = document.createElement('div'); cab.className = 'adm-dica-titulo'; cab.textContent = titulo; dica.appendChild(cab);
+      var tot = document.createElement('div'); tot.className = 'adm-dica-total'; tot.textContent = total; dica.appendChild(tot);
+      linhas.forEach(function (l) {
+        var linha = document.createElement('div'); linha.className = 'adm-dica-linha';
+        var chave = document.createElement('span'); chave.className = 'adm-dica-chave ' + l.classe; linha.appendChild(chave);
+        var valor = document.createElement('strong'); valor.textContent = l.valor; linha.appendChild(valor);
+        var nome = document.createElement('span'); nome.className = 'adm-dica-nome'; nome.textContent = ' ' + l.rotulo; linha.appendChild(nome);
+        dica.appendChild(linha);
+      });
+      dica.style.display = 'block';
+    }
+    function posicionar(caixa, dica, xTela, yTela) {
+      var c = caixa.getBoundingClientRect();
+      var x = xTela - c.left + 14, y = yTela - c.top - 10;
+      if (x + dica.offsetWidth > c.width) { x = xTela - c.left - dica.offsetWidth - 14; }
+      dica.style.left = Math.max(0, x) + 'px';
+      dica.style.top = Math.max(0, y) + 'px';
+    }
+    document.querySelectorAll('.adm-grafico[data-grafico="barras"]').forEach(function (caixa) {
+      var dica = caixa.querySelector('.adm-dica');
+      caixa.querySelectorAll('.coluna').forEach(function (coluna) {
+        var dados = JSON.parse(coluna.getAttribute('data-dica'));
+        var linhas = dados.linhas.map(function (l) {
+          return { classe: 'seg-' + l.tipo + (l.previsto ? ' previsto' : ''), valor: l.valor, rotulo: l.rotulo };
+        });
+        function mostrar(ev) {
+          montarDica(dica, dados.titulo, dados.total, linhas);
+          var r = coluna.getBoundingClientRect();
+          posicionar(caixa, dica, ev && ev.clientX ? ev.clientX : r.left + r.width / 2, ev && ev.clientY ? ev.clientY : r.top + r.height / 3);
+        }
+        coluna.addEventListener('pointermove', mostrar);
+        coluna.addEventListener('focus', function () { mostrar(null); });
+        coluna.addEventListener('pointerleave', function () { dica.style.display = 'none'; });
+        coluna.addEventListener('blur', function () { dica.style.display = 'none'; });
+      });
+    });
+    document.querySelectorAll('.adm-grafico[data-grafico="linhas"]').forEach(function (caixa) {
+      var dica = caixa.querySelector('.adm-dica');
+      var svg = caixa.querySelector('svg');
+      var mira = svg.querySelector('.mira');
+      var dados = JSON.parse(caixa.querySelector('.adm-dados').textContent || '[]');
+      if (!dados.length) { return; }
+      var atual = dados.length - 1;
+      function classeDo(nome, i) { return nome === 'outros' ? 'linha-outros' : 'linha-' + (i + 1); }
+      function mostrar(i, xTela, yTela) {
+        atual = Math.max(0, Math.min(dados.length - 1, i));
+        var p = dados[atual];
+        mira.setAttribute('x1', p.x); mira.setAttribute('x2', p.x); mira.style.display = 'block';
+        var linhas = p.canais.map(function (c, k) { return { classe: classeDo(c[0], k), valor: String(c[1]), rotulo: c[0] }; });
+        montarDica(dica, p.titulo, p.total + ' clique' + (p.total === 1 ? '' : 's'), linhas);
+        if (xTela === undefined) {
+          var m = svg.getScreenCTM();
+          var pt = svg.createSVGPoint(); pt.x = p.x; pt.y = 40;
+          var tela = pt.matrixTransform(m);
+          xTela = tela.x; yTela = tela.y;
+        }
+        posicionar(caixa, dica, xTela, yTela);
+      }
+      svg.addEventListener('pointermove', function (ev) {
+        var m = svg.getScreenCTM();
+        if (!m) { return; }
+        var pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+        var x = pt.matrixTransform(m.inverse()).x;
+        var melhor = 0;
+        dados.forEach(function (p, i) { if (Math.abs(p.x - x) < Math.abs(dados[melhor].x - x)) { melhor = i; } });
+        mostrar(melhor, ev.clientX, ev.clientY);
+      });
+      svg.addEventListener('pointerleave', function () { dica.style.display = 'none'; mira.style.display = 'none'; });
+      svg.addEventListener('focus', function () { mostrar(atual); });
+      svg.addEventListener('blur', function () { dica.style.display = 'none'; mira.style.display = 'none'; });
+      svg.addEventListener('keydown', function (ev) {
+        if (ev.key === 'ArrowLeft') { mostrar(atual - 1); ev.preventDefault(); }
+        if (ev.key === 'ArrowRight') { mostrar(atual + 1); ev.preventDefault(); }
+      });
+    });
+  })();
+</script>
+{% endmacro %}

@@ -1,5 +1,6 @@
 {% extends "admin/layout.html" %}
 {% import "admin/_macros.html" as ui %}
+{% import "admin/_graficos.html" as graficos with context %}
 {% block title %}Visão geral — Painel{% endblock %}
 {% block admin %}
 <div class="adm-cabecalho">
@@ -20,6 +21,9 @@
   {{ ui.kpi(r.mes_valor | brl, 'Valor emitido no mês (só em R$)', 'currency-dollar', 'green') }}
   {{ ui.kpi(g.past_due ~ ' / ' ~ g.cancel_pendente, 'Inadimplentes / cancelando', 'exclamation-triangle', 'orange') }}
 </div>
+
+{# ── 2. Faturamento mês a mês (passado e previsão) ────────────────── #}
+{% if d.faturamento %}{{ graficos.faturamento(d.faturamento) }}{% endif %}
 
 {# ── 2. Receita ────────────────────────────────────────────────────── #}
 <section class="adm-painel">
@@ -89,6 +93,7 @@
       {{ ui.barras(d.novos_por_mes, 'mes', 'n', 'Cadastros por mês') }}
     </div>
   </div>
+  {% if d.cliques_grafico is none %}<h3 class="adm-h3 mt-4">Cliques no link de download por dia</h3>{{ ui.indisponivel() }}{% else %}{{ graficos.cliques(d.cliques_grafico) }}{% endif %}
   <h3 class="adm-h3 mt-4">Cliques no link de download por canal (30 dias)</h3>
   <p class="adm-suave">Cada clique em <code>recibotaxi.com.br/baixar?c=CANAL</code>, por canal e aparelho. <code>direto</code> é o link sem canal. Só contagem: ninguém é identificado.</p>
   {% if d.cliques_canal is none %}{{ ui.indisponivel() }}{% else %}{{ ui.linhas_h(d.cliques_canal, 'canal', 'n') }}{% endif %}
@@ -346,3 +351,5 @@
   </div>
 </section>
 {% endblock %}
+
+{% block scripts %}{{ graficos.script() }}{% endblock %}

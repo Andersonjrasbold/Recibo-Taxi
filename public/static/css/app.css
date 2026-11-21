@@ -1646,3 +1646,58 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
 .pagar-itens li .bi { color:var(--coral); flex-shrink:0; margin-top:3px; }
 .pagar-nota { font-size:.84rem; color:var(--muted); }
 .pagar-email { font-weight:800; color:var(--ink); overflow-wrap:anywhere; }
+
+/* ── Painel: gráficos de faturamento e de cliques (SVG) ─────────────────── */
+/* Cores validadas (skill de dataviz) no fundo escuro do painel: as seis
+   primeiras da paleta categórica, modo escuro; "outros" e o total em neutros. */
+/* As cores moram no painel inteiro: a legenda fica fora do gráfico. */
+.admin-shell {
+  --serie-1:#3987e5; --serie-2:#d95926; --serie-3:#199e70; --serie-4:#c98500; --serie-5:#d55181; --serie-6:#0ca30c;
+  --serie-outros:#898781; --serie-total:#f0efec;
+  --grade:rgba(255,244,236,.08); --eixo:rgba(255,244,236,.24); --texto-mudo:rgba(255,244,236,.55);
+}
+.adm-grafico { position:relative; margin:.25rem 0 .5rem; }
+.adm-grafico-rolagem { overflow-x:auto; }
+.adm-grafico svg { display:block; width:100%; min-width:720px; height:auto; overflow:visible; }
+.adm-grafico .grade line { stroke:var(--grade); stroke-width:1; }
+.adm-grafico .eixo { stroke:var(--eixo); stroke-width:1; }
+.adm-grafico .divisa { stroke:var(--eixo); stroke-width:1; }
+.adm-grafico .marca { fill:var(--texto-mudo); font-size:11px; font-variant-numeric:tabular-nums; }
+.adm-grafico .marca-forte { fill:var(--paper); font-weight:700; }
+.adm-grafico .rotulo { fill:var(--paper); font-size:12px; font-weight:700; }
+.seg-mensal { fill:var(--serie-1); background:var(--serie-1); }
+.seg-anual { fill:var(--serie-2); background:var(--serie-2); }
+.seg-unico { fill:var(--serie-3); background:var(--serie-3); }
+.adm-grafico .previsto, .adm-amostra.previsto, .adm-dica-chave.previsto { fill-opacity:.5; opacity:.5; }
+.adm-grafico .seg.previsto { opacity:1; }
+.adm-grafico .coluna { cursor:default; outline:none; }
+.adm-grafico .coluna .alvo, .adm-grafico .alvo-mira { fill:transparent; }
+.adm-grafico .coluna:hover .alvo, .adm-grafico .coluna:focus .alvo { fill:rgba(255,244,236,.05); }
+.adm-grafico .coluna:hover .seg, .adm-grafico .coluna:focus .seg { filter:brightness(1.18); }
+.adm-grafico .linha { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+.linha-1 { stroke:var(--serie-1); background:var(--serie-1); }
+.linha-2 { stroke:var(--serie-2); background:var(--serie-2); }
+.linha-3 { stroke:var(--serie-3); background:var(--serie-3); }
+.linha-4 { stroke:var(--serie-4); background:var(--serie-4); }
+.linha-5 { stroke:var(--serie-5); background:var(--serie-5); }
+.linha-6 { stroke:var(--serie-6); background:var(--serie-6); }
+.linha-outros { stroke:var(--serie-outros); background:var(--serie-outros); }
+.linha-total { stroke:var(--serie-total); background:var(--serie-total); }
+.adm-grafico .mira { stroke:rgba(255,244,236,.4); stroke-width:1; display:none; }
+.adm-grafico svg:focus { outline:2px solid rgba(255,197,49,.6); outline-offset:4px; border-radius:6px; }
+.adm-legenda { display:flex; flex-wrap:wrap; gap:.35rem 1.1rem; margin:.4rem 0 .2rem; font-size:.8rem; color:rgba(255,244,236,.78); }
+.adm-legenda-item { display:inline-flex; align-items:center; }
+.adm-amostra { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:.4rem; }
+.adm-amostra-linha { width:16px; height:2px; border-radius:1px; }
+.adm-dica {
+  display:none; position:absolute; z-index:5; pointer-events:none; min-width:180px; max-width:300px;
+  padding:.55rem .7rem; border-radius:10px; font-size:.8rem; color:var(--paper);
+  background:#211b1a; border:1px solid rgba(255,244,236,.14); box-shadow:0 12px 30px rgba(0,0,0,.45);
+}
+.adm-dica-titulo { color:rgba(255,244,236,.6); font-size:.74rem; }
+.adm-dica-total { font-size:1rem; font-weight:800; margin-bottom:.25rem; }
+.adm-dica-linha { display:flex; align-items:center; gap:.35rem; white-space:nowrap; }
+.adm-dica-chave { display:inline-block; width:12px; height:2px; flex-shrink:0; }
+.adm-dica-nome { color:rgba(255,244,236,.7); }
+.adm-detalhes { margin-top:.4rem; font-size:.85rem; }
+.adm-detalhes summary { cursor:pointer; color:rgba(255,244,236,.7); }

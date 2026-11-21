@@ -384,6 +384,11 @@ PLANOS_DO_LINK = {
     "pro_anual": f"Anual no cartão: {PRECO_PRO_ANUAL} por ano, renova sozinho",
     "pro": f"Mensal no cartão: {PRECO_PRO_MENSAL} por mês, renova sozinho",
 }
+# Política e Termos de 2026-11-21 (venda por telefone com representante). A
+# própria Política promete 15 dias de aviso para mudança relevante: as ligações e
+# o representante de vendas só começam nesta data, e o aviso vai por e-mail.
+POLITICA_ATUALIZADA_EM = "21 de novembro de 2026"
+CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
 # Marca, no app_metadata do Supabase Auth, a conta que o painel criou. O
 # app_metadata o motorista não consegue editar (o user_metadata, sim).
 MARCA_CRIADO_PELO_PAINEL = "criado_pelo_painel"
@@ -5837,12 +5842,14 @@ def email_descadastro(token: str):
 
 @app.get("/privacidade")
 def privacidade():
-    return render_template("privacidade.html", updated_at="12 de novembro de 2026")
+    return render_template("privacidade.html", updated_at=POLITICA_ATUALIZADA_EM,
+                           vendas_a_partir=CONTATO_DE_VENDAS_A_PARTIR)
 
 
 @app.get("/termos")
 def termos():
-    return render_template("termos.html", updated_at="12 de novembro de 2026")
+    return render_template("termos.html", updated_at=POLITICA_ATUALIZADA_EM,
+                           vendas_a_partir=CONTATO_DE_VENDAS_A_PARTIR)
 
 
 @app.get("/excluir-conta")
@@ -6871,6 +6878,27 @@ def admin_pro_cortesia(driver_id):
     flash(f"{dias} dias de Pro liberados para {motorista.get('full_name') or motorista.get('email')}, "
           f"até {fim.astimezone(BR_TZ).strftime('%d/%m/%Y')}.", "success")
     return voltar
+
+
+@app.post("/admin/motoristas/<uuid:driver_id>/sem-ofertas")
+@admin_required
+def admin_sem_ofertas(driver_id):
+    """O motorista pediu para não ser mais procurado com ofertas (ao vendedor,
+    ao suporte ou respondendo "SAIR"). A Política promete marcar na conta e
+    parar as ofertas por e-mail, WhatsApp e telefone: é a mesma marca do
+    descadastro pelo link do e-mail, que já tira a conta da régua."""
+    did = str(driver_id)
+    with get_store().pool.connection() as conn:
+        linha = conn.execute(
+            """update public.drivers set marketing_optout_at = coalesce(marketing_optout_at, now())
+                where id = %s returning id""", (did,)).fetchone()
+    if not linha:
+        abort(404)
+    _ADMIN_CACHE.pop("dashboard", None)
+    app.logger.warning("admin %s marcou %s como sem ofertas", g.admin["email"], did)
+    flash("Pronto: este motorista não recebe mais ofertas por e-mail, WhatsApp nem telefone. "
+          "Tire o nome dele da lista do vendedor.", "success")
+    return redirect(url_for("admin_motorista", driver_id=did))
 
 
 # ── Painel: vender o Pro (link de pagamento, cadastro e formulário) ──────────

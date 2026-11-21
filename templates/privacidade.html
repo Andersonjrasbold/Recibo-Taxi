@@ -25,6 +25,17 @@
             </div>
           </div>
 
+          <div class="legal-callout legal-callout-warning">
+            <i class="bi bi-megaphone-fill"></i>
+            <div>
+              <strong>O que mudou em {{ updated_at }}:</strong> a nossa equipe pode criar a sua conta a seu
+              pedido e mandar um link de pagamento pelo WhatsApp (seções 2.1 e 3), e um representante de
+              vendas contratado por nós passa a oferecer o plano Pro por telefone e WhatsApp a quem está no
+              plano Grátis (seções 3 e 4). As ligações e o contato do representante começam em
+              <strong>{{ vendas_a_partir }}</strong>.
+            </div>
+          </div>
+
           <h2 class="legal-h2">1. Quem somos e o que esta política cobre</h2>
           <p>
             O {{ app_name }} é operado por <strong>AJR SERVICOS DE APOIO ADMINISTRATIVO LTDA</strong>,
@@ -49,7 +60,8 @@
             <li><strong>Identificação:</strong> nome completo, CPF (ou documento de identidade, fora do Brasil), e-mail e WhatsApp.</li>
             <li><strong>Dados profissionais:</strong> país, cidade, moeda dos recibos, placa do veículo, modelo, prefixo do táxi, número do alvará e, se você informar, o nome e o CNPJ da sua cooperativa ou associação de táxi.</li>
             <li><strong>Credenciais:</strong> senha, armazenada apenas como hash criptográfico — nunca em texto legível.</li>
-            <li><strong>Assinatura:</strong> plano contratado e identificadores de cliente e assinatura na Stripe.</li>
+            <li><strong>Assinatura e pagamentos:</strong> plano contratado, identificadores de cliente e assinatura na Stripe e, quando o pagamento vem de um link enviado pela nossa equipe, o registro de que a venda veio desse link.</li>
+            <li><strong>Conta criada pela nossa equipe:</strong> se você pedir, por telefone ou WhatsApp, a nossa equipe cria a conta com os dados que você informar e registra que ela foi criada assim. Você recebe um link pessoal, confere o e-mail e cria a sua senha, confirmando um dado do seu cadastro (no Brasil, os 4 primeiros números do CPF). Enquanto a senha não existe, não mandamos e-mails automáticos para esse endereço.</li>
           </ul>
 
           <h3 class="legal-h3">2.2 Dados das corridas e dos passageiros</h3>
@@ -99,9 +111,9 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Criar e manter sua conta</td>
-                  <td>Nome, e-mail, senha, CPF, WhatsApp</td>
-                  <td>Execução de contrato (art. 7º, V)</td>
+                  <td>Criar e manter sua conta, inclusive quando a nossa equipe a cria a seu pedido</td>
+                  <td>Nome, e-mail, senha, CPF, WhatsApp e o registro de conta criada pela equipe</td>
+                  <td>Execução de contrato e procedimentos preliminares a pedido do titular (art. 7º, V)</td>
                 </tr>
                 <tr>
                   <td>Emitir, salvar e compartilhar recibos</td>
@@ -114,8 +126,8 @@
                   <td>Execução de contrato (art. 7º, V)</td>
                 </tr>
                 <tr>
-                  <td>Cobrar assinaturas</td>
-                  <td>E-mail, identificadores Stripe</td>
+                  <td>Cobrar assinaturas e pagamentos avulsos (Pix ou cartão), inclusive pelo link de pagamento enviado pela nossa equipe</td>
+                  <td>Nome, e-mail, identificadores Stripe, plano e origem da venda</td>
                   <td>Execução de contrato (art. 7º, V)</td>
                 </tr>
                 <tr>
@@ -129,9 +141,9 @@
                   <td>Legítimo interesse (art. 7º, IX). Você sai a qualquer momento pelo link no fim de cada e-mail</td>
                 </tr>
                 <tr>
-                  <td>Entrar em contato por WhatsApp com ofertas do plano Pro, enquanto você estiver no plano Grátis</td>
-                  <td>Nome e WhatsApp</td>
-                  <td>Legítimo interesse (art. 7º, IX). Responda "SAIR" para não receber mais, ou peça por suporte@recibotaxi.com.br</td>
+                  <td>Oferecer o plano Pro por WhatsApp e, a partir de {{ vendas_a_partir }}, também por ligação, pela nossa equipe ou por um representante de vendas contratado por nós (seção 4), enquanto você estiver no plano Grátis</td>
+                  <td>Nome, WhatsApp, cidade e plano</td>
+                  <td>Legítimo interesse (art. 7º, IX). Diga a quem te procurou que não quer mais contato, responda "SAIR" ou peça por suporte@recibotaxi.com.br: marcamos na sua conta e paramos as ofertas por e-mail, WhatsApp e telefone</td>
                 </tr>
                 <tr>
                   <td>Programa de indicação: ligar o seu cadastro a quem te indicou e conceder as recompensas</td>
@@ -172,8 +184,20 @@
               interface. Ao carregar uma página, seu navegador se conecta a esses serviços, que
               recebem seu endereço IP e o tipo de navegador. Não enviamos a eles nenhum dado da
               sua conta nem dos seus recibos.</li>
+            <li><strong>Representante de vendas</strong> (a partir de {{ vendas_a_partir }}) — pessoa ou empresa
+              contratada por nós para oferecer o plano Pro por telefone e WhatsApp a quem está no plano
+              Grátis. Recebe só nome, WhatsApp, cidade e plano, trabalha sob contrato com dever de sigilo e
+              só pode usar esses dados para essa oferta, nunca para outra finalidade ou empresa. Não acessa
+              seus recibos, seu CPF nem os dados dos passageiros, e não recebe pagamentos.</li>
             <li><strong>Autoridades públicas</strong> — apenas mediante ordem judicial ou requisição legal.</li>
           </ul>
+          <p class="legal-note">
+            <strong>O pagamento é sempre pelo Recibo Táxi.</strong> A nossa equipe e o representante nunca
+            pedem pagamento em dinheiro, transferência ou Pix para outra pessoa. O link de pagamento
+            verdadeiro começa com <code>https://www.recibotaxi.com.br/pagar/</code> e leva ao pagamento na
+            Stripe. Se alguém pedir outra coisa, não pague e avise em
+            <a href="mailto:suporte@recibotaxi.com.br">suporte@recibotaxi.com.br</a>.
+          </p>
           <p class="legal-note">
             Esses fornecedores podem processar dados fora do Brasil. A transferência internacional
             ocorre com as garantias do art. 33 da LGPD, por meio de cláusulas contratuais padrão.
@@ -223,6 +247,7 @@
             <li>Solicitar anonimização, bloqueio ou eliminação de dados desnecessários;</li>
             <li>Solicitar a portabilidade dos seus dados;</li>
             <li>Ser informado sobre com quem compartilhamos seus dados;</li>
+            <li>Se opor ao contato com ofertas, por e-mail, WhatsApp ou telefone, a qualquer momento;</li>
             <li>Revogar consentimento e solicitar a eliminação dos dados tratados com base nele.</li>
           </ul>
           <div class="legal-callout legal-callout-action">

@@ -38,7 +38,7 @@
   <tbody>
   {% for m in motoristas %}
   <tr>
-    <td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
+    <td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name or '(sem nome)' }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
     <td>{{ m.city }} · {{ m.plate }}</td>
     <td>{{ ui.plano(m) }}</td>
     <td>{{ m.origem }}</td>

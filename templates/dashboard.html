@@ -7,7 +7,7 @@
   <div class="container">
     <div class="db-header-inner">
       <div>
-        <h1 class="db-title">Olá, {{ current_user.full_name.split()[0] }} 👋</h1>
+        <h1 class="db-title">Olá{% if current_user.full_name.split() %}, {{ current_user.full_name.split()[0] }}{% endif %} 👋</h1>
         <p class="db-subtitle">{{ current_user.city }} · {{ current_user.plate }}</p>
       </div>
       <div class="db-plan-badge db-plan-{{ user_plan }}">

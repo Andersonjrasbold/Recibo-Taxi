@@ -221,8 +221,12 @@ todos só do admin:
   a página pública `/pagar/<token>/pronto`. Quem já assina pelo site ou pela loja
   vê "você já é Pro"; o link não dá acesso à conta. Gerar não grava nada: é um
   GET na ficha (`?link=<plano>`), e o log registra quem gerou.
-- *Cadastro pelo painel* (Motoristas → "Novo motorista"): a pedido do motorista,
-  com os mesmos dados e regras do cadastro do site (WhatsApp com DDD). A conta
+- *Cadastro pelo painel* (Motoristas → "Novo motorista"): a pedido do motorista.
+  Só o e-mail é obrigatório (desde 2026-11-22); o que vier preenchido segue as
+  regras do cadastro do site (CPF com dígito verificador, WhatsApp com DDD), e o
+  resto ele completa no app, em "Meus dados". Sem CPF (fora do Brasil, sem
+  WhatsApp), o link de criar senha não pede confirmação: vale a posse do link,
+  como no "Esqueci minha senha", e a ficha avisa isso ao admin. A conta
   nasce com senha aleatória que ninguém vê e com `criado_pelo_painel` no
   `app_metadata` do Auth (o motorista não edita). A ficha mostra o link
   `/criar-senha/<token>` para mandar pelo WhatsApp: vale 7 dias, morre no

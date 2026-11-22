@@ -394,6 +394,9 @@ CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
 # Marca, no app_metadata do Supabase Auth, a conta que o painel criou. O
 # app_metadata o motorista não consegue editar (o user_metadata, sim).
 MARCA_CRIADO_PELO_PAINEL = "criado_pelo_painel"
+# Conta interna (do Anderson, da equipe, de teste com cartão real): fica fora do
+# faturamento da visão geral. Mesmo lugar da marca acima, que só o servidor escreve.
+MARCA_CONTA_INTERNA = "conta_interna"
 
 # Indicação: o colega indicado emite o primeiro recibo e quem indicou ganha um
 # mês de Pro (até INDICACAO_MAX_MESES, um por colega ativo). Só quem indica
@@ -3969,17 +3972,32 @@ def pagar_pronto(token: str):
     return _pagina_com_token("pagar.html", token=token, estado="pronto", **contexto)
 
 
-def criado_pelo_painel(driver_id: str) -> bool:
-    """A conta nasceu pelo painel (marca no app_metadata do Auth)?"""
+def _marca_do_auth(driver_id: str, chave: str) -> bool:
+    """Lê uma marca booleana do app_metadata do Auth (só o servidor a escreve)."""
     try:
         with get_store().pool.connection() as conn:
             linha = conn.execute(
-                "select coalesce(raw_app_meta_data ->> %s, '') = 'true' as painel from auth.users where id = %s",
-                (MARCA_CRIADO_PELO_PAINEL, str(driver_id))).fetchone()
-        return bool(linha and linha["painel"])
+                "select coalesce(raw_app_meta_data ->> %s, '') = 'true' as marca from auth.users where id = %s",
+                (chave, str(driver_id))).fetchone()
+        return bool(linha and linha["marca"])
     except Exception as exc:
-        app.logger.warning("não consegui ler a marca do painel de %s: %s", driver_id, exc)
+        app.logger.warning("não consegui ler a marca %s de %s: %s", chave, driver_id, exc)
         return False
+
+
+def criado_pelo_painel(driver_id: str) -> bool:
+    """A conta nasceu pelo painel (marca no app_metadata do Auth)?"""
+    return _marca_do_auth(driver_id, MARCA_CRIADO_PELO_PAINEL)
+
+
+def conta_interna(driver_id: str) -> bool:
+    """Conta da casa (dono, equipe, teste com cartão real): fora do faturamento."""
+    return _marca_do_auth(driver_id, MARCA_CONTA_INTERNA)
+
+
+def auth_marcar_conta_interna(driver_id: str, interna: bool) -> None:
+    """Grava a marca no app_metadata. O GoTrue junta as chaves, não substitui."""
+    supabase_admin().auth.admin.update_user_by_id(str(driver_id), {"app_metadata": {MARCA_CONTA_INTERNA: interna}})
 
 
 def senha_pendente(usuario: dict) -> bool:
@@ -6292,13 +6310,19 @@ def produtos_stripe_do_recibo(stripe) -> set[str]:
     return produtos
 
 
+def _id_do_cliente(objeto) -> str:
+    """Id do cliente de uma fatura ou assinatura (texto, ou objeto expandido)."""
+    cliente = _campo(objeto, "customer")
+    return str(_campo(cliente, "id") or cliente or "") if not isinstance(cliente, str) else cliente
+
+
 def _produto_da_linha(linha) -> str:
     """Produto de uma linha de fatura: a API de 2025 em diante o põe em
     pricing.price_details; as anteriores, em price."""
     return str(_campo(linha, "pricing", "price_details", "product") or _campo(linha, "price", "product") or "")
 
 
-def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]:
+def faturamento_da_stripe(desde: datetime, excluir_clientes=frozenset()) -> tuple[list[dict], list[dict], str]:
     """(cobranças pagas das assinaturas do site, próximas cobranças, erro).
 
     O webhook não assina invoice.*, então as renovações da Stripe não chegam
@@ -6329,6 +6353,8 @@ def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]
             if not any(_produto_da_linha(linha) in produtos
                        for linha in (_campo(fatura, "lines", "data", padrao=[]) or [])):
                 continue  # fatura de outro produto da mesma conta
+            if _id_do_cliente(fatura) in excluir_clientes:
+                continue  # conta interna
             momento = int(_campo(fatura, "status_transitions", "paid_at", padrao=0)
                           or _campo(fatura, "created", padrao=0))
             pagas.append({"mes": _chave_mes(datetime.fromtimestamp(momento, timezone.utc)), "valor": valor,
@@ -6343,6 +6369,8 @@ def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]
             item = _campo(assinatura, "items", "data", 0, padrao={})
             if str(_campo(item, "price", "product", padrao="")) not in produtos:
                 continue  # assinatura de outro produto da mesma conta
+            if _id_do_cliente(assinatura) in excluir_clientes:
+                continue  # conta interna
             valor = Decimal(int(_campo(item, "price", "unit_amount", padrao=0))) \
                 * int(_campo(item, "quantity", padrao=1)) / 100
             # Desde a API de 2025 o fim do período mora no item da assinatura.
@@ -6403,8 +6431,10 @@ def montar_faturamento(d: dict, agora: datetime | None = None, da_stripe=None) -
         somar(realizado, linha["mes"], linha["tipo"], linha["valor"])
     for linha in d.get("fat_unico") or []:
         somar(realizado, linha["mes"], "unico", linha["valor"])
+    internas = d.get("fat_internas") or []
+    clientes_internos = frozenset(str(l["cliente"]) for l in internas if l.get("cliente"))
     pagas, proximas, erro = da_stripe if da_stripe is not None else faturamento_da_stripe(
-        datetime(inicio[0], inicio[1], 1, tzinfo=BR_TZ))
+        datetime(inicio[0], inicio[1], 1, tzinfo=BR_TZ), clientes_internos)
     for paga in pagas:
         somar(realizado, paga["mes"], paga["tipo"], paga["valor"])
     proximas = list(proximas)
@@ -6494,7 +6524,8 @@ def montar_faturamento(d: dict, agora: datetime | None = None, da_stripe=None) -
         "previsto_12m": sum((m["total_previsto"] for m in meses), Decimal(0)),
         "assinaturas_previstas": len(proximas),
         # Seções do banco que falharam: o gráfico sairia menor sem dizer por quê.
-        "faltando": [n for n in ("fat_loja", "fat_unico", "fat_loja_ativas") if n in d and d[n] is None],
+        "faltando": [n for n in ("fat_loja", "fat_unico", "fat_loja_ativas", "fat_internas") if n in d and d[n] is None],
+        "contas_internas": len(internas),
     }
 
 
@@ -6670,6 +6701,8 @@ _SQL_ADMIN = {
            and (type in ('INITIAL_PURCHASE', 'RENEWAL', 'NON_RENEWING_PURCHASE')
                 or (type = 'CANCELLATION' and price < 0))
            and received_at >= %(ini_fat)s
+           and not exists (select 1 from auth.users u where u.id = billing_events.driver_id
+                              and coalesce(u.raw_app_meta_data ->> 'conta_interna', '') = 'true')
          group by 1, 2""",
     # Anual pago uma vez pelo site (Pix ou cartão, mode=payment): o webhook grava
     # o valor e "pro (pré-pago até ...)" quando libera. Não gera fatura na Stripe.
@@ -6680,6 +6713,8 @@ _SQL_ADMIN = {
            and type in ('checkout.session.completed', 'checkout.session.async_payment_succeeded')
            and outcome like 'pro (pré-pago%%'
            and received_at >= %(ini_fat)s
+           and not exists (select 1 from auth.users u where u.id = billing_events.driver_id
+                              and coalesce(u.raw_app_meta_data ->> 'conta_interna', '') = 'true')
          group by 1""",
     # Quem assina pela loja e segue renovando: a última cobrança diz o valor, o
     # ciclo e o vencimento, que é a próxima cobrança. Cancelou a renovação
@@ -6694,7 +6729,14 @@ _SQL_ADMIN = {
            and upper(coalesce(e.currency, '')) = 'BRL' and e.product_id like %(produto_loja)s
            and d.plan = 'pro' and d.stripe_subscription_id is null
            and d.subscription_status in ('active', 'trialing', 'past_due')
+           and not exists (select 1 from auth.users u where u.id = d.id and coalesce(u.raw_app_meta_data ->> 'conta_interna', '') = 'true')
          order by e.driver_id, e.received_at desc, e.seq desc""",
+    # Contas internas: ficam fora do faturamento. O cliente da Stripe de cada
+    # uma tira as faturas e assinaturas dela da conta do site.
+    "fat_internas": """
+        select d.id, d.stripe_customer_id as cliente
+          from public.drivers d join auth.users u on u.id = d.id
+         where coalesce(u.raw_app_meta_data ->> 'conta_interna', '') = 'true'""",
     "cidades_recibos": """
         select coalesce(nullif(initcap(trim(driver_snapshot->>'city')), ''), '(sem cidade)') as cidade,
                count(*) as n, count(distinct driver_id) as motoristas
@@ -7183,6 +7225,7 @@ def admin_motorista(driver_id):
         eventos=eventos, indicacoes=indicacoes,
         limite=FREE_MONTHLY_LIMIT,
         assina_loja=assina_pela_loja(motorista), status_prepago=STATUS_PREPAGO,
+        interna=conta_interna(did),
         venda=_venda_na_ficha(motorista, request.args) if motorista else None,
     )
 
@@ -7275,6 +7318,30 @@ def admin_pro_cortesia(driver_id):
     flash(f"{dias} dias de Pro liberados para {motorista.get('full_name') or motorista.get('email')}, "
           f"até {fim.astimezone(BR_TZ).strftime('%d/%m/%Y')}.", "success")
     return voltar
+
+
+@app.post("/admin/motoristas/<uuid:driver_id>/interna")
+@admin_required
+def admin_conta_interna(driver_id):
+    """Marca (ou desmarca) a conta como interna: dono, equipe, teste com cartão
+    real. Ela segue funcionando igual; só sai do faturamento da visão geral."""
+    did = str(driver_id)
+    motorista = get_store().get_user_by_id(did)
+    if not motorista:
+        abort(404)
+    interna = request.form.get("interna") == "1"
+    try:
+        auth_marcar_conta_interna(did, interna)
+    except Exception as exc:
+        app.logger.error("admin: não gravei a marca de conta interna de %s: %s", did, exc)
+        flash("O Supabase não aceitou a mudança agora. Tente de novo em alguns instantes.", "danger")
+        return redirect(url_for("admin_motorista", driver_id=did))
+    _ADMIN_CACHE.pop("dashboard", None)
+    app.logger.warning("admin %s %s %s como conta interna", g.admin["email"],
+                       "marcou" if interna else "desmarcou", did)
+    flash("Conta marcada como interna: fica fora do faturamento da visão geral." if interna
+          else "Conta voltou a contar no faturamento da visão geral.", "success")
+    return redirect(url_for("admin_motorista", driver_id=did))
 
 
 @app.post("/admin/motoristas/<uuid:driver_id>/sem-ofertas")

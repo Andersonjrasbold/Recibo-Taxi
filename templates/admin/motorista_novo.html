@@ -11,7 +11,7 @@
     <section class="adm-painel">
       <h2 class="adm-h2"><i class="bi bi-person-plus-fill me-2"></i>Cadastrar pelo painel</h2>
       <p class="adm-suave">Só com o pedido do motorista e os dados que ele passou. A conta nasce sem senha conhecida: ele cria a dele pelo link que aparece na ficha, para mandar pelo WhatsApp (vale 7 dias e pede os 4 primeiros números do CPF dele; fora do Brasil, os 4 últimos do WhatsApp). Não existe senha padrão. O e-mail não sai sozinho: leia o endereço de volta para ele, letra por letra, antes de usar o botão de e-mail da ficha.</p>
-      <p class="adm-suave">Só o e-mail é obrigatório. O resto ele completa depois no app, em "Meus dados" (até lá, o recibo sai sem o que faltar). Sem CPF, o link de criar senha não pede confirmação nenhuma: quem abrir o link cria a senha. Por isso, sem CPF, mande o link só para o e-mail ou o WhatsApp que ele mesmo passou por escrito.</p>
+      <p class="adm-suave">Só o e-mail é obrigatório. O que faltar (nome, WhatsApp, CPF, cidade, placa), o link de criar senha pede no site, junto com a senha, e depois manda ele para o app. Sem CPF, o link não pede confirmação nenhuma: quem abrir o link cria a senha. Por isso, sem CPF, mande o link só para o e-mail ou o WhatsApp que ele mesmo passou por escrito.</p>
       {% set f = form or {} %}
       <form action="{{ url_for('admin_motorista_novo') }}" method="post" novalidate>
         <input type="hidden" name="csrf" value="{{ admin_csrf }}">

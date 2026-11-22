@@ -3862,44 +3862,73 @@ class _ListaStripe(list):
 
 
 class _StripeFat:
+    """Stripe de mentira com dois produtos na mesma conta: o do Recibo Taxi e o
+    de outro app. Linhas de fatura no formato novo (pricing) e no antigo (price)."""
+    class Price:
+        @staticmethod
+        def retrieve(preco):
+            return {"id": preco, "product": "prod_recibo"}
+
     class Invoice:
         @staticmethod
         def list(**kw):
             _StripeFat.pedidos.append(("Invoice", kw))
+            novo = lambda produto: {"data": [{"pricing": {"price_details": {"product": produto}}}]}
+            antigo = lambda produto: {"data": [{"price": {"product": produto}}]}
             return _ListaStripe([
-                {"amount_paid": 990, "livemode": True, "currency": "brl", "status_transitions": {"paid_at": 1795000000}},
-                {"amount_paid": 5990, "livemode": True, "currency": "brl", "status_transitions": {"paid_at": 1795000000}},
-                {"amount_paid": 990, "livemode": False, "currency": "brl", "status_transitions": {"paid_at": 1795000000}},
-                {"amount_paid": 0, "livemode": True, "currency": "brl", "created": 1795000000},
+                {"amount_paid": 990, "livemode": True, "currency": "brl", "status_transitions": {"paid_at": 1795000000},
+                 "lines": novo("prod_recibo")},
+                {"amount_paid": 5990, "livemode": True, "currency": "brl", "status_transitions": {"paid_at": 1795000000},
+                 "lines": antigo("prod_recibo")},
+                {"amount_paid": 990, "livemode": False, "currency": "brl", "status_transitions": {"paid_at": 1795000000},
+                 "lines": novo("prod_recibo")},
+                {"amount_paid": 0, "livemode": True, "currency": "brl", "created": 1795000000, "lines": novo("prod_recibo")},
+                {"amount_paid": 4990, "livemode": True, "currency": "brl", "status_transitions": {"paid_at": 1795000000},
+                 "lines": novo("prod_outro_app")},
             ])
 
     class Subscription:
         @staticmethod
         def list(**kw):
             _StripeFat.pedidos.append(("Subscription", kw))
-            item = lambda valor, intervalo: {"data": [{"price": {"unit_amount": valor, "currency": "brl",
-                                                                 "recurring": {"interval": intervalo}},
-                                                       "quantity": 1, "current_period_end": 1797000000}]}
+            item = lambda valor, intervalo, produto="prod_recibo": {"data": [{
+                "price": {"unit_amount": valor, "currency": "brl", "recurring": {"interval": intervalo},
+                          "product": produto},
+                "quantity": 1, "current_period_end": 1797000000}]}
             return _ListaStripe([
                 {"status": "active", "livemode": True, "cancel_at_period_end": False, "items": item(990, "month")},
                 {"status": "active", "livemode": True, "cancel_at_period_end": True, "items": item(990, "month")},
                 {"status": "past_due", "livemode": True, "cancel_at_period_end": False, "items": item(5990, "year")},
                 {"status": "active", "livemode": False, "cancel_at_period_end": False, "items": item(990, "month")},
+                {"status": "active", "livemode": True, "cancel_at_period_end": False,
+                 "items": item(4990, "month", "prod_outro_app")},
             ])
 
     pedidos = []
 
 
 _get_stripe_fat = A.get_stripe
+_env_fat = os.environ.get("STRIPE_PRO_PRICE_ID")
 A.get_stripe = lambda: _StripeFat
 try:
+    os.environ.pop("STRIPE_PRO_PRICE_ID", None)
+    A._PRODUTOS_STRIPE.clear()
+    _sem_preco = A.faturamento_da_stripe(A.datetime(2026, 1, 1, tzinfo=A.timezone.utc))
+    os.environ["STRIPE_PRO_PRICE_ID"] = "price_recibo_mensal"
     _pagas, _prox, _erro = A.faturamento_da_stripe(A.datetime(2026, 1, 1, tzinfo=A.timezone.utc))
 finally:
     A.get_stripe = _get_stripe_fat
-check("stripe: faturas pagas de producao, a de 59,90 como anual (teste e zerada ficam fora)",
+    if _env_fat is None:
+        os.environ.pop("STRIPE_PRO_PRICE_ID", None)
+    else:
+        os.environ["STRIPE_PRO_PRICE_ID"] = _env_fat
+    A._PRODUTOS_STRIPE.clear()
+check("stripe: sem os precos do Recibo Taxi configurados, o site fica fora com aviso (nada de outro app entra)",
+      _sem_preco[0] == [] and _sem_preco[1] == [] and "Recibo Táxi" in _sem_preco[2], str(_sem_preco)[:200])
+check("stripe: so faturas do Recibo Taxi (outro app da mesma conta fica fora), de producao, a de 59,90 como anual",
       _erro == "" and sorted((p["valor"], p["tipo"]) for p in _pagas) == [(_Dec("9.9"), "mensal"), (_Dec("59.9"), "anual")],
       str(_pagas))
-check("stripe: previsao so das que seguem renovando (cancelando no fim do periodo e teste ficam fora)",
+check("stripe: previsao so das do Recibo Taxi que seguem renovando (outro app, cancelando e teste ficam fora)",
       sorted((p["valor"], p["tipo"]) for p in _prox) == [(_Dec("9.9"), "mensal"), (_Dec("59.9"), "anual")], str(_prox))
 check("stripe: lista as assinaturas sem filtro de status (a Stripe devolve as nao canceladas)",
       all("status" not in kw for nome, kw in _StripeFat.pedidos if nome == "Subscription"))
@@ -3943,6 +3972,26 @@ try:
     _html_g = _cadm_g.get("/admin?atualizar=1").get_data(as_text=True)
 finally:
     A.get_stripe = _get_stripe_g
+    A._PRODUTOS_STRIPE.clear()
+# Lojas: compra de outro app que use o mesmo RevenueCat nao entra no faturamento.
+def _fat_loja_mes():
+    _dd = {"_tempos": {}}
+    with A.get_store().pool.connection() as _conn:
+        A._executar_secoes(_conn, ["fat_loja"], A._params_dashboard_admin(), _dd)
+    _mes = A.datetime.now(A.BR_TZ).strftime("%Y-%m")
+    return sum((_Dec(str(l["valor"])) for l in (_dd["fat_loja"] or []) if l["mes"] == _mes), _Dec(0))
+_antes_loja = _fat_loja_mes()
+with A.get_store().pool.connection() as _conn:
+    for _k, (_prod, _preco) in enumerate((("br.com.recibotaxi.app.pro.mensal", "9.90"), ("com.outroapp.pro", "50.00"))):
+        _conn.execute("""insert into public.billing_events (source, event_id, type, store, environment, product_id,
+                           cycle, price, currency, outcome, payload)
+                         values ('revenuecat', %s, 'RENEWAL', 'APP_STORE', 'PRODUCTION', %s, 'mensal', %s, 'BRL', 'pro', '{}'::jsonb)""",
+                      (f"teste-suite-fat-{_suf_g}-{_k}", _prod, _preco))
+_depois_loja = _fat_loja_mes()
+with A.get_store().pool.connection() as _conn:
+    _conn.execute("delete from public.billing_events where event_id like %s", (f"teste-suite-fat-{_suf_g}-%",))
+check("lojas: so produtos do Recibo Taxi entram (compra de outro app no mesmo RevenueCat fica fora)",
+      _depois_loja - _antes_loja == _Dec("9.90"), f"{_antes_loja} -> {_depois_loja}")
 check("painel: grafico de faturamento com legenda, divisa da previsao e tabela",
       "Faturamento mês a mês" in _html_g and "previsão →" in _html_g and "Ver os números em tabela" in _html_g
       and 'class="seg seg-mensal' in _html_g and "Anual pago uma vez (Pix ou cartão)" in _html_g)

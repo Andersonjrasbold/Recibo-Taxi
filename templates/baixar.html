@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{#- Destino do link impresso e do anúncio (recibotaxi.com.br/baixar?c=CANAL).
+    Não pode redirecionar sozinho para a loja: o Google Ads reprova anúncio que
+    mostra recibotaxi.com.br e leva a outro domínio. A loja só abre no toque. -#}
+{% block title %}Baixar o app{% endblock %}
+{% block title_completo %}Baixar o app Recibo Táxi: recibo de corrida no celular{% endblock %}
+{% block description %}Baixe grátis o Recibo Táxi no iPhone ou no Android. O recibo da corrida sai na hora e vai pelo WhatsApp, por e-mail ou em PDF. No app, funciona até sem internet.{% endblock %}
+{% block og_title %}Baixe o Recibo Táxi{% endblock %}
+
+{% block content %}
+{% set botao_appstore %}
+<a href="{{ link_appstore }}" class="btn-store" rel="nofollow" id="btn-appstore">
+  <i class="bi bi-apple"></i>
+  <span class="btn-store-text"><small>Baixar na</small>App Store</span>
+</a>
+{% endset %}
+{% set botao_play %}
+<a href="{{ link_play }}" class="btn-store" rel="nofollow" id="btn-play">
+  <i class="bi bi-google-play"></i>
+  <span class="btn-store-text"><small>Disponível no</small>Google Play</span>
+</a>
+{% endset %}
+<section class="hero-section baixar-section">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-8 text-center">
+        <div class="hero-eyebrow">
+          <i class="bi bi-taxi-front-fill me-2"></i>Para taxista e motorista de aplicativo
+        </div>
+        <h1 class="hero-title baixar-title">Baixe o <span class="hero-title-accent">Recibo Táxi</span></h1>
+        <p class="hero-lead mx-auto">
+          Preencha o passageiro, a origem, o destino e o valor. O recibo sai na hora e vai pelo WhatsApp, por e-mail ou em PDF. No app, funciona até sem internet.
+        </p>
+        {#- A loja do aparelho vem primeiro; no computador, a ordem de sempre. -#}
+        <div class="baixar-lojas">
+          {% if loja_do_aparelho == 'play' %}{{ botao_play }}{{ botao_appstore }}{% else %}{{ botao_appstore }}{{ botao_play }}{% endif %}
+        </div>
+        <div class="hero-trust justify-content-center">
+          <span><i class="bi bi-check-circle-fill me-1"></i>Grátis para começar, com {{ free_monthly_limit }} recibos por mês</span>
+          <span><i class="bi bi-check-circle-fill me-1"></i>Sem cartão de crédito</span>
+        </div>
+        <p class="baixar-site">Prefere usar pelo computador? <a href="{{ link_cadastro }}">Crie a conta grátis pelo site</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

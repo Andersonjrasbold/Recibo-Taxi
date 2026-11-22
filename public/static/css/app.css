@@ -303,6 +303,21 @@ a { color: inherit; text-decoration: none; }
 .btn-store-text { display: flex; flex-direction: column; font-family: "Sora", sans-serif; font-size: 1.05rem; font-weight: 600; letter-spacing: -.01em; }
 .btn-store-text small { font-size: .62rem; font-weight: 500; opacity: .85; letter-spacing: 0; }
 
+/* Página /baixar: selos maiores e centrados; no celular, um embaixo do outro,
+   na largura toda, para o polegar acertar. */
+.baixar-section { padding: 3.5rem 0 4rem; }
+.baixar-title { font-size: clamp(2.3rem, 5vw, 3.8rem); }
+.baixar-lojas { display: flex; flex-wrap: wrap; justify-content: center; gap: .85rem; margin-bottom: 1.75rem; }
+.baixar-lojas .btn-store { justify-content: center; min-width: 13.5rem; padding: .75rem 1.4rem .75rem 1.15rem; }
+.baixar-lojas .btn-store .bi { font-size: 1.9rem; }
+.baixar-lojas .btn-store-text { font-size: 1.2rem; text-align: left; }
+.baixar-site { margin: 1.75rem 0 0; font-size: .9rem; color: rgba(255,244,236,.66); }
+.baixar-site a { color: var(--apricot); text-decoration: underline; }
+@media (max-width: 575.98px) {
+  .baixar-lojas { flex-direction: column; align-items: stretch; }
+  .baixar-lojas .btn-store { min-width: 0; }
+}
+
 /* Hero mock receipt card */
 .hero-visual { position: relative; padding: .5rem 0 2rem; }
 

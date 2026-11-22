@@ -1,10 +1,10 @@
 {% extends "admin/layout.html" %}
 {% import "admin/_macros.html" as ui %}
-{% block title %}{{ m.full_name }} — Painel{% endblock %}
+{% block title %}{{ m.full_name or m.email }} — Painel{% endblock %}
 {% block admin %}
 <p><a href="{{ url_for('admin_motoristas') }}" class="adm-link"><i class="bi bi-arrow-left me-1"></i>Motoristas</a></p>
 <div class="adm-cabecalho">
-  <h1 class="admin-titulo">{{ m.full_name }}</h1>
+  <h1 class="admin-titulo">{{ m.full_name or '(sem nome)' }}</h1>
   {{ ui.plano(m) }}
 </div>
 <div class="row g-4">
@@ -50,7 +50,7 @@
             <button type="submit" class="adm-botao" title="Dono, equipe ou teste com cartão real">{% if interna %}<i class="bi bi-arrow-counterclockwise me-1"></i>Voltar a contar no faturamento{% else %}<i class="bi bi-house-gear me-1"></i>Marcar como interna{% endif %}</button>
           </form></td></tr>
         {% if m.pro_until %}<tr><td>Pro pré-pago até</td><td>{{ m.pro_until | data_br(false) }}{% if m.subscription_status not in ('prepago', 'indicacao', 'cortesia') %} <small class="adm-suave">(guardado; vale quando a assinatura acabar)</small>{% endif %}</td></tr>{% endif %}
-        <tr><td>Indicado por</td><td>{% if indicacoes is none %}-{% elif indicacoes.por %}<a href="{{ url_for('admin_motorista', driver_id=indicacoes.por.id) }}" class="adm-link">{{ indicacoes.por.full_name }}</a>{% else %}ninguém{% endif %}</td></tr>
+        <tr><td>Indicado por</td><td>{% if indicacoes is none %}-{% elif indicacoes.por %}<a href="{{ url_for('admin_motorista', driver_id=indicacoes.por.id) }}" class="adm-link">{{ indicacoes.por.full_name or '(sem nome)' }}</a>{% else %}ninguém{% endif %}</td></tr>
         <tr><td>Indicou</td><td>{% if indicacoes is none %}-{% else %}{{ indicacoes.n }} colega(s), {{ indicacoes.ativas }} com recibo · cupom {% if m.referral_coupon_used_at %}usado{% elif m.referral_coupon_granted_at %}liberado{% else %}não{% endif %}{% if m.referral_code %} · código <code>{{ m.referral_code }}</code>{% endif %}{% endif %}</td></tr>
       </table>
       <h3 class="adm-h3 mt-3">Eventos de cobrança</h3>
@@ -71,7 +71,7 @@
     {% if venda.senha %}
     <section class="adm-painel" id="primeiro-acesso">
       <h2 class="adm-h2"><i class="bi bi-key-fill me-2"></i>Primeiro acesso</h2>
-      <p class="adm-suave">Conta criada pelo painel, ainda sem a senha do motorista. Este link cria a senha e entra no site; vale 7 dias, morre no primeiro uso e pede os 4 primeiros números do CPF dele (fora do Brasil, os 4 últimos do WhatsApp). Mande pelo WhatsApp. Por e-mail, só depois de conferir o endereço com ele: um e-mail errado entregaria a conta a outra pessoa. E-mail errado? Exclua esta conta (no fim da ficha) e cadastre de novo; não crie uma segunda conta.</p>
+      <p class="adm-suave">Conta criada pelo painel, ainda sem a senha do motorista. Este link cria a senha e entra no site; vale 7 dias, morre no primeiro uso e {% if venda.senha.prova == 'cpf' %}pede os 4 primeiros números do CPF dele{% elif venda.senha.prova == 'whatsapp' %}pede os 4 últimos números do WhatsApp dele{% else %}<strong>não pede confirmação nenhuma</strong>: a conta não tem {{ 'CPF' if (m.country or 'BR') == 'BR' else 'WhatsApp' }}, e quem abrir o link cria a senha{% endif %}. Mande pelo WhatsApp. Por e-mail, só depois de conferir o endereço com ele: um e-mail errado entregaria a conta a outra pessoa. E-mail errado? Exclua esta conta (no fim da ficha) e cadastre de novo; não crie uma segunda conta.</p>
       {% if venda.senha.ja_e_pro %}
       <p class="adm-suave">Ele já é Pro: o link só cria a senha, sem pagamento.</p>
       {% else %}

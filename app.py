@@ -1121,16 +1121,18 @@ def enviar_link_de_redefinicao(user: dict) -> bool:
     if senha_pendente(user):
         # Conta do painel que ainda não tem senha: o e-mail foi ditado por
         # telefone e ninguém o confirmou. O link de 1 hora entraria na conta só
-        # com a caixa de e-mail; vai o de criar senha, que pede os 4 últimos
-        # números do WhatsApp. O nonce fixo faz os links pedidos por aqui
-        # dividirem um teto de tentativas só (senão cada pedido renovaria o teto).
+        # com a caixa de e-mail; vai o de criar senha, que pede os 4 primeiros
+        # números do CPF (ver prova_de_posse). O nonce fixo faz os links pedidos
+        # por aqui dividirem um teto de tentativas só (senão cada pedido
+        # renovaria o teto).
         return enviar_link_criar_senha(user, gerar_link_criar_senha(user, nonce=f"r-{user['_id']}"))
     link = absolute_url("redefinir_senha", token=build_reset_token(user))
     return send_email(
         user["email"],
         f"Redefinição de senha — {APP_NAME}",
         (
-            f"Olá, {user['full_name'].split()[0]}.\n\n"
+            # Conta feita pelo painel só com o e-mail não tem nome: o split()[0] estourava.
+            f"Olá, {_primeiro_nome(user.get('full_name', ''))}.\n\n"
             f"Recebemos um pedido para redefinir a senha da sua conta no {APP_NAME}.\n"
             f"Abra o link abaixo para criar uma nova senha:\n\n"
             f"{link}\n\n"
@@ -4064,6 +4066,8 @@ def prova_de_posse(usuario: dict) -> tuple[str, str]:
       em nenhuma mensagem, nem na página. O WhatsApp não servia: digitado
       errado, levava o link e a resposta a um estranho, e travava o motorista.
     - Fora do Brasil o documento é texto livre: os 4 últimos do WhatsApp.
+    - Sem esse dado, ("", ""): desde 2026-11-22 o painel só exige o e-mail, e o
+      link não pede nada (ver criar_senha).
     Só dígitos ASCII: o compare_digest recusa texto com outros caracteres.
     """
     if (usuario.get("country") or PAIS_PADRAO) == PAIS_PADRAO:
@@ -4103,6 +4107,10 @@ def enviar_link_criar_senha(usuario: dict, link: str, plano: str = "") -> bool:
         f"Para entrar no app, use este e-mail ({usuario.get('email', '')}) e a senha que você criar.",
         f"Baixe o app: {absolute_url('baixar_app', c='criar-senha')}",
         "",
+    ]
+    if perfil_incompleto(usuario):
+        linhas += [f"Depois de entrar no app, {AVISO_COMPLETAR}.", ""]
+    linhas += [
         f"Não pediu esta conta? Escreva para {EMAIL_AVISOS_PADRAO} que a gente apaga.",
     ]
     try:
@@ -4135,7 +4143,8 @@ def criar_senha(token: str):
                 plano = plano_do_primeiro_acesso(g.user, link["plano"])
                 return _pagina_criar_senha(token, "pronto", usuario=g.user, email=g.user.get("email", ""),
                                            primeiro_nome=_primeiro_nome(g.user.get("full_name", "")),
-                                           plano=plano, rotulo=PLANOS_ROTULO.get(plano, ""))
+                                           plano=plano, rotulo=PLANOS_ROTULO.get(plano, ""),
+                                           completar=AVISO_COMPLETAR if perfil_incompleto(g.user) else "")
             # A senha foi criada, mas a resposta não chegou a este navegador
             # (recarregou, a rede caiu, abriu o link em outro lugar): o caminho
             # é entrar com a senha nova, levando o plano para o pagamento.
@@ -4149,11 +4158,12 @@ def criar_senha(token: str):
         return _pagina_criar_senha(token, link["motivo"], status)
 
     plano = plano_do_primeiro_acesso(usuario, link["plano"])
+    # Conta feita só com o e-mail (sem CPF; fora do Brasil, sem WhatsApp): não
+    # há o que perguntar, e quem abre o link cria a senha. É a garantia do
+    # "Esqueci minha senha" de qualquer conta: a posse da caixa de e-mail (ou
+    # do WhatsApp) para onde o link foi. Sem senha, a conta ainda não tem
+    # recibo nenhum; a ficha avisa o admin antes de ele mandar o link.
     prova, digitos_certos = prova_de_posse(usuario)
-    if not digitos_certos:
-        # O painel exige CPF válido (Brasil) e WhatsApp com DDD; sem eles, não
-        # há como provar que é o motorista. Fecha em vez de pular a prova.
-        return _pagina_criar_senha(token, "sem_prova", 409)
     chave_tentativas = f"criar_senha_falha:{link['nonce'] or usuario['_id']}"
     contexto = {"email": usuario.get("email", ""), "primeiro_nome": _primeiro_nome(usuario.get("full_name", "")),
                 "plano": plano, "rotulo": PLANOS_ROTULO.get(plano, ""), "prova": prova,
@@ -4176,7 +4186,7 @@ def criar_senha(token: str):
             erro = f"A senha passa do limite de {SIGNUP_FIELD_LIMITS['senha'][1]} caracteres."
         elif senha != confirmacao:
             erro = "As senhas não conferem."
-        else:
+        elif prova:
             # A tentativa conta ANTES de conferir, num passo só: ler e somar
             # depois deixava pedidos simultâneos passarem todos pelo teto (o
             # mesmo cuidado do conferir_senha_atual). Erro de senha não gasta.
@@ -4545,6 +4555,16 @@ def motorista_do_app(user: dict) -> dict:
 PERFIL_DO_APP = ("nome_completo", "whatsapp", "cidade", "placa", "modelo_veiculo",
                  "prefixo_taxi", "numero_alvara", "cooperativa", "cnpj_cooperativa")
 PERFIL_OBRIGATORIOS = ("nome_completo", "whatsapp", "cidade", "placa")
+# O menu do app abre pelo círculo com as iniciais (sem nome, um "·"), no alto.
+AVISO_COMPLETAR = ("toque no círculo do perfil, no alto da tela, e em \"Meus dados\" para completar o seu "
+                   "cadastro (nome, WhatsApp, cidade e placa: eles saem em cada recibo)")
+
+
+def perfil_incompleto(usuario: dict) -> bool:
+    """Falta algum dos dados que o "Meus dados" do app exige. Acontece com a
+    conta que o painel criou só com o e-mail: até ele completar, o recibo sai
+    sem o que faltar (nome, placa...)."""
+    return not all((usuario.get(c) or "").strip() for c in ("full_name", "whatsapp", "city", "plate"))
 
 
 @app.post("/api/perfil")
@@ -7393,13 +7413,16 @@ def mensagem_link_de_pagamento(motorista: dict, plano: str, url: str, vence: dat
 def mensagem_criar_senha(motorista: dict, url: str, plano: str = "") -> str:
     passo = (f"Crie sua senha neste link; logo depois você ativa o Pro ({PLANOS_DO_LINK[plano]}):"
              if plano in PLANOS_DO_LINK else "Crie sua senha neste link:")
-    return "\n".join([
+    linhas = [
         f"Olá, {_primeiro_nome(motorista.get('full_name', ''))}! Aqui é do {APP_NAME}. Sua conta está pronta.",
         passo,
         url,
         f"Depois é só baixar o app e entrar com o e-mail {motorista.get('email', '')} e a sua senha: "
         f"{absolute_url('baixar_app', c='whatsapp')}",
-    ])
+    ]
+    if perfil_incompleto(motorista):
+        linhas.append(f"No app, {AVISO_COMPLETAR}.")
+    return "\n".join(linhas)
 
 
 def mensagem_formulario(plano: str, url: str) -> str:
@@ -7438,7 +7461,8 @@ def _venda_na_ficha(motorista: dict, args) -> dict:
         url = gerar_link_criar_senha(motorista, plano_senha)
         texto = mensagem_criar_senha(motorista, url, plano_senha)
         venda["senha"] = {"plano": plano_senha, "url": url, "texto": texto, "whatsapp": link_whatsapp(fone, texto),
-                          "ja_e_pro": motorista.get("plan") in PAID_PLANS}
+                          "ja_e_pro": motorista.get("plan") in PAID_PLANS,
+                          "prova": prova_de_posse(motorista)[0]}
     return venda
 
 
@@ -7482,6 +7506,12 @@ def admin_motorista_novo():
     "Enviar por e-mail" fica na ficha, para depois de conferir o endereço.
     Senha padrão ("123") não: o site exige 8 caracteres, e quem soubesse o
     e-mail entraria na conta e veria o CPF dele e os recibos dos passageiros.
+
+    Só o e-mail é obrigatório (desde 2026-11-22, para um motorista que não
+    conseguia se cadastrar pelo app): o resto ele completa no app, em "Meus
+    dados". O que vier preenchido é conferido como antes (CPF pelo dígito
+    verificador, WhatsApp com DDD). Sem CPF, o link de criar senha não tem o
+    que perguntar: ver criar_senha.
     """
     disponiveis = planos_do_link_disponiveis()
     formulario = None
@@ -7516,8 +7546,8 @@ def admin_motorista_novo():
     plano = request.form.get("plano_link", "")
 
     erro = None
-    if not all([full_name, email, whatsapp, cpf, city, plate]):
-        erro = "Preencha todos os campos obrigatórios."
+    if not email:
+        erro = "Preencha o e-mail: é o login dele."
     elif not email_valido(email):
         erro = "Confira o e-mail: ele não parece válido."
     elif request.form.get("pediu") != "1":
@@ -7529,10 +7559,10 @@ def admin_motorista_novo():
         return tela(400)
     try:
         pais, moeda = pais_e_moeda(request.form.get("pais"), request.form.get("moeda"))
-        if not phone_e164(whatsapp, pais):
+        if whatsapp and not phone_e164(whatsapp, pais):
             # É para onde vai o link (e, fora do Brasil, o link de senha pede os 4 últimos números dele).
             raise ValueError("Confira o WhatsApp: com DDD (fora do Brasil, com + e o código do país).")
-        if pais == PAIS_PADRAO and not cpf_valido(cpf):
+        if cpf and pais == PAIS_PADRAO and not cpf_valido(cpf):
             raise ValueError("Confira o CPF: os dígitos não conferem.")
         coop_name, coop_cnpj = cooperativa_informada(
             request.form.get("cooperativa", ""), request.form.get("cnpj_cooperativa", ""), pais)
@@ -7561,7 +7591,7 @@ def admin_motorista_novo():
     _ADMIN_CACHE.pop("dashboard", None)
     app.logger.warning("admin %s cadastrou o motorista %s (%s) pelo painel", g.admin["email"], user_id,
                        filtro_mascarar_email(email))
-    flash(f"Conta de {full_name} criada. Agora mande para ele, pelo WhatsApp, o link para criar a senha "
+    flash(f"Conta de {full_name or email} criada. Agora mande para ele, pelo WhatsApp, o link para criar a senha "
           "(logo abaixo). Antes de mandar por e-mail, confira o endereço com ele, letra por letra.", "success")
     return redirect(url_for("admin_motorista", driver_id=user_id, senha_plano=plano or None) + "#primeiro-acesso")
 

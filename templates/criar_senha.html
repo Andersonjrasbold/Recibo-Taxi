@@ -40,6 +40,7 @@
           {% endif %}
 
           <form action="{{ url_for('criar_senha', token=token) }}" method="post" class="auth-form" id="formCriarSenha" novalidate>
+            {% if prova %}
             <div class="form-group-auth">
               <label for="digitos" class="form-label-auth">Para confirmar que é você: {{ 'os 4 primeiros números do seu CPF' if prova == 'cpf' else 'os 4 últimos números do seu WhatsApp' }}</label>
               <div class="input-icon-wrap">
@@ -48,12 +49,13 @@
                   inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="0000" required autofocus>
               </div>
             </div>
+            {% endif %}
             <div class="form-group-auth">
               <label for="senha" class="form-label-auth">Senha</label>
               <div class="input-icon-wrap">
                 <i class="bi bi-lock input-icon"></i>
                 <input type="password" id="senha" name="senha" class="form-control form-control-auth"
-                  placeholder="Mínimo 8 caracteres" autocomplete="new-password" minlength="8" maxlength="200" required>
+                  placeholder="Mínimo 8 caracteres" autocomplete="new-password" minlength="8" maxlength="200" required{% if not prova %} autofocus{% endif %}>
               </div>
             </div>
             <div class="form-group-auth">
@@ -77,6 +79,9 @@
           <div class="pagar-plano">
             <div class="pagar-plano-nome"><i class="bi bi-phone me-2"></i>Agora, no celular</div>
             <p class="mt-2 mb-0">Baixe o app Recibo Táxi e entre com <span class="pagar-email">{{ email }}</span> e a senha que você acabou de criar.</p>
+            {% if completar %}
+            <p class="mt-2 mb-0"><strong>Depois de entrar no app,</strong> {{ completar }}.</p>
+            {% endif %}
           </div>
           <a href="{{ url_for('baixar_app', c='criar-senha') }}" class="btn btn-auth-submit w-100 mt-4"><i class="bi bi-download me-2"></i>Baixar o app</a>
           {% if plano %}
@@ -97,12 +102,6 @@
           <a href="{{ url_for('baixar_app', c='criar-senha') }}" class="btn btn-auth-submit w-100"><i class="bi bi-download me-2"></i>Baixar o app</a>
           {% endif %}
           <p class="mt-3 mb-0">Esqueceu a senha? No app ou no site, toque em "Esqueci minha senha".</p>
-
-          {% elif estado == 'sem_prova' %}
-            <h1 class="auth-title">Fale com a gente</h1>
-            <p class="auth-subtitle">Não conseguimos confirmar que é você por este link.</p>
-          </div>
-          <p class="mb-0">Fale com quem te atendeu para conferir o seu cadastro e mandar um link novo.</p>
 
           {% elif estado == 'bloqueado' %}
             <h1 class="auth-title">Muitas tentativas</h1>

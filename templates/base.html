@@ -62,7 +62,7 @@
         <div class="nav-actions">
           {% if current_user %}
           <span class="nav-username d-none d-md-inline">
-            <i class="bi bi-person-circle me-1"></i>{{ current_user.full_name.split()[0] }}
+            <i class="bi bi-person-circle me-1"></i>{{ current_user.full_name.split()[0] if current_user.full_name.split() else 'Minha conta' }}
           </span>
           <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-nav-primary">
             <i class="bi bi-grid-3x3-gap-fill me-1"></i>Painel

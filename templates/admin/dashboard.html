@@ -37,7 +37,7 @@
         <thead><tr><th>Motorista</th><th>Cidade</th><th>Plano</th><th>Origem</th><th>Cadastro</th><th>Última alteração</th></tr></thead>
         <tbody>
         {% for m in d.pagantes %}
-        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name or '(sem nome)' }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
             <td>{{ m.city }}</td><td>{{ ui.plano(m) }}</td><td>{{ m.origem }}</td><td>{{ m.created_at | data_br(false) }}</td><td>{{ m.updated_at | data_br(false) }}</td></tr>
         {% else %}<tr><td colspan="6" class="adm-suave">Nenhum assinante ainda.</td></tr>{% endfor %}
         </tbody></table></div>
@@ -69,7 +69,7 @@
     <thead><tr><th>Quando</th><th>Motorista</th><th>Origem</th><th>Evento</th><th class="adm-num">Valor</th><th>Resultado</th></tr></thead>
     <tbody>{% for e in d.ultimos_eventos %}
     <tr><td>{{ e.received_at | data_br }}</td>
-        <td>{% if e.driver_id %}<a href="{{ url_for('admin_motorista', driver_id=e.driver_id) }}" class="adm-link">{{ e.full_name }}</a>{% else %}<code class="adm-suave">{{ e.app_user_id or '-' }}</code>{% endif %}</td>
+        <td>{% if e.driver_id %}<a href="{{ url_for('admin_motorista', driver_id=e.driver_id) }}" class="adm-link">{{ e.full_name or '(sem nome)' }}</a>{% else %}<code class="adm-suave">{{ e.app_user_id or '-' }}</code>{% endif %}</td>
         <td>{{ e.origem }}{% if e.environment in ('SANDBOX', 'TEST') %} <small class="adm-falha">teste</small>{% endif %}</td>
         <td>{{ e.type }}{% if e.cycle %} · {{ e.cycle }}{% endif %}</td>
         <td class="adm-num">{{ e.price | valor(e.currency) if e.price is not none else '-' }}</td>
@@ -121,7 +121,7 @@
     <thead><tr><th>Motorista</th><th>Cidade</th><th>WhatsApp</th><th>Uso no mês</th><th>Recibos (total)</th><th>Cadastro</th></tr></thead>
     <tbody>
     {% for m in d.candidatos %}
-    <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
+    <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name or '(sem nome)' }}</a><br><small class="adm-suave">{{ m.email }}</small></td>
         <td>{{ m.city }}</td><td>{{ m.whatsapp }}</td><td class="adm-num">{{ m.used }}/{{ free_monthly_limit }}</td><td class="adm-num">{{ m.recibos_total }}</td><td>{{ m.created_at | data_br(false) }}</td></tr>
     {% else %}<tr><td colspan="6" class="adm-suave">Ninguém no teto este mês.</td></tr>{% endfor %}
     </tbody></table></div>
@@ -186,7 +186,7 @@
       <table class="adm-tabela">
         <thead><tr><th>Motorista</th><th>Plano</th><th class="adm-num">Recibos</th><th class="adm-num">Valor (R$)</th></tr></thead>
         <tbody>{% for m in d.top_emissores %}
-        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a></td><td>{{ m.plan }}</td><td class="adm-num">{{ m.n }}</td><td class="adm-num">{{ m.valor | brl }}</td></tr>
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name or '(sem nome)' }}</a></td><td>{{ m.plan }}</td><td class="adm-num">{{ m.n }}</td><td class="adm-num">{{ m.valor | brl }}</td></tr>
         {% else %}<tr><td colspan="4" class="adm-suave">Nenhum recibo com login no período.</td></tr>{% endfor %}</tbody>
       </table>
       {% endif %}
@@ -241,7 +241,7 @@
       {% if d.ultimos_logins is none %}{{ ui.indisponivel() }}{% else %}
       <table class="adm-tabela adm-tabela-mini">
         <tbody>{% for m in d.ultimos_logins %}
-        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a> <small class="adm-suave">{{ m.plan }}</small></td><td>{{ m.last_sign_in_at | data_br }}</td></tr>
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name or '(sem nome)' }}</a> <small class="adm-suave">{{ m.plan }}</small></td><td>{{ m.last_sign_in_at | data_br }}</td></tr>
         {% endfor %}</tbody>
       </table>
       {% endif %}
@@ -252,7 +252,7 @@
       <table class="adm-tabela adm-tabela-mini">
         <thead><tr><th>Motorista</th><th>WhatsApp</th><th>Último recibo</th></tr></thead>
         <tbody>{% for m in d.pagantes_parados %}
-        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name }}</a> <small class="adm-suave">{{ m.plan }}</small></td><td>{{ m.whatsapp }}</td><td>{{ m.ultimo_recibo | data_br(false) }}</td></tr>
+        <tr><td><a href="{{ url_for('admin_motorista', driver_id=m.id) }}" class="adm-link">{{ m.full_name or '(sem nome)' }}</a> <small class="adm-suave">{{ m.plan }}</small></td><td>{{ m.whatsapp }}</td><td>{{ m.ultimo_recibo | data_br(false) }}</td></tr>
         {% else %}<tr><td colspan="3" class="adm-suave">Todos os pagantes emitiram nos últimos 30 dias.</td></tr>{% endfor %}</tbody>
       </table>
       {% endif %}

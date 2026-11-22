@@ -223,10 +223,12 @@ todos só do admin:
   GET na ficha (`?link=<plano>`), e o log registra quem gerou.
 - *Cadastro pelo painel* (Motoristas → "Novo motorista"): a pedido do motorista.
   Só o e-mail é obrigatório (desde 2026-11-22); o que vier preenchido segue as
-  regras do cadastro do site (CPF com dígito verificador, WhatsApp com DDD), e o
-  resto ele completa no app, em "Meus dados". Sem CPF (fora do Brasil, sem
-  WhatsApp), o link de criar senha não pede confirmação: vale a posse do link,
-  como no "Esqueci minha senha", e a ficha avisa isso ao admin. A conta
+  regras do cadastro do site (CPF com dígito verificador, WhatsApp com DDD). O
+  que faltar (nome, WhatsApp, CPF, cidade, placa, e os opcionais vazios), o link
+  de criar senha pede no site, junto com a senha, e só depois manda o motorista
+  para o app; um dado já salvo não aparece na página. Sem CPF (fora do Brasil,
+  sem WhatsApp), o link não pede confirmação: vale a posse do link, como no
+  "Esqueci minha senha", e a ficha avisa isso ao admin. A conta
   nasce com senha aleatória que ninguém vê e com `criado_pelo_painel` no
   `app_metadata` do Auth (o motorista não edita). A ficha mostra o link
   `/criar-senha/<token>` para mandar pelo WhatsApp: vale 7 dias, morre no

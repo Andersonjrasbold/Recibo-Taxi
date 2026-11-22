@@ -3377,7 +3377,7 @@ try:
     check("ficha: com CPF, o Primeiro acesso diz que o link pede os 4 primeiros numeros, e o cadastro completo "
           "nao pede para completar os dados",
           "pede os 4 primeiros números do CPF dele" in _ficha_lp and "não pede confirmação" not in _ficha_lp
-          and "Meus dados" not in _ficha_lp)
+          and "o que falta no cadastro" not in _ficha_lp and "Complete o seu cadastro" not in _ficha_lp)
     check("ficha: Vender o Pro aparece para quem ainda nao assina", "Vender o Pro" in _ficha_lp)
     _ficha_venda = _cadm_lp.get(f"/admin/motoristas/{_novo_lp['_id']}?senha_plano=pro_anual_pix&link=pro").get_data(as_text=True)
     check("ficha: gerar o link de pagamento nao tira o plano do link de senha",
@@ -3579,7 +3579,8 @@ try:
           and A.prova_de_posse({"country": "BR", "cpf": "123", "whatsapp": "11 98888-7777"}) == ("", ""))
 
     # So o e-mail e obrigatorio (2026-11-22, motorista que nao conseguia se
-    # cadastrar pelo app): o resto ele completa no app, em "Meus dados".
+    # cadastrar pelo app): o link de criar senha pede o resto no site, e so
+    # depois manda ele para o app.
     _email_so = f"so-email-{_suf_lp}@teste.invalid"
     r = _cadm_lp.post("/admin/motoristas/novo", data={"csrf": _csrf_lp, "email": "", "pediu": "1"})
     check("painel: sem e-mail nada e criado",
@@ -3593,52 +3594,114 @@ try:
     _so = A.get_store().get_user_by_email(_email_so) or {}
     check("painel: cadastro so com o e-mail cria a conta do painel, no Brasil e sem senha conhecida",
           r.status_code == 302 and bool(_so) and A.senha_pendente(_so) and _so.get("full_name") == ""
-          and _so.get("cpf") == "" and _so.get("country") == "BR" and A.perfil_incompleto(_so),
+          and _so.get("cpf") == "" and _so.get("country") == "BR"
+          and A.campos_que_faltam(_so) == ["nome_completo", "whatsapp", "cpf", "cidade", "placa"],
           f"{r.status_code} {str({k: _so.get(k) for k in ('full_name', 'cpf', 'country')})}")
-    check("perfil incompleto: so com nome, WhatsApp, cidade e placa fica completo",
-          not A.perfil_incompleto({"full_name": "Ana", "whatsapp": "11 98888-7777", "city": "Curitiba", "plate": "ABC1D23"})
-          and A.perfil_incompleto({"full_name": "Ana", "whatsapp": "11 98888-7777", "city": "Curitiba", "plate": " "}))
+    check("campos que faltam: conta com tudo nao pede nada; espaco em branco conta como vazio",
+          A.campos_que_faltam({"full_name": "Ana", "whatsapp": "11 98888-7777", "cpf": "529.982.247-25",
+                               "city": "Curitiba", "plate": "ABC1D23"}) == []
+          and A.campos_que_faltam({"full_name": "Ana", "whatsapp": "11 98888-7777", "cpf": "529.982.247-25",
+                                   "city": "Curitiba", "plate": " "}) == ["placa"])
     _lista_so = _cadm_lp.get("/admin/motoristas", query_string={"q": _email_so}).get_data(as_text=True)
     check("painel: motorista sem nome aparece na lista com link para a ficha",
           f"/admin/motoristas/{_so.get('_id')}" in _lista_so and "(sem nome)" in _lista_so)
     _ficha_so = _cadm_lp.get(f"/admin/motoristas/{_so['_id']}").get_data(as_text=True)
     _tok_so = _token_de(_ficha_so, "criar-senha")
-    check("ficha: conta sem CPF avisa que o link nao pede confirmacao, e a mensagem pede para completar os dados",
+    check("ficha: conta sem CPF avisa que o link nao pede confirmacao e pede no site o que falta",
           bool(_tok_so) and "(sem nome)" in _ficha_so and "não pede confirmação nenhuma" in _ficha_so
-          and "Meus dados" in _ficha_so)
+          and "o que falta no cadastro (nome, WhatsApp, CPF, cidade, placa)" in _ficha_so
+          and "Complete o seu cadastro e crie sua senha neste link" in _ficha_so)
     _n_emails = len(_emails_lp)
     r = _cadm_lp.post(f"/admin/motoristas/{_so['_id']}/criar-senha", data={"csrf": _csrf_lp})
     _mail_so = _emails_lp[_n_emails:]
-    check("ficha: o e-mail de criar senha da conta sem dados sai, sem nome e pedindo para completar o cadastro",
+    check("ficha: o e-mail de criar senha da conta sem dados sai, sem nome e dizendo que o link completa o cadastro",
           r.status_code == 302 and len(_mail_so) == 1 and _mail_so[0][0] == _email_so
-          and "Olá, motorista!" in _mail_so[0][2] and "Meus dados" in _mail_so[0][2], str(_mail_so)[:300])
-    _cso = A.app.test_client()
-    r = _cso.get(f"/criar-senha/{_tok_so}", base_url=_BASE_LP)
-    _h = r.get_data(as_text=True)
-    check("criar senha: conta sem CPF abre o formulario sem pedir numeros",
-          r.status_code == 200 and 'name="senha"' in _h and 'name="digitos"' not in _h, r.status_code)
-    r = _cso.post(f"/criar-senha/{_tok_so}", data={"senha": "senha-nova-123", "confirmar_senha": "outra-coisa-1"},
-                  base_url=_BASE_LP)
-    check("criar senha: sem numeros, a confirmacao da senha continua valendo",
-          r.status_code == 400 and not (A.get_store().get_user_by_id(_so["_id"]) or {}).get("password_changed_at"),
-          r.status_code)
-    r = _cso.post(f"/criar-senha/{_tok_so}", data={"senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"},
-                  base_url=_BASE_LP)
-    check("criar senha: conta sem CPF cria a senha so com a senha",
-          r.status_code == 302 and bool((A.get_store().get_user_by_id(_so["_id"]) or {}).get("password_changed_at")),
-          r.status_code)
-    _h = _cso.get(r.headers.get("Location", "/"), base_url=_BASE_LP).get_data(as_text=True)
-    check("criar senha: o 'tudo pronto' pede para completar o cadastro em Meus dados",
-          "Tudo pronto" in _h and "Meus dados" in _h)
-    r = _cso.get("/dashboard", base_url=_BASE_LP)
+          and "Olá, motorista!" in _mail_so[0][2]
+          and "Falta completar o seu cadastro e criar a sua senha" in _mail_so[0][2], str(_mail_so)[:300])
+    # Conta sem nome com sessao aberta: a saudacao do site nao fica "Ola, " solta.
+    _csn = A.app.test_client()
+    with _csn.session_transaction(base_url=_BASE_LP) as _s_sn:
+        _s_sn["user_id"] = _so["_id"]
+        _s_sn["pw_stamp"] = ""
+    r = _csn.get("/dashboard", base_url=_BASE_LP)
     _h = r.get_data(as_text=True)
     check("painel do site abre para quem nao tem nome, sem 'Ola, ' solto",
           r.status_code == 200 and "Olá 👋" in _h and "Minha conta" in _h, r.status_code)
+    _cso = A.app.test_client()
+    r = _cso.get(f"/criar-senha/{_tok_so}", base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("criar senha: conta sem dados pede o cadastro no site, sem pedir numeros",
+          r.status_code == 200 and "Complete seu cadastro" in _h and "Concluir cadastro" in _h
+          and all(f'name="{_c}"' in _h for _c in ("nome_completo", "whatsapp", "cpf", "cidade", "placa",
+                                                  "modelo_veiculo", "cooperativa", "senha"))
+          and 'name="digitos"' not in _h, r.status_code)
+    _dados_so = {"nome_completo": "Davi Teste", "whatsapp": "(41) 99876-1234", "cpf": "529.982.247-25",
+                 "cidade": "Curitiba", "placa": "abc1d23", "modelo_veiculo": "Spin",
+                 "senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"}
+
+    def _sem_senha_so():
+        return not (A.get_store().get_user_by_id(_so["_id"]) or {}).get("password_changed_at")
+
+    r = _cso.post(f"/criar-senha/{_tok_so}", data={"senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"},
+                  base_url=_BASE_LP)
+    check("criar senha: sem os dados do cadastro, nada e criado",
+          r.status_code == 400 and "Preencha todos os campos" in r.get_data(as_text=True) and _sem_senha_so(),
+          r.status_code)
+    r = _cso.post(f"/criar-senha/{_tok_so}", data={**_dados_so, "cpf": "123.456.789-00"}, base_url=_BASE_LP)
+    _h = r.get_data(as_text=True)
+    check("criar senha: CPF invalido e recusado, e o que ele digitou volta (menos a senha)",
+          r.status_code == 400 and "Confira o CPF" in _h and 'value="Davi Teste"' in _h
+          and "senha-nova-123" not in _h and _sem_senha_so(), r.status_code)
+    r = _cso.post(f"/criar-senha/{_tok_so}", data={**_dados_so, "whatsapp": "123"}, base_url=_BASE_LP)
+    check("criar senha: WhatsApp sem DDD e recusado", r.status_code == 400 and _sem_senha_so(), r.status_code)
+    r = _cso.post(f"/criar-senha/{_tok_so}", data={**_dados_so, "cooperativa": "Coop Sem CNPJ"}, base_url=_BASE_LP)
+    check("criar senha: cooperativa sem CNPJ e recusada", r.status_code == 400 and _sem_senha_so(), r.status_code)
+    r = _cso.post(f"/criar-senha/{_tok_so}", data={**_dados_so, "confirmar_senha": "outra-coisa-1"}, base_url=_BASE_LP)
+    check("criar senha: com os dados certos, a confirmacao da senha continua valendo",
+          r.status_code == 400 and _sem_senha_so(), r.status_code)
+    r = _cso.post(f"/criar-senha/{_tok_so}", data=_dados_so, base_url=_BASE_LP)
+    _so2 = A.get_store().get_user_by_id(_so["_id"]) or {}
+    check("criar senha: conta sem CPF conclui o cadastro no site e cria a senha",
+          r.status_code == 302 and bool(_so2.get("password_changed_at")) and _so2.get("full_name") == "Davi Teste"
+          and _so2.get("cpf") == "529.982.247-25" and _so2.get("plate") == "ABC1D23" and _so2.get("city") == "Curitiba"
+          and _so2.get("whatsapp") == "(41) 99876-1234" and _so2.get("vehicle_model") == "Spin"
+          and not _so2.get("taxi_prefix") and not _so2.get("coop_name") and A.campos_que_faltam(_so2) == [],
+          f"{r.status_code} {str({k: _so2.get(k) for k in ('full_name', 'plate', 'city')})}")
+    _h = _cso.get(r.headers.get("Location", "/"), base_url=_BASE_LP).get_data(as_text=True)
+    check("criar senha: no fim, o 'tudo pronto' manda baixar o app, ja com o nome",
+          "Tudo pronto, Davi!" in _h and "Baixar o app" in _h)
+
+    # CPF ja salvo e o resto vazio: pede os 4 numeros e so o que falta; o CPF
+    # salvo nao aparece na pagina, e campo errado nao gasta tentativa.
+    _email_cpf = f"so-cpf-{_suf_lp}@teste.invalid"
+    _cadm_lp.post("/admin/motoristas/novo", data={"csrf": _csrf_lp, "email": _email_cpf, "nome_completo": "Rita Teste",
+                                                  "cpf": "529.982.247-25", "pediu": "1"})
+    _cpf_lp = A.get_store().get_user_by_email(_email_cpf) or {}
+    _tok_cpf = _token_de(_cadm_lp.get(f"/admin/motoristas/{_cpf_lp.get('_id')}").get_data(as_text=True), "criar-senha")
+    _h = A.app.test_client().get(f"/criar-senha/{_tok_cpf}", base_url=_BASE_LP).get_data(as_text=True)
+    check("criar senha: com CPF salvo, pede os 4 numeros e so o que falta, sem mostrar o CPF nem o nome",
+          bool(_tok_cpf) and 'name="digitos"' in _h and 'name="cidade"' in _h and 'name="whatsapp"' in _h
+          and 'name="cpf"' not in _h and 'name="nome_completo"' not in _h and "529.982" not in _h)
+    _dados_cpf = {"whatsapp": "(41) 99876-4321", "cidade": "Londrina", "placa": "xyz9a88", "digitos": "5299",
+                  "senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"}
+    _ccpf = A.app.test_client()
+    for _i in range(A.CRIAR_SENHA_TENTATIVAS + 1):
+        _ccpf.post(f"/criar-senha/{_tok_cpf}", data={**_dados_cpf, "cidade": ""}, base_url=_BASE_LP)
+    r = _ccpf.post(f"/criar-senha/{_tok_cpf}", data=_dados_cpf, base_url=_BASE_LP)
+    _cpf2 = A.get_store().get_user_by_id(_cpf_lp.get("_id", "")) or {}
+    check("criar senha: campo do cadastro errado nao gasta tentativa dos numeros; com tudo certo, conclui",
+          r.status_code == 302 and bool(_cpf2.get("password_changed_at")) and _cpf2.get("city") == "Londrina"
+          and _cpf2.get("plate") == "XYZ9A88" and _cpf2.get("cpf") == "529.982.247-25"
+          and _cpf2.get("full_name") == "Rita Teste", r.status_code)
+
+    # Conta sem nome que ja tem senha: o e-mail de redefinicao estourava no split()[0].
+    _email_sn = f"sem-nome-{_suf_lp}@teste.invalid"
+    _sn_id = A.auth_criar_usuario(_email_sn, "senha-boa-12345", {})
     _n_emails = len(_emails_lp)
     with A.app.test_request_context("/", base_url=_BASE_LP):
-        _ok_so = A.enviar_link_de_redefinicao(A.get_store().get_user_by_id(_so["_id"]))
-    check("esqueci minha senha: conta sem nome recebe o link (o split()[0] estourava)",
-          _ok_so and "Olá, motorista." in (_emails_lp[_n_emails:] or [("", "", "")])[0][2],
+        _ok_sn = A.enviar_link_de_redefinicao(A.get_store().get_user_by_id(_sn_id))
+    check("esqueci minha senha: conta sem nome recebe o link de redefinicao",
+          _ok_sn and "Olá, motorista." in (_emails_lp[_n_emails:] or [("", "", "")])[0][2],
           str(_emails_lp[_n_emails:])[:200])
 
     # Link de pagamento, sem login.

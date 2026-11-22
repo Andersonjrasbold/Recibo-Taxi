@@ -50,6 +50,7 @@
     A mensal entra todo mês; a anual entra uma vez, no mês em que é cobrada (e de novo 12 meses depois, se renovar);
     o anual pago uma vez não se repete. A previsão são as assinaturas ativas renovando no preço atual, sem
     cancelamentos nem vendas novas; descontos não entram.
+    {% if fat.contas_internas %}Contas internas fora da conta: {{ fat.contas_internas }} (marcadas na ficha do motorista).{% endif %}
     {% if fat.erro_stripe %}<span class="adm-falha">Stripe: {{ fat.erro_stripe }}.</span>{% endif %}
     {% if fat.faltando %}<span class="adm-falha">Parte do registro de cobranças não carregou ({{ fat.faltando | join(', ') }}).</span>{% endif %}
   </p>

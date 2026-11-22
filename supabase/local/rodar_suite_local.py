@@ -103,6 +103,10 @@ class _Admin:
             if "email" in attrs:
                 c.execute("update auth.users set email = %s, updated_at = now() where id = %s",
                           (attrs["email"].strip().lower(), uid))
+            if "app_metadata" in attrs:
+                # Como o GoTrue: junta as chaves (não substitui o app_metadata inteiro).
+                c.execute("""update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || %s::jsonb,
+                                    updated_at = now() where id = %s""", (json.dumps(attrs["app_metadata"]), uid))
         return _Obj(user=_Obj(id=str(uid)))
 
     def delete_user(self, uid):

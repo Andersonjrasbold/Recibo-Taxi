@@ -3992,6 +3992,78 @@ with A.get_store().pool.connection() as _conn:
     _conn.execute("delete from public.billing_events where event_id like %s", (f"teste-suite-fat-{_suf_g}-%",))
 check("lojas: so produtos do Recibo Taxi entram (compra de outro app no mesmo RevenueCat fica fora)",
       _depois_loja - _antes_loja == _Dec("9.90"), f"{_antes_loja} -> {_depois_loja}")
+
+# Conta interna (dono, equipe, teste com cartao real): sai do faturamento.
+_email_int = f"interna-{_suf_g}@teste.invalid"
+novo_cliente(_email_int)
+_int = A.get_store().get_user_by_email(_email_int)
+with _cadm_g.session_transaction() as _s_int:
+    _csrf_int = _s_int.get("admin_csrf", "")
+with A.get_store().pool.connection() as _conn:
+    _conn.execute("""insert into public.billing_events (source, event_id, type, store, environment, product_id,
+                       cycle, price, currency, outcome, payload, driver_id)
+                     values ('revenuecat', %s, 'RENEWAL', 'APP_STORE', 'PRODUCTION', 'br.com.recibotaxi.app.pro.mensal',
+                             'mensal', 9.90, 'BRL', 'pro', '{}'::jsonb, %s)""", (f"teste-suite-int-{_suf_g}", _int["_id"]))
+_com_interna = _fat_loja_mes()
+check("conta interna: marcar sem csrf da 400",
+      _cadm_g.post(f"/admin/motoristas/{_int['_id']}/interna", data={"interna": "1"}).status_code == 400)
+r = _cadm_g.post(f"/admin/motoristas/{_int['_id']}/interna", data={"csrf": _csrf_int, "interna": "1"})
+_ficha_int = _cadm_g.get(f"/admin/motoristas/{_int['_id']}").get_data(as_text=True)
+check("conta interna: o painel marca a conta e a ficha mostra",
+      r.status_code == 302 and A.conta_interna(_int["_id"]) and "fica fora do faturamento" in _ficha_int
+      and "Voltar a contar no faturamento" in _ficha_int, r.status_code)
+check("conta interna: a marca nao apaga as outras do app_metadata (o GoTrue junta as chaves)",
+      A._marca_do_auth(_int["_id"], "conta_interna") and not A.criado_pelo_painel(_int["_id"]))
+check("conta interna: a compra dela sai do faturamento das lojas",
+      _com_interna - _fat_loja_mes() == _Dec("9.90"), f"{_com_interna} -> {_fat_loja_mes()}")
+_cadm_g.post(f"/admin/motoristas/{_int['_id']}/interna", data={"csrf": _csrf_int, "interna": "0"})
+check("conta interna: desmarcar faz a compra voltar a contar",
+      not A.conta_interna(_int["_id"]) and _fat_loja_mes() == _com_interna)
+with A.get_store().pool.connection() as _conn:
+    _conn.execute("delete from public.billing_events where event_id = %s", (f"teste-suite-int-{_suf_g}",))
+
+
+class _StripeInterna:
+    class Price:
+        @staticmethod
+        def retrieve(preco):
+            return {"product": "prod_recibo"}
+
+    class Invoice:
+        @staticmethod
+        def list(**kw):
+            linhas = {"data": [{"pricing": {"price_details": {"product": "prod_recibo"}}}]}
+            return _ListaStripe([
+                {"customer": "cus_cliente", "amount_paid": 990, "livemode": True, "currency": "brl",
+                 "status_transitions": {"paid_at": 1795000000}, "lines": linhas},
+                {"customer": {"id": "cus_interno"}, "amount_paid": 11990, "livemode": True, "currency": "brl",
+                 "status_transitions": {"paid_at": 1795000000}, "lines": linhas},
+            ])
+
+    class Subscription:
+        @staticmethod
+        def list(**kw):
+            item = {"data": [{"price": {"unit_amount": 11990, "currency": "brl", "recurring": {"interval": "year"},
+                                        "product": "prod_recibo"}, "quantity": 1, "current_period_end": 1797000000}]}
+            return _ListaStripe([{"customer": "cus_interno", "status": "active", "livemode": True,
+                                  "cancel_at_period_end": False, "items": item}])
+
+
+_get_stripe_int, _env_int = A.get_stripe, os.environ.get("STRIPE_PRO_PRICE_ID")
+A.get_stripe = lambda: _StripeInterna
+os.environ["STRIPE_PRO_PRICE_ID"] = "price_recibo_mensal"
+A._PRODUTOS_STRIPE.clear()
+try:
+    _p_int, _x_int, _e_int = A.faturamento_da_stripe(A.datetime(2026, 1, 1, tzinfo=A.timezone.utc), {"cus_interno"})
+finally:
+    A.get_stripe = _get_stripe_int
+    if _env_int is None:
+        os.environ.pop("STRIPE_PRO_PRICE_ID", None)
+    else:
+        os.environ["STRIPE_PRO_PRICE_ID"] = _env_int
+    A._PRODUTOS_STRIPE.clear()
+check("conta interna: fatura e assinatura dela saem da conta da Stripe (cliente em texto ou expandido)",
+      _e_int == "" and [p["valor"] for p in _p_int] == [_Dec("9.9")] and _x_int == [], str(_p_int))
 check("painel: grafico de faturamento com legenda, divisa da previsao e tabela",
       "Faturamento mês a mês" in _html_g and "previsão →" in _html_g and "Ver os números em tabela" in _html_g
       and 'class="seg seg-mensal' in _html_g and "Anual pago uma vez (Pix ou cartão)" in _html_g)

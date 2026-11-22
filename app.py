@@ -6269,6 +6269,35 @@ def _campo(obj, *caminho, padrao=None):
     return atual
 
 
+# Só o que é do Recibo Táxi (pedido do Anderson em 2026-11-21): a mesma conta
+# da Stripe ou do RevenueCat pode, um dia, atender outro app da AJR. Nas lojas,
+# o id do produto começa assim; na Stripe, valem os produtos dos Prices
+# configurados (os preços antigos ficaram nos mesmos produtos).
+PRODUTO_LOJA_PREFIXO = "br.com.recibotaxi."
+_PRODUTOS_STRIPE: dict[str, str] = {}   # price -> product; não muda, guarda por processo
+
+
+def produtos_stripe_do_recibo(stripe) -> set[str]:
+    """Ids dos produtos da Stripe que são o Recibo Táxi Pro, pelos Prices das variáveis."""
+    produtos = set()
+    for variavel in STRIPE_PRICE_IDS.values():
+        preco = os.environ.get(variavel, "").strip()
+        if not preco:
+            continue
+        if preco not in _PRODUTOS_STRIPE:
+            produto = _campo(stripe.Price.retrieve(preco), "product")
+            _PRODUTOS_STRIPE[preco] = str(_campo(produto, "id") or produto or "") if produto else ""
+        if _PRODUTOS_STRIPE[preco]:
+            produtos.add(_PRODUTOS_STRIPE[preco])
+    return produtos
+
+
+def _produto_da_linha(linha) -> str:
+    """Produto de uma linha de fatura: a API de 2025 em diante o põe em
+    pricing.price_details; as anteriores, em price."""
+    return str(_campo(linha, "pricing", "price_details", "product") or _campo(linha, "price", "product") or "")
+
+
 def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]:
     """(cobranças pagas das assinaturas do site, próximas cobranças, erro).
 
@@ -6281,6 +6310,14 @@ def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]
     stripe = get_stripe()
     if not stripe:
         return [], [], "a Stripe não está configurada"
+    # Só o Recibo Táxi: a mesma conta da Stripe pode atender outro app da AJR.
+    try:
+        produtos = produtos_stripe_do_recibo(stripe)
+    except Exception as exc:
+        app.logger.warning("admin: não li os produtos do Recibo Táxi na Stripe: %s", exc)
+        return [], [], "não consegui identificar os produtos do Recibo Táxi; o site ficou fora da conta"
+    if not produtos:
+        return [], [], "nenhum preço do Recibo Táxi configurado; o site ficou fora da conta"
     pagas, proximas = [], []
     try:
         for fatura in stripe.Invoice.list(status="paid", created={"gte": int(desde.timestamp())},
@@ -6289,6 +6326,9 @@ def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]
             if valor <= 0 or not _campo(fatura, "livemode", padrao=False) \
                     or str(_campo(fatura, "currency", padrao="")).lower() != "brl":
                 continue
+            if not any(_produto_da_linha(linha) in produtos
+                       for linha in (_campo(fatura, "lines", "data", padrao=[]) or [])):
+                continue  # fatura de outro produto da mesma conta
             momento = int(_campo(fatura, "status_transitions", "paid_at", padrao=0)
                           or _campo(fatura, "created", padrao=0))
             pagas.append({"mes": _chave_mes(datetime.fromtimestamp(momento, timezone.utc)), "valor": valor,
@@ -6301,6 +6341,8 @@ def faturamento_da_stripe(desde: datetime) -> tuple[list[dict], list[dict], str]
                     or not _campo(assinatura, "livemode", padrao=False):
                 continue
             item = _campo(assinatura, "items", "data", 0, padrao={})
+            if str(_campo(item, "price", "product", padrao="")) not in produtos:
+                continue  # assinatura de outro produto da mesma conta
             valor = Decimal(int(_campo(item, "price", "unit_amount", padrao=0))) \
                 * int(_campo(item, "quantity", padrao=1)) / 100
             # Desde a API de 2025 o fim do período mora no item da assinatura.
@@ -6624,7 +6666,7 @@ _SQL_ADMIN = {
                sum(price) as valor, count(*) as n
           from public.billing_events
          where source = 'revenuecat' and environment = 'PRODUCTION' and price is not null
-           and upper(coalesce(currency, '')) = 'BRL'
+           and upper(coalesce(currency, '')) = 'BRL' and product_id like %(produto_loja)s
            and (type in ('INITIAL_PURCHASE', 'RENEWAL', 'NON_RENEWING_PURCHASE')
                 or (type = 'CANCELLATION' and price < 0))
            and received_at >= %(ini_fat)s
@@ -6649,7 +6691,7 @@ _SQL_ADMIN = {
           join public.drivers d on d.id = e.driver_id
          where e.source = 'revenuecat' and e.environment = 'PRODUCTION'
            and e.type in ('INITIAL_PURCHASE', 'RENEWAL') and e.price > 0
-           and upper(coalesce(e.currency, '')) = 'BRL'
+           and upper(coalesce(e.currency, '')) = 'BRL' and e.product_id like %(produto_loja)s
            and d.plan = 'pro' and d.stripe_subscription_id is null
            and d.subscription_status in ('active', 'trialing', 'past_due')
          order by e.driver_id, e.received_at desc, e.seq desc""",
@@ -6865,6 +6907,8 @@ def _params_dashboard_admin() -> dict:
         "ini_mes": _inicio_mes_br(0),
         "ini_12m": _inicio_mes_br(11),
         "ini_fat": _inicio_mes_br(FATURAMENTO_MESES_PASSADOS),
+        # Só os produtos do Recibo Táxi nas lojas (ver PRODUTO_LOJA_PREFIXO).
+        "produto_loja": PRODUTO_LOJA_PREFIXO.replace("_", "\\_") + "%",
         "limite": FREE_MONTHLY_LIMIT,
         "teto_email": EMAIL_DAILY_LIMIT,
         "teto_reset_ip": RESET_DAILY_LIMIT_IP,

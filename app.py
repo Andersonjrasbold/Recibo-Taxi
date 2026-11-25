@@ -2473,9 +2473,7 @@ ROBO_RE = re.compile(
 
 def _canal_e_codigo_do_baixar() -> tuple[str, str]:
     """`?c=CANAL` e `?i=CÓDIGO` do /baixar, já conferidos ("" quando não servem)."""
-    canal = request.args.get("c", "").strip().lower()
-    if not CANAL_DOWNLOAD_RE.match(canal):
-        canal = ""
+    canal = canal_de_cadastro(request.args.get("c"))
     # `i` = código de quem indicou (vem da página do convite). Só com canal, e
     # só no formato do código; segue ao Play em utm_content.
     codigo = request.args.get("i", "").strip().upper()
@@ -2745,8 +2743,7 @@ def completar_cadastro():
     if not pede["faltam"]:
         return redirect(url_for("dashboard"))
     contexto = {"pede": pede, "faltam": rotulos_que_faltam(g.user),
-                "documento": "CPF" if (g.user.get("country") or PAIS_PADRAO) == PAIS_PADRAO
-                else "Documento de identidade"}
+                "documento": rotulo_do_documento(g.user)}
     if request.method == "POST":
         erro, mudancas = dados_do_primeiro_acesso(g.user, pede)
         if erro:
@@ -3065,9 +3062,9 @@ def dashboard():
 def recibo_criar():
     # Cadastro curto do site: nome, CPF, cidade e placa vêm antes do primeiro
     # recibo, ou o recibo sairia sem quem o emitiu.
-    if campos_que_faltam(g.user):
-        flash("Falta completar seu cadastro (" + ", ".join(rotulos_que_faltam(g.user))
-              + "): esses dados saem no recibo.", "warning")
+    faltam = rotulos_que_faltam(g.user)
+    if faltam:
+        flash("Falta completar seu cadastro (" + ", ".join(faltam) + "): esses dados saem no recibo.", "warning")
         return redirect(url_for("completar_cadastro"))
     erro_tamanho = field_limit_error(RECEIPT_FIELD_LIMITS)
     if erro_tamanho:
@@ -4247,9 +4244,14 @@ OPCIONAIS_DO_PRIMEIRO_ACESSO = (("modelo_veiculo", "vehicle_model"), ("prefixo_t
 
 
 def campos_que_faltam(usuario: dict) -> list[str]:
-    """Os obrigatórios do cadastro do site que a conta ainda não tem (nomes do
-    formulário). Conta feita pelo painel só com o e-mail: o link de criar senha
-    pede esses dados no site, e só depois manda o motorista para o app."""
+    """Os obrigatórios do cadastro que a conta ainda não tem (nomes do
+    formulário): são os dados que saem em cada recibo.
+
+    Quem usa: o /criar-senha (conta feita pelo painel só com o e-mail), o
+    /completar-cadastro (cadastro curto do site), o aviso do painel do
+    motorista, o POST /recibo e o /api/recibos (que não emitem sem eles) e o
+    /api/sessao (`cadastro_incompleto`). Mudar a tupla muda tudo isso.
+    """
     return [campo for campo, coluna, _ in OBRIGATORIOS_DO_PRIMEIRO_ACESSO if not (usuario.get(coluna) or "").strip()]
 
 
@@ -4259,6 +4261,11 @@ def rotulos_que_faltam(usuario: dict) -> list[str]:
     if (usuario.get("country") or PAIS_PADRAO) != PAIS_PADRAO:
         rotulos["cpf"] = "documento"
     return [rotulos[campo] for campo in campos_que_faltam(usuario)]
+
+
+def rotulo_do_documento(usuario: dict) -> str:
+    """"CPF" no Brasil; fora, o documento de identidade do país."""
+    return "CPF" if (usuario.get("country") or PAIS_PADRAO) == PAIS_PADRAO else "Documento de identidade"
 
 
 def o_que_o_primeiro_acesso_pede(usuario: dict) -> dict:
@@ -4399,8 +4406,7 @@ def criar_senha(token: str):
     contexto = {"email": usuario.get("email", ""), "primeiro_nome": _primeiro_nome(usuario.get("full_name", "")),
                 "plano": plano, "rotulo": PLANOS_ROTULO.get(plano, ""), "prova": prova,
                 "pro_ativo": usuario.get("plan") in PAID_PLANS, "pede": pede,
-                "documento": "CPF" if (usuario.get("country") or PAIS_PADRAO) == PAIS_PADRAO
-                             else "Documento de identidade",
+                "documento": rotulo_do_documento(usuario),
                 # Volta o que ele digitou quando algo não confere (nunca a senha nem os números).
                 "preenchido": request.form if request.method == "POST" else {}}
     try:
@@ -4833,6 +4839,15 @@ def api_perfil():
     if faltando:
         return jsonify({"erro": "campos_obrigatorios", "campos": faltando}), 400
 
+    # CPF só entra quando a conta ainda não tem um (cadastro curto do site;
+    # app 1.9+). Conta com CPF: o campo é ignorado, como sempre foi — o
+    # gravado é a prova do /criar-senha e só muda no site.
+    cpf = "" if (g.user.get("cpf") or "").strip() else str(dados.get("cpf", "") or "").strip()
+    if len(cpf) > SIGNUP_FIELD_LIMITS["cpf"][1]:
+        return jsonify({"erro": "campo_longo", "campo": "cpf", "maximo": SIGNUP_FIELD_LIMITS["cpf"][1]}), 400
+    if cpf and (g.user.get("country") or PAIS_PADRAO) == PAIS_PADRAO and not cpf_valido(cpf):
+        return jsonify({"erro": "cpf_invalido", "mensagem": "Confira o CPF: os dígitos não conferem."}), 400
+
     try:
         coop_name, coop_cnpj = cooperativa_informada(
             campos["cooperativa"], campos["cnpj_cooperativa"], g.user.get("country") or PAIS_PADRAO)
@@ -4846,6 +4861,7 @@ def api_perfil():
         return jsonify({"erro": "senha_incorreta"}), 403
 
     get_store().update_user(g.user["_id"], {
+        **({"cpf": cpf} if cpf else {}),
         "full_name": campos["nome_completo"],
         "whatsapp": campos["whatsapp"],
         "city": campos["cidade"],
@@ -4889,6 +4905,15 @@ def api_criar_recibo():
     rid = str(dados.get("rid", "")).strip().upper()
     if not re.fullmatch(r"[0-9A-F]{%d}" % RID_LENGTH, rid):
         return jsonify({"erro": "rid_invalido"}), 400
+
+    # Cadastro curto do site sem os dados do recibo: o retrato do motorista
+    # fica congelado no recibo, então não emite. O app guarda o recibo como
+    # recusado (o 1.9+ manda completar em "Meus dados").
+    faltam = rotulos_que_faltam(g.user)
+    if faltam:
+        return jsonify({"erro": "cadastro_incompleto", "faltam": faltam,
+                        "mensagem": "Complete seu cadastro (" + ", ".join(faltam)
+                        + ") em Meus dados ou no site antes de emitir."}), 409
 
     passageiro = dados.get("passageiro")
     campos = {

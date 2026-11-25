@@ -52,7 +52,6 @@
             {% endif %}
             {% if pede.faltam %}
             {# Só o que a conta não tem: um dado salvo não aparece aqui (o CPF é a prova do link). #}
-            {% set f = preenchido or {} %}
             {% include "_campos_do_cadastro.html" %}
             <div class="form-section-title"><i class="bi bi-lock-fill me-2"></i>Sua senha</div>
             {% endif %}

@@ -2788,6 +2788,7 @@ except A.psycopg.errors.UndefinedColumn:
     check("canal gravado no cadastro (migracao 0018 nao aplicada; nada a conferir)", True)
 _h_db = _ccc.get("/dashboard").get_data(as_text=True)
 check("painel avisa o que falta no cadastro", "Falta completar seu cadastro (nome, CPF, cidade, placa)" in _h_db and "/completar-cadastro" in _h_db)
+check("painel esconde o formulario de recibo enquanto falta cadastro", 'action="/recibo"' not in _h_db)
 r = _ccc.post("/recibo", data={"passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"})
 check("recibo antes de completar o cadastro vai para o /completar-cadastro",
       r.status_code == 302 and r.headers.get("Location", "").endswith("/completar-cadastro"), f"{r.status_code} {r.headers.get('Location')}")
@@ -2806,7 +2807,8 @@ check("completar grava os dados e volta ao painel",
       f"{r.status_code} {_u_cc.get('full_name')} {_u_cc.get('plate')}")
 check("conta completa: /completar-cadastro volta ao painel",
       _ccc.get("/completar-cadastro").headers.get("Location", "").endswith("/dashboard"))
-check("painel para de avisar", "Falta completar seu cadastro" not in _ccc.get("/dashboard").get_data(as_text=True))
+_h_db2 = _ccc.get("/dashboard").get_data(as_text=True)
+check("painel para de avisar e mostra o formulario", "Falta completar seu cadastro" not in _h_db2 and 'action="/recibo"' in _h_db2)
 r = _ccc.post("/recibo", data={"passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"})
 check("recibo sai depois de completar", "/recibo/" in r.headers.get("Location", ""), r.headers.get("Location"))
 check("/completar-cadastro sem login manda entrar",
@@ -2838,6 +2840,35 @@ except A.psycopg.errors.UndefinedColumn:
     check("api/cadastro grava o canal (migracao 0018 nao aplicada; nada a conferir)", True)
 _s_api = _capi.get("/api/sessao", headers={"Authorization": f"Bearer {r.get_json().get('access_token', '')}"}).get_json() or {}
 check("api/sessao diz que o cadastro esta completo", _s_api.get("cadastro_incompleto") == [], str(_s_api.get("cadastro_incompleto")))
+# Pelo app (1.9+): a API nao emite sem os dados, a sessao diz o que falta e o
+# CPF entra em Meus dados so enquanto a conta nao tem um.
+_c2e = f"curto2-{_suf_cc}@teste.invalid"
+A.app.test_client().post("/cadastro", data={"email": _c2e, "senha": "senha12345", "whatsapp": "11988887777"})
+_tok2 = (A.app.test_client().post("/api/login", json={"email": _c2e, "senha": "senha12345"}).get_json() or {}).get("access_token", "")
+_cab2 = {"Authorization": f"Bearer {_tok2}"}
+_s2 = A.app.test_client().get("/api/sessao", headers=_cab2).get_json() or {}
+check("api/sessao lista o que falta no cadastro curto", _s2.get("cadastro_incompleto") == ["nome", "CPF", "cidade", "placa"], str(_s2.get("cadastro_incompleto")))
+_rid2 = "ABCDEF01234567"[:A.RID_LENGTH]
+_rec2 = {"rid": _rid2, "passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"}
+r = A.app.test_client().post("/api/recibos", headers=_cab2, json=_rec2)
+check("api/recibos nao emite sem os dados do recibo (409 cadastro_incompleto)",
+      r.status_code == 409 and (r.get_json() or {}).get("erro") == "cadastro_incompleto" and "CPF" in (r.get_json() or {}).get("mensagem", ""),
+      f"{r.status_code} {r.get_json()}")
+_perfil2 = {"nome_completo": "Curto Dois", "whatsapp": "11988887777", "cidade": "SP", "placa": "abc1d23", "senha_atual": "senha12345"}
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="123"))
+check("api/perfil: CPF errado e recusado", r.status_code == 400 and (r.get_json() or {}).get("erro") == "cpf_invalido", f"{r.status_code} {r.get_json()}")
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="11144477735"))
+_u2 = store.get_user_by_email(_c2e)
+check("api/perfil grava o CPF quando a conta nao tem", r.status_code == 200 and _u2.get("cpf") == "11144477735" and _u2.get("full_name") == "Curto Dois", f"{r.status_code} {_u2.get('cpf')}")
+check("api/sessao: cadastro completo depois de Meus dados",
+      (A.app.test_client().get("/api/sessao", headers=_cab2).get_json() or {}).get("cadastro_incompleto") == [])
+r = A.app.test_client().post("/api/recibos", headers=_cab2, json=_rec2)
+check("api/recibos emite depois de completar", r.status_code == 201, f"{r.status_code} {r.get_json()}")
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="52998224725"))
+check("api/perfil ignora o CPF quando a conta ja tem um (so muda no site)", r.status_code == 200
+      and store.get_user_by_email(_c2e).get("cpf") == "11144477735", f"{r.status_code} {store.get_user_by_email(_c2e).get('cpf')}")
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="11144477735", cidade="Campinas"))
+check("api/perfil com o mesmo CPF de sempre passa", r.status_code == 200 and store.get_user_by_email(_c2e).get("city") == "Campinas", r.status_code)
 check("canal_de_cadastro normaliza e recusa o que nao serve",
       A.canal_de_cadastro(" Meta_Taxista ") == "meta_taxista" and A.canal_de_cadastro("Ponto Táxi!") == ""
       and A.canal_de_cadastro(None) == "" and A.canal_de_cadastro("a" * 31) == "")

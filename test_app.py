@@ -2124,6 +2124,26 @@ try:
           _cl == {("play", 2), ("appstore", 3), ("pagina", 3), ("site", 1), ("robo", 5)}, str(_cl))
 except A.psycopg.errors.UndefinedTable:
     check("contagem da pagina (migracao 0014 nao aplicada; nada a conferir)", True)
+# Sem ?c=, o utm_source vale como canal: os anuncios da Meta chegam com
+# utm_source=ig (ou fb) e sem c, e ate 25/11 caiam todos em "direto".
+_canal_u = f"teste-suite-utm-{_suf_em}"
+_h_utm = _cli_em.get(f"/baixar?utm_source={_canal_u}&utm_medium=paid&fbclid=x1", headers=_ua_and).get_data(as_text=True)
+check("/baixar sem ?c= usa o utm_source como canal (anuncio da Meta): botoes e cadastro",
+      f'href="/baixar/ir?loja=play&amp;c={_canal_u}"' in _h_utm and f"/cadastro?c={_canal_u}" in _h_utm)
+check("/baixar/ir sem ?c= leva o utm_source ao referrer do Play",
+      f"utm_source%3D{_canal_u}" in _cli_em.get(f"/baixar/ir?utm_source={_canal_u}", headers=_ua_and).headers.get("Location", ""))
+_h_utm2 = _cli_em.get(f"/baixar?c={_canal_u}&utm_source=outro-canal", headers=_ua_and).get_data(as_text=True)
+check("?c= vale mais que o utm_source", f'href="/baixar/ir?loja=play&amp;c={_canal_u}"' in _h_utm2)
+check("utm_source fora do padrao cai em direto",
+      'href="/baixar/ir?loja=play"' in _cli_em.get("/baixar?utm_source=Instagram%20Ads", headers=_ua_and).get_data(as_text=True))
+try:
+    with _st_em.pool.connection() as _conn:
+        _cl = {(l["store"], l["clicks"]) for l in _conn.execute(
+            "select store, clicks from public.download_clicks where channel = %s and day = %s",
+            (_canal_u, A.today_br())).fetchall()}
+    check("cliques do utm_source contados no canal dele", _cl == {("pagina", 2), ("play", 1)}, str(_cl))
+except A.psycopg.errors.UndefinedTable:
+    check("cliques do utm_source (migracao 0014 nao aplicada; nada a conferir)", True)
 
 # Painel: so leitura e um modelo criado e apagado (desligado).
 _adm_em = _st_em.upsert_admin(f"admin-em-{_suf_em}@teste.invalid", _gph("senha-da-suite-123"))
@@ -4286,14 +4306,22 @@ _hoje_c = A.date(2026, 11, 21) if hasattr(A, "date") else A.datetime(2026, 11, 2
 _linhas_c = []
 for _i, _canal in enumerate(["whatsapp", "site", "google-ads", "meta", "email", "direto", "indicacao", "tiktok"]):
     _linhas_c.append({"dia": _hoje_c - A.timedelta(days=_i % 3), "canal": _canal, "n": 10 - _i})
+# Quem abriu a pagina vem a parte ('abriram'); canal que so abriu a pagina nao ganha linha.
+_linhas_c[0]["abriram"] = 25
+_linhas_c.append({"dia": _hoje_c, "canal": "so-pagina", "n": 0, "abriram": 40})
 _cg = A.montar_cliques_por_dia(_linhas_c, hoje=_hoje_c)
 check("cliques: seis canais com mais cliques e o resto em 'outros', em ordem fixa",
       _cg["canais"] == ["whatsapp", "site", "google-ads", "meta", "email", "direto", "outros"], _cg["canais"])
 check("cliques: comeca no primeiro dia com clique e o total soma os canais",
       _cg["dias"] == 3 and _cg["total"] == sum(l["n"] for l in _linhas_c)
       and all(p["total"] == sum(p["canais"].values()) for p in _cg["serie"]), _cg["dias"])
-check("cliques: linha do total mais uma por canal, e a dica de cada dia",
-      [l["nome"] for l in _cg["linhas"]][0] == "total" and len(_cg["linhas"]) == 8 and len(_cg["dados_js"]) == 3)
+check("cliques: linha do total, uma por canal e a tracejada de quem abriu a pagina, e a dica de cada dia",
+      [l["nome"] for l in _cg["linhas"]][0] == "total" and len(_cg["linhas"]) == 9
+      and _cg["linhas"][-1]["classe"] == "linha-abriram" and _cg["linhas"][-1]["soma"] == 65
+      and len(_cg["dados_js"]) == 3 and _cg["dados_js"][-1]["abriram"] == 65)
+check("cliques: 'abriram' soma por dia, entra no cabecalho e no eixo",
+      _cg["abriram"] == 65 and _cg["serie"][-1]["abriram"] == 65 and _cg["serie"][0]["abriram"] == 0
+      and _cg["marcas"][-1]["valor"] >= 65, str(_cg["marcas"]))
 check("cliques: sem tabela, o painel mostra indisponivel em vez de quebrar", A.montar_cliques_por_dia(None) is None)
 
 # Na pagina: os dois graficos, a tabela de cada um e a dica sem innerHTML.
@@ -4410,25 +4438,27 @@ check("conta interna: fatura e assinatura dela saem da conta da Stripe (cliente 
 check("painel: grafico de faturamento com legenda, divisa da previsao e tabela",
       "Faturamento mês a mês" in _html_g and "previsão →" in _html_g and "Ver os números em tabela" in _html_g
       and 'class="seg seg-mensal' in _html_g and "Anual pago uma vez (Pix ou cartão)" in _html_g)
-check("painel: grafico de cliques por dia com o total e o canal, e a tabela",
-      "Cliques no link de download por dia" in _html_g and "linha-total" in _html_g
-      and f"teste-suite-{_suf_g}" in _html_g and "Ver os cliques em tabela" in _html_g)
+check("painel: grafico de cliques por dia com o total, o canal, a tracejada de quem abriu a pagina, e a tabela",
+      "Cliques no link de download por dia" in _html_g and "linha-total" in _html_g and "linha-abriram" in _html_g
+      and f"teste-suite-{_suf_g}" in _html_g and "Abriram a página" in _html_g and "Ver os cliques em tabela" in _html_g)
 _js_g = _html_g[_html_g.find("function montarDica"):]
 _js_g = _js_g[:_js_g.find("</script>")]
 check("painel: a dica dos graficos monta o texto com textContent, nunca innerHTML",
       "textContent" in _js_g and "innerHTML" not in _js_g, len(_js_g))
 with A.get_store().pool.connection() as _conn:
-    _conn.execute("""insert into public.download_clicks (day, channel, store, clicks) values (%s, %s, 'pagina', 7)
-                     on conflict (day, channel, store) do update set clicks = excluded.clicks""",
-                  (_hoje_br, f"teste-suite-pg-{_suf_g}"))
+    for _loja_pg, _n_pg in (("pagina", 7), ("robo", 5)):
+        _conn.execute("""insert into public.download_clicks (day, channel, store, clicks) values (%s, %s, %s, %s)
+                         on conflict (day, channel, store) do update set clicks = excluded.clicks""",
+                      (_hoje_br, f"teste-suite-pg-{_suf_g}", _loja_pg, _n_pg))
     _dd_pg = {"_tempos": {}}
     A._executar_secoes(_conn, ["cliques_dia", "cliques_canal"], A._params_dashboard_admin(), _dd_pg)
     _conn.execute("delete from public.download_clicks where channel in (%s, %s)",
                   (f"teste-suite-{_suf_g}", f"teste-suite-pg-{_suf_g}"))
-check("painel: visita a pagina fica fora do grafico por dia e aparece na tabela como 'abriu a pagina'",
-      not any(l["canal"] == f"teste-suite-pg-{_suf_g}" for l in _dd_pg["cliques_dia"] or [])
+_l_pg = [l for l in _dd_pg["cliques_dia"] or [] if l["canal"] == f"teste-suite-pg-{_suf_g}"]
+check("painel: visita a pagina entra no grafico como 'abriram' (robo fora), nao como ida a loja, e na tabela como 'abriu a pagina'",
+      len(_l_pg) == 1 and int(_l_pg[0]["abriram"]) == 7 and int(_l_pg[0]["n"]) == 0
       and any(l["canal"] == f"teste-suite-pg-{_suf_g} · abriu a página" for l in _dd_pg["cliques_canal"] or []),
-      str(_dd_pg.get("cliques_canal"))[:300])
+      str(_l_pg)[:300])
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

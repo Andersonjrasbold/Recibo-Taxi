@@ -92,12 +92,12 @@
               <button type="submit" class="btn btn-pricing-primary w-100">Assinar anual — R$ 59,90/ano</button>
             </form>
             {% else %}
-            <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
+            <a href="{{ url_for('baixar_app', c='site') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
             {% endif %}
           {% elif anual_no_site %}
           <a href="{{ url_for('cadastro', plano='pro_anual') }}" class="btn btn-pricing-primary w-100">Começar com o anual</a>
           {% else %}
-          <a href="{{ url_for('baixar_app') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
+          <a href="{{ url_for('baixar_app', c='site') }}" class="btn btn-pricing-primary w-100">Assinar pelo app</a>
           {% endif %}
           {% if not anual_no_site and not (current_user and current_user.get('plan', 'free') == 'pro') %}<p class="pricing-cta-nota">Assinatura feita no app para iPhone e Android.</p>{% endif %}
         </div>

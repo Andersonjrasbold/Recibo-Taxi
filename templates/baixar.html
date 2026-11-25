@@ -39,6 +39,13 @@
           <span><i class="bi bi-check-circle-fill me-1"></i>Grátis para começar, com {{ free_monthly_limit }} recibos por mês</span>
           <span><i class="bi bi-check-circle-fill me-1"></i>Sem cartão de crédito</span>
         </div>
+        {% if qr %}
+        {#- Só no computador: o celular lê o código e cai na loja dele, com o mesmo canal. -#}
+        <div class="baixar-qr-bloco">
+          <div class="baixar-qr" aria-hidden="true">{{ qr | safe }}</div>
+          <p class="baixar-qr-texto">Está no computador? Aponte a câmera do celular para o código: ele abre a loja do seu aparelho.</p>
+        </div>
+        {% endif %}
         <p class="baixar-site">Prefere usar pelo computador? <a href="{{ link_cadastro }}">Crie a conta grátis pelo site</a>.</p>
       </div>
     </div>

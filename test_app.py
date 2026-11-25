@@ -459,10 +459,10 @@ check("a home tambem tem o card do anual", 'pricing-amount">4<' in _card(_home, 
 _c_anual = novo_cliente("cardanual@teste.invalid")
 _preco_anual = os.environ.pop("STRIPE_PRO_ANUAL_PRICE_ID", None)
 try:
-    check("sem o preco anual no site, o card da home leva ao app",
-          'href="/baixar/ir"' in _card(A.app.test_client().get("/").get_data(as_text=True), "anual"))
-    check("sem o preco anual no site, o card de /planos leva ao app",
-          'href="/baixar/ir"' in _card(_c_anual.get("/planos").get_data(as_text=True), "anual"))
+    check("sem o preco anual no site, o card da home leva ao app (canal 'site')",
+          'href="/baixar/ir?c=site"' in _card(A.app.test_client().get("/").get_data(as_text=True), "anual"))
+    check("sem o preco anual no site, o card de /planos leva ao app (canal 'site')",
+          'href="/baixar/ir?c=site"' in _card(_c_anual.get("/planos").get_data(as_text=True), "anual"))
 finally:
     if _preco_anual is not None:
         os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = _preco_anual
@@ -1745,6 +1745,19 @@ check("seção de e-mail anuncia a retenção dos contadores",
 _segredos = [k for k in ("STRIPE_SECRET_KEY", "RESEND_API_KEY", "STRIPE_WEBHOOK_SECRET", "SECRET_KEY", "SUPABASE_DB_URL")
              if os.environ.get(k) and os.environ[k] in _html_adm]
 check("dashboard nao vaza segredo de ambiente", not _segredos, str(_segredos))
+# Rotulo da chave da Stripe: a restrita (rk_live_) e live; antes saia "modo teste".
+_chave_stripe_antes = os.environ.get("STRIPE_SECRET_KEY")
+for _prefixo, _esperado in (("rk_live_abc", "modo live (chave restrita)"), ("sk_live_abc", "modo live"),
+                            ("sk_test_abc", "modo teste"), ("rk_test_abc", "modo teste"),
+                            ("pk_live_abc", "prefixo desconhecido")):
+    os.environ["STRIPE_SECRET_KEY"] = _prefixo
+    _nota = {n: nota for n, _ok, nota in A._saude_do_sistema()["integracoes"]}["Stripe (chave secreta)"]
+    check(f"saude rotula a chave {_prefixo[:8]} como '{_esperado}'", _nota.startswith(_esperado), _nota)
+if _chave_stripe_antes is None:
+    os.environ.pop("STRIPE_SECRET_KEY", None)
+else:
+    os.environ["STRIPE_SECRET_KEY"] = _chave_stripe_antes
+check("saude sem chave da Stripe: nota vazia", A._modo_da_chave_stripe("") == "")
 r = _ca.get("/admin")
 check("segunda abertura vem do cache", "em cache" in r.get_data(as_text=True))
 r = _ca.get("/admin?atualizar=1")
@@ -2026,6 +2039,7 @@ check("/baixar/ir no Android vai ao Google Play", _cli_em.get("/baixar/ir", head
 # Canal de divulgacao: segue para a loja e e contado por dia, canal e loja.
 _ua_and = {"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}
 _ua_iph = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"}
+_ua_pc = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/120 Safari/537.36"}
 _canal_t = f"teste-suite-{_suf_em}"
 check("/baixar/ir?c= no Android leva o canal no referrer do Play",
       _cli_em.get(f"/baixar/ir?c={_canal_t}", headers=_ua_and).headers.get("Location")
@@ -2072,12 +2086,17 @@ _h_pg_d = _cli_em.get("/baixar?c=Ponto%20T%C3%A1xi!").get_data(as_text=True)
 check("/baixar com canal fora do padrao: botoes sem canal",
       'href="/baixar/ir?loja=play"' in _h_pg_d and 'href="/baixar/ir?loja=appstore"' in _h_pg_d)
 check("/baixar/ir?loja=play no computador vai ao Play com o canal",
-      _cli_em.get(f"/baixar/ir?loja=play&c={_canal_t}").headers.get("Location", "")
+      _cli_em.get(f"/baixar/ir?loja=play&c={_canal_t}", headers=_ua_pc).headers.get("Location", "")
       .startswith(f"{A.PLAY_STORE_URL}&referrer=utm_source%3D{_canal_t}"))
 check("/baixar/ir?loja=appstore no Android vai a App Store",
       _cli_em.get(f"/baixar/ir?loja=appstore&c={_canal_t}", headers=_ua_and).headers.get("Location") == A.APP_STORE_URL)
 check("/baixar/ir sem loja no computador vai a secao do app",
-      _cli_em.get(f"/baixar/ir?c={_canal_t}&loja=xbox").headers.get("Location", "").endswith("/#app"))
+      _cli_em.get(f"/baixar/ir?c={_canal_t}&loja=xbox", headers=_ua_pc).headers.get("Location", "").endswith("/#app"))
+# QR so no computador: o celular le e cai no /baixar/ir com o mesmo canal.
+_h_pg_pc = _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_pc).get_data(as_text=True)
+check("/baixar no computador mostra o QR (SVG inline)", 'class="baixar-qr"' in _h_pg_pc and "<svg" in _h_pg_pc)
+check("/baixar no Android nao mostra o QR", 'class="baixar-qr"' not in _h_pg)
+check("qr_svg devolve um SVG", A.qr_svg("https://exemplo.invalid/x").startswith("<svg"))
 _ua_adsbot = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 "
                             "(KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1 "
                             "(compatible; AdsBot-Google-Mobile; +http://www.google.com/mobile/adsbot.html)"}
@@ -2085,13 +2104,20 @@ check("o robo do Google Ads (agente de iPhone) ve a pagina, sem redirecionamento
       _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_adsbot).status_code == 200)
 _cli_em.get(f"/baixar/ir?c={_canal_t}", headers=_ua_adsbot)
 _cli_em.get(f"/baixar?c={_canal_t}", headers={"User-Agent": "WhatsApp/2.24.1 A"})
+# Agente que nao e navegador (script, curl, vazio) tambem e robo: antes caia em "computador".
+_cli_em.get(f"/baixar/ir?c={_canal_t}", headers={"User-Agent": "python-requests/2.32.3"})
+_cli_em.get(f"/baixar/ir?c={_canal_t}", headers={"User-Agent": ""})
+check("agente sem 'Mozilla/' e robo; navegador e WebView nao",
+      A._agente_e_robo("curl/8.4.0") and A._agente_e_robo("") and A._agente_e_robo(_ua_adsbot["User-Agent"])
+      and not A._agente_e_robo(_ua_pc["User-Agent"]) and not A._agente_e_robo(_ua_and["User-Agent"])
+      and not A._agente_e_robo("Mozilla/5.0 (Linux; Android 13; CUBOT KINGKONG 5) AppleWebKit/537.36"))
 try:
     with _st_em.pool.connection() as _conn:
         _cl = {(l["store"], l["clicks"]) for l in _conn.execute(
             "select store, clicks from public.download_clicks where channel = %s and day = %s",
             (_canal_t, A.today_br())).fetchall()}
-    check("visita a pagina conta como 'pagina', a ida a loja pela loja, robo nao conta",
-          _cl == {("play", 2), ("appstore", 3), ("pagina", 2), ("site", 1)}, str(_cl))
+    check("visita conta como 'pagina', ida a loja pela loja, computador como 'site', robo a parte como 'robo'",
+          _cl == {("play", 2), ("appstore", 3), ("pagina", 3), ("site", 1), ("robo", 5)}, str(_cl))
 except A.psycopg.errors.UndefinedTable:
     check("contagem da pagina (migracao 0014 nao aplicada; nada a conferir)", True)
 

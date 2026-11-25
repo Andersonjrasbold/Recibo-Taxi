@@ -312,6 +312,8 @@ a { color: inherit; text-decoration: none; }
 .baixar-lojas .btn-store .bi { font-size: 1.9rem; }
 .baixar-lojas .btn-store-text { font-size: 1.2rem; text-align: left; }
 .baixar-site { margin: 1.75rem 0 0; font-size: .9rem; color: rgba(255,244,236,.66); }
+.auth-detalhes summary { cursor: pointer; font-size: .92rem; font-weight: 600; color: var(--auth-muted, #6c757d); }
+.auth-detalhes[open] summary { margin-bottom: .5rem; }
 .baixar-qr-bloco { display: flex; flex-direction: column; align-items: center; gap: .75rem; margin-top: 1.75rem; }
 .baixar-qr { background: #fff; padding: .6rem; border-radius: .75rem; line-height: 0; }
 .baixar-qr svg { width: 10.5rem; height: 10.5rem; display: block; }

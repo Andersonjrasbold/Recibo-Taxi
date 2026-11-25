@@ -1342,8 +1342,10 @@ _u_site = A.get_store().get_user_by_email("coop-site-1@teste.invalid")
 check("site: cadastro com cooperativa grava os dois campos",
       _r.status_code == 302 and _u_site and _u_site.get("coop_name") == "Coopertáxi" and _u_site.get("coop_cnpj") == "11.222.333/0001-81",
       f"{_r.status_code} {_u_site and (_u_site.get('coop_name'), _u_site.get('coop_cnpj'))}")
-check("site: o formulario de cadastro tem os campos da cooperativa",
-      'name="cooperativa"' in A.app.test_client().get("/cadastro").get_data(as_text=True))
+# Desde o cadastro curto (2026-11-24) a cooperativa fica para o /completar-cadastro
+# (conferido no bloco "Cadastro curto e canal"); o formulario do site nao a mostra.
+check("site: o formulario curto de cadastro nao mostra a cooperativa",
+      'name="cooperativa"' not in A.app.test_client().get("/cadastro").get_data(as_text=True))
 
 # Meus dados pelo app (POST /api/perfil, versao 1.6).
 _cp = A.app.test_client()
@@ -1739,6 +1741,7 @@ check("painel nao e cacheado", r.headers.get("Cache-Control") == "no-store", r.h
 for _secao in ("Receita", "Crescimento", "Funil", "Uso", "Engajamento", "E-mail", "Abuso", "Saúde"):
     check(f"dashboard tem a seção {_secao}", _secao in _html_adm)
 check("nenhuma seção indisponível", "Seção indisponível" not in _html_adm)
+check("dashboard tem cadastros por canal", "Cadastros por canal (30 dias)" in _html_adm)
 check("dashboard mostra o uso do Fazer corrida", "Fazer corrida (app 1.2)" in _html_adm)
 check("seção de e-mail anuncia a retenção dos contadores",
       f"E-mail (últimos {A.COUNTER_RETENTION_DAYS} dias" in _html_adm)
@@ -1830,6 +1833,7 @@ r = _ca.get(f"/admin/motoristas/{_alvo_m['_id']}"); _ficha = r.get_data(as_text=
 check("ficha do motorista abre", r.status_code == 200, r.status_code)
 check("ficha mascara o CPF", "123.***.***-00" in _ficha and "12345678900" not in _ficha and "123.456.789-00" not in _ficha)
 check("ficha mostra e-mail e WhatsApp inteiros", "reset@teste.invalid" in _ficha)
+check("ficha mostra o canal do cadastro", "Canal do cadastro" in _ficha)
 check("uuid inexistente da 404", _ca.get("/admin/motoristas/00000000-0000-0000-0000-000000000000").status_code == 404)
 check("id que nao e uuid da 404", _ca.get("/admin/motoristas/abc").status_code == 404)
 check("ficha sai com no-referrer", r.headers.get("Referrer-Policy") == "no-referrer", r.headers.get("Referrer-Policy"))
@@ -2753,6 +2757,122 @@ novo_cliente("moeda-br@teste.invalid")
 _mbr = store.get_user_by_email("moeda-br@teste.invalid")
 check("cadastro sem os campos novos fica no Brasil",
       _mbr and (_mbr["country"], _mbr["currency"]) == ("BR", "BRL"))
+# Cadastro curto do site (2026-11-24): so e-mail, senha e WhatsApp; nome, CPF,
+# cidade e placa no /completar-cadastro, antes do primeiro recibo. O ?c= do
+# /baixar vai escondido no formulario e fica gravado no cadastro (migracao 0018).
+print("\n-- Cadastro curto e canal --")
+_suf_cc = os.urandom(3).hex()
+_h_cc = A.app.test_client().get("/cadastro?c=Meta_Taxista").get_data(as_text=True)
+check("formulario curto: e-mail, senha e WhatsApp, sem nome, CPF nem placa",
+      'name="email"' in _h_cc and 'name="whatsapp"' in _h_cc and 'name="senha"' in _h_cc
+      and 'name="nome_completo"' not in _h_cc and 'name="cpf"' not in _h_cc and 'name="placa"' not in _h_cc)
+check("canal do /baixar vai escondido no formulario, normalizado", 'name="canal" value="meta_taxista"' in _h_cc)
+check("canal fora do padrao nao entra no formulario",
+      'name="canal"' not in A.app.test_client().get("/cadastro?c=Ponto%20T%C3%A1xi!").get_data(as_text=True))
+_h_bx = A.app.test_client().get("/baixar?c=meta_taxista", headers=_ua_pc).get_data(as_text=True)
+check("/baixar?c= leva o canal ao cadastro do site", "/cadastro?c=meta_taxista" in _h_bx)
+_ccc = A.app.test_client()
+_email_cc = f"curto-{_suf_cc}@teste.invalid"
+r = _ccc.post("/cadastro", data={"email": _email_cc, "senha": "senha12345", "whatsapp": "11988887777", "canal": "meta_taxista"})
+_u_cc = store.get_user_by_email(_email_cc)
+check("cadastro curto cria a conta e manda completar os dados",
+      r.status_code == 302 and r.headers.get("Location", "").endswith("/completar-cadastro") and _u_cc is not None,
+      f"{r.status_code} {r.headers.get('Location')}")
+check("conta nasce sem nome, CPF, cidade e placa, com o WhatsApp",
+      bool(_u_cc) and not any((_u_cc.get(k) or "") for k in ("full_name", "cpf", "city", "plate")) and _u_cc.get("whatsapp") == "11988887777")
+try:
+    with store.pool.connection() as _conn:
+        _canal_cc = _conn.execute("select signup_channel from public.drivers where id = %s", (_u_cc["_id"],)).fetchone()["signup_channel"]
+    check("canal gravado no cadastro", _canal_cc == "meta_taxista", _canal_cc)
+except A.psycopg.errors.UndefinedColumn:
+    check("canal gravado no cadastro (migracao 0018 nao aplicada; nada a conferir)", True)
+_h_db = _ccc.get("/dashboard").get_data(as_text=True)
+check("painel avisa o que falta no cadastro", "Falta completar seu cadastro (nome, CPF, cidade, placa)" in _h_db and "/completar-cadastro" in _h_db)
+check("painel esconde o formulario de recibo enquanto falta cadastro", 'action="/recibo"' not in _h_db)
+r = _ccc.post("/recibo", data={"passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"})
+check("recibo antes de completar o cadastro vai para o /completar-cadastro",
+      r.status_code == 302 and r.headers.get("Location", "").endswith("/completar-cadastro"), f"{r.status_code} {r.headers.get('Location')}")
+_h_comp = _ccc.get("/completar-cadastro").get_data(as_text=True)
+check("/completar-cadastro pede so o que falta, com a cooperativa opcional",
+      'name="nome_completo"' in _h_comp and 'name="cpf"' in _h_comp and 'name="cidade"' in _h_comp and 'name="placa"' in _h_comp
+      and 'name="cooperativa"' in _h_comp and 'name="whatsapp"' not in _h_comp)
+r = _ccc.post("/completar-cadastro", data={"nome_completo": "Curto Silva", "cpf": "123", "cidade": "SP", "placa": "abc1d23"})
+check("CPF errado ao completar e recusado (400)", r.status_code == 400 and "CPF" in r.get_data(as_text=True), r.status_code)
+r = _ccc.post("/completar-cadastro", data={"nome_completo": "Curto Silva", "cpf": "11144477735", "cidade": "SP", "placa": "abc1d23",
+                                          "cooperativa": "Coopertáxi", "cnpj_cooperativa": "11.222.333/0001-81"})
+_u_cc = store.get_user_by_email(_email_cc)
+check("completar grava os dados e volta ao painel",
+      r.status_code == 302 and r.headers.get("Location", "").endswith("/dashboard") and _u_cc.get("full_name") == "Curto Silva"
+      and _u_cc.get("plate") == "ABC1D23" and _u_cc.get("city") == "SP" and _u_cc.get("coop_name") == "Coopertáxi",
+      f"{r.status_code} {_u_cc.get('full_name')} {_u_cc.get('plate')}")
+check("conta completa: /completar-cadastro volta ao painel",
+      _ccc.get("/completar-cadastro").headers.get("Location", "").endswith("/dashboard"))
+_h_db2 = _ccc.get("/dashboard").get_data(as_text=True)
+check("painel para de avisar e mostra o formulario", "Falta completar seu cadastro" not in _h_db2 and 'action="/recibo"' in _h_db2)
+r = _ccc.post("/recibo", data={"passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"})
+check("recibo sai depois de completar", "/recibo/" in r.headers.get("Location", ""), r.headers.get("Location"))
+check("/completar-cadastro sem login manda entrar",
+      A.app.test_client().get("/completar-cadastro").status_code in (302, 401))
+check("cadastro curto sem WhatsApp e recusado",
+      A.app.test_client().post("/cadastro", data={"email": f"semzap-{_suf_cc}@teste.invalid", "senha": "senha12345"}).status_code == 400)
+check("WhatsApp sem DDD e recusado",
+      A.app.test_client().post("/cadastro", data={"email": f"ddd-{_suf_cc}@teste.invalid", "senha": "senha12345", "whatsapp": "99999999"}).status_code == 400)
+check("CPF errado no formulario completo continua recusado",
+      A.app.test_client().post("/cadastro", data={"email": f"cpfx-{_suf_cc}@teste.invalid", "senha": "senha12345",
+                                                  "whatsapp": "11999998888", "cpf": "123"}).status_code == 400)
+# Formulario completo (parceiro, teste): os campos valem e a conta nasce pronta.
+_cfull = A.app.test_client()
+r = _cfull.post("/cadastro", data={"nome_completo": "Completo Silva", "email": f"completo-{_suf_cc}@teste.invalid", "senha": "senha12345",
+                                   "whatsapp": "11999998888", "cpf": "11144477735", "cidade": "SP", "placa": "abc1d23"})
+check("formulario completo vai direto ao painel", r.status_code == 302 and r.headers.get("Location", "").endswith("/dashboard"),
+      f"{r.status_code} {r.headers.get('Location')}")
+# API do app: o canal vem do Install Referrer (app 1.9+); a sessao diz o que falta.
+_capi = A.app.test_client()
+r = _capi.post("/api/cadastro", json={"nome_completo": "Api Canal", "email": f"apicanal-{_suf_cc}@teste.invalid", "senha": "senha12345",
+                                      "whatsapp": "11999998888", "cpf": "11144477735", "cidade": "SP", "placa": "abc1d23", "canal": "Google_App"})
+_u_api = store.get_user_by_email(f"apicanal-{_suf_cc}@teste.invalid")
+check("api/cadastro aceita o canal", r.status_code == 201 and _u_api is not None, r.status_code)
+try:
+    with store.pool.connection() as _conn:
+        _canal_api = _conn.execute("select signup_channel from public.drivers where id = %s", (_u_api["_id"],)).fetchone()["signup_channel"]
+    check("api/cadastro grava o canal normalizado", _canal_api == "google_app", _canal_api)
+except A.psycopg.errors.UndefinedColumn:
+    check("api/cadastro grava o canal (migracao 0018 nao aplicada; nada a conferir)", True)
+_s_api = _capi.get("/api/sessao", headers={"Authorization": f"Bearer {r.get_json().get('access_token', '')}"}).get_json() or {}
+check("api/sessao diz que o cadastro esta completo", _s_api.get("cadastro_incompleto") == [], str(_s_api.get("cadastro_incompleto")))
+# Pelo app (1.9+): a API nao emite sem os dados, a sessao diz o que falta e o
+# CPF entra em Meus dados so enquanto a conta nao tem um.
+_c2e = f"curto2-{_suf_cc}@teste.invalid"
+A.app.test_client().post("/cadastro", data={"email": _c2e, "senha": "senha12345", "whatsapp": "11988887777"})
+_tok2 = (A.app.test_client().post("/api/login", json={"email": _c2e, "senha": "senha12345"}).get_json() or {}).get("access_token", "")
+_cab2 = {"Authorization": f"Bearer {_tok2}"}
+_s2 = A.app.test_client().get("/api/sessao", headers=_cab2).get_json() or {}
+check("api/sessao lista o que falta no cadastro curto", _s2.get("cadastro_incompleto") == ["nome", "CPF", "cidade", "placa"], str(_s2.get("cadastro_incompleto")))
+_rid2 = "ABCDEF01234567"[:A.RID_LENGTH]
+_rec2 = {"rid": _rid2, "passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"}
+r = A.app.test_client().post("/api/recibos", headers=_cab2, json=_rec2)
+check("api/recibos nao emite sem os dados do recibo (409 cadastro_incompleto)",
+      r.status_code == 409 and (r.get_json() or {}).get("erro") == "cadastro_incompleto" and "CPF" in (r.get_json() or {}).get("mensagem", ""),
+      f"{r.status_code} {r.get_json()}")
+_perfil2 = {"nome_completo": "Curto Dois", "whatsapp": "11988887777", "cidade": "SP", "placa": "abc1d23", "senha_atual": "senha12345"}
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="123"))
+check("api/perfil: CPF errado e recusado", r.status_code == 400 and (r.get_json() or {}).get("erro") == "cpf_invalido", f"{r.status_code} {r.get_json()}")
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="11144477735"))
+_u2 = store.get_user_by_email(_c2e)
+check("api/perfil grava o CPF quando a conta nao tem", r.status_code == 200 and _u2.get("cpf") == "11144477735" and _u2.get("full_name") == "Curto Dois", f"{r.status_code} {_u2.get('cpf')}")
+check("api/sessao: cadastro completo depois de Meus dados",
+      (A.app.test_client().get("/api/sessao", headers=_cab2).get_json() or {}).get("cadastro_incompleto") == [])
+r = A.app.test_client().post("/api/recibos", headers=_cab2, json=_rec2)
+check("api/recibos emite depois de completar", r.status_code == 201, f"{r.status_code} {r.get_json()}")
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="52998224725"))
+check("api/perfil ignora o CPF quando a conta ja tem um (so muda no site)", r.status_code == 200
+      and store.get_user_by_email(_c2e).get("cpf") == "11144477735", f"{r.status_code} {store.get_user_by_email(_c2e).get('cpf')}")
+r = A.app.test_client().post("/api/perfil", headers=_cab2, json=dict(_perfil2, cpf="11144477735", cidade="Campinas"))
+check("api/perfil com o mesmo CPF de sempre passa", r.status_code == 200 and store.get_user_by_email(_c2e).get("city") == "Campinas", r.status_code)
+check("canal_de_cadastro normaliza e recusa o que nao serve",
+      A.canal_de_cadastro(" Meta_Taxista ") == "meta_taxista" and A.canal_de_cadastro("Ponto Táxi!") == ""
+      and A.canal_de_cadastro(None) == "" and A.canal_de_cadastro("a" * 31) == "")
+
 _cm = A.app.test_client()
 _cm.post("/cadastro", data={"nome_completo": "Bryan Teste", "email": "moeda-cr@teste.invalid",
     "senha": "senha12345", "whatsapp": "+506 8888 7777", "cpf": "1-1234-5678", "cidade": "San José",

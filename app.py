@@ -1084,6 +1084,27 @@ def guardar_cooperativa(user_id: str, coop_name: str, coop_cnpj: str) -> None:
         app.logger.warning("cooperativa do cadastro %s não gravada: %s", user_id, exc)
 
 
+def canal_de_cadastro(valor) -> str:
+    """O canal de divulgação que chegou com o cadastro: o `?c=` que o /baixar
+    repassa ao /cadastro do site, ou o utm_source que o Google Play entrega ao
+    app no primeiro acesso (Install Referrer, app 1.9+). Mesmo padrão do
+    /baixar?c=; "" quando não serve."""
+    canal = str(valor or "").strip().lower()
+    return canal if CANAL_DOWNLOAD_RE.match(canal) else ""
+
+
+def guardar_canal_do_cadastro(user_id: str, canal: str) -> None:
+    """Grava de onde veio o cadastro (migração 0018). Como a cooperativa: a
+    linha em `drivers` nasce pelo trigger do Auth, e falha aqui (a coluna ainda
+    sem a migração) não derruba o cadastro — só deixa o canal de fora."""
+    if not canal:
+        return
+    try:
+        get_store().update_user(user_id, {"signup_channel": canal})
+    except Exception as exc:
+        app.logger.warning("canal do cadastro %s não gravado (migração 0018 aplicada?): %s", user_id, exc)
+
+
 def chave_de_reconfirmacao(user_id: str) -> str:
     return f"reauth:{user_id}:{today_br()}"
 
@@ -1194,6 +1215,7 @@ def avisar_novo_cadastro(user_id: str, dados: dict, origem: str) -> bool:
             f"País · moeda: {PAISES.get(dados.get('country') or PAIS_PADRAO, ('-',))[0]}"
             f" · {dados.get('currency') or MOEDA_PADRAO}",
             f"Placa · veículo: {veiculo or '-'}",
+            f"Canal: {(dados.get('canal') or '').strip() or '-'}",
             f"Quando: {datetime.now(BR_TZ).strftime('%d/%m/%Y %H:%M')} (horário de Brasília)",
             f"É o cadastro nº {n_hoje} de hoje.",
             "",
@@ -1438,6 +1460,7 @@ class PostgresStore:
             "stripe_subscription_id", "subscription_status",
             "country", "currency", "referral_code", "referred_by", "pro_until",
             "pro_reminder_sent_at", "referral_coupon_granted_at", "referral_coupon_used_at",
+            "signup_channel",
         }
         campos = {k: v for k, v in updates.items() if k in permitidas}
         if not campos:
@@ -2450,9 +2473,7 @@ ROBO_RE = re.compile(
 
 def _canal_e_codigo_do_baixar() -> tuple[str, str]:
     """`?c=CANAL` e `?i=CÓDIGO` do /baixar, já conferidos ("" quando não servem)."""
-    canal = request.args.get("c", "").strip().lower()
-    if not CANAL_DOWNLOAD_RE.match(canal):
-        canal = ""
+    canal = canal_de_cadastro(request.args.get("c"))
     # `i` = código de quem indicou (vem da página do convite). Só com canal, e
     # só no formato do código; segue ao Play em utm_content.
     codigo = request.args.get("i", "").strip().upper()
@@ -2518,7 +2539,7 @@ def baixar_pagina():
         loja_do_aparelho=loja_do_aparelho,
         link_appstore=url_for("baixar_app", loja="appstore", **extra),
         link_play=url_for("baixar_app", loja="play", **extra),
-        link_cadastro=url_for("cadastro", indicacao=codigo) if codigo else url_for("cadastro"),
+        link_cadastro=url_for("cadastro", indicacao=codigo or None, c=canal or None),
         # No computador, o QR leva o celular ao /baixar/ir com o mesmo canal e
         # código: a loja abre no aparelho certo e o toque conta como Android ou
         # iPhone, não como "computador".
@@ -2595,19 +2616,32 @@ def login():
 
 @app.route("/cadastro", methods=["GET", "POST"])
 def cadastro():
+    """Cadastro pelo site. Pede só e-mail, senha e WhatsApp (desde 2026-11-24);
+    nome, CPF, cidade e placa vêm no /completar-cadastro, antes do primeiro
+    recibo. Se o formulário mandar esses campos mesmo assim (um parceiro, um
+    teste), eles valem e são conferidos como antes: CPF pelo dígito, no Brasil.
+
+    `?c=CANAL` é o canal de divulgação que o /baixar repassa; fica gravado no
+    cadastro (migração 0018) para o painel contar cadastros por canal.
+    """
     if g.user:
         return redirect(url_for("planos") if plano_pedido(request.values.get("plano", "")) else url_for("dashboard"))
+    canal = canal_de_cadastro(request.args.get("c") or request.form.get("canal"))
 
     if request.method == "POST":
+        def recusar(mensagem: str, status: int = 400):
+            flash(mensagem, "danger")
+            return render_template("register.html", form=request.form, canal=canal), status
+
         erro_tamanho = field_limit_error(SIGNUP_FIELD_LIMITS)
         if erro_tamanho:
-            flash(erro_tamanho, "danger")
-            return render_template("register.html", form=request.form), 400
+            return recusar(erro_tamanho)
 
-        full_name = request.form.get("nome_completo", "").strip()
         email = normalize_email(request.form.get("email", ""))
         password = request.form.get("senha", "")
         whatsapp = request.form.get("whatsapp", "").strip()
+        # Fora do formulário curto; valem quando vêm.
+        full_name = request.form.get("nome_completo", "").strip()
         cpf = request.form.get("cpf", "").strip()
         city = request.form.get("cidade", "").strip()
         plate = request.form.get("placa", "").strip().upper()
@@ -2615,49 +2649,37 @@ def cadastro():
         taxi_prefix = request.form.get("prefixo_taxi", "").strip()
         license_number = request.form.get("numero_alvara", "").strip()
 
-        if not all([full_name, email, password, whatsapp, cpf, city, plate]):
-            flash("Preencha todos os campos obrigatórios.", "danger")
-            return render_template("register.html", form=request.form), 400
-
+        if not all([email, password, whatsapp]):
+            return recusar("Preencha e-mail, senha e WhatsApp.")
         if not email_valido(email):
-            flash("Confira o e-mail: ele não parece válido.", "danger")
-            return render_template("register.html", form=request.form), 400
-
+            return recusar("Confira o e-mail: ele não parece válido.")
+        if len(password) < 8:
+            return recusar("A senha precisa ter pelo menos 8 caracteres.")
+        try:
+            pais, moeda = pais_e_moeda(request.form.get("pais"), request.form.get("moeda"))
+        except ValueError as exc:
+            return recusar(str(exc))
+        # Com DDD, como no painel e no /criar-senha: é o número da lista do
+        # vendedor e do link do WhatsApp.
+        if not phone_e164(whatsapp, pais):
+            return recusar("Confira o WhatsApp: com DDD (fora do Brasil, com + e o código do país).")
+        if cpf and pais == PAIS_PADRAO and not cpf_valido(cpf):
+            return recusar("Confira o CPF: os dígitos não conferem.")
         # Cooperativa (opcional, pedido de um taxista): conferida aqui, gravada
         # depois de a conta nascer — o trigger do Auth não conhece os campos.
         try:
             coop_name, coop_cnpj = cooperativa_informada(
-                request.form.get("cooperativa", ""), request.form.get("cnpj_cooperativa", ""),
-                request.form.get("pais") or PAIS_PADRAO)
+                request.form.get("cooperativa", ""), request.form.get("cnpj_cooperativa", ""), pais)
         except CooperativaInvalida as exc:
-            flash(str(exc), "danger")
-            return render_template("register.html", form=request.form), 400
-
-        if len(password) < 8:
-            flash("A senha precisa ter pelo menos 8 caracteres.", "danger")
-            return render_template("register.html", form=request.form), 400
-
-        try:
-            pais, moeda = pais_e_moeda(request.form.get("pais"), request.form.get("moeda"))
-        except ValueError as exc:
-            flash(str(exc), "danger")
-            return render_template("register.html", form=request.form), 400
-
-        if pais == PAIS_PADRAO and not cpf_valido(cpf):
-            flash("Confira o CPF: os dígitos não conferem.", "danger")
-            return render_template("register.html", form=request.form), 400
-
+            return recusar(str(exc))
         if passou_do_teto("cadastro:ip", client_ip(), CADASTRO_DAILY_LIMIT_IP):
-            flash("Muitos cadastros a partir desta rede hoje. Tente de novo amanhã ou fale com o suporte.", "danger")
-            return render_template("register.html", form=request.form), 429
-
+            return recusar("Muitos cadastros a partir desta rede hoje. Tente de novo amanhã ou fale com o suporte.", 429)
         # Código de quem indicou: opcional, mas, se veio, tem de existir —
         # engolir um código errado deixaria a indicação sem dono.
         codigo_indicacao = request.form.get("indicacao", "").strip().upper()
         indicador = get_store().get_user_by_referral_code(codigo_indicacao) if codigo_indicacao else None
         if codigo_indicacao and not indicador:
-            flash("Código de indicação não encontrado. Confira com quem te indicou ou deixe em branco.", "danger")
-            return render_template("register.html", form=request.form), 400
+            return recusar("Código de indicação não encontrado. Confira com quem te indicou ou deixe em branco.")
 
         # O usuário nasce no Supabase Auth; o trigger on_auth_user_created
         # cria o perfil em `drivers` a partir deste metadata.
@@ -2679,17 +2701,17 @@ def cadastro():
                 },
             )
         except ValueError as exc:
-            flash(str(exc), "danger")
-            return render_template("register.html", form=request.form), 409
+            return recusar(str(exc), 409)
         except RuntimeError as exc:
-            flash(str(exc), "danger")
-            return render_template("register.html", form=request.form), 503
+            return recusar(str(exc), 503)
 
         guardar_cooperativa(user_id, coop_name, coop_cnpj)
+        guardar_canal_do_cadastro(user_id, canal)
         registrar_indicacao(indicador, user_id)
         avisar_novo_cadastro(user_id, {
             "email": email, "full_name": full_name, "whatsapp": whatsapp, "city": city,
             "plate": plate, "vehicle_model": vehicle_model, "country": pais, "currency": moeda,
+            "canal": canal,
         }, "site")
         session["user_id"] = user_id
         session["pw_stamp"] = ""
@@ -2698,13 +2720,45 @@ def cadastro():
         novo = get_store().get_user_by_id(user_id) if plano else None
         if novo:
             # Clicou em "Assinar" antes de ter conta: segue direto para o
-            # pagamento, sem precisar achar o botão de novo.
+            # pagamento, sem precisar achar o botão de novo. Os dados do
+            # recibo ficam para o painel, que avisa.
             flash("Conta criada!", "success")
             return iniciar_checkout(novo, plano)
+        if not all([full_name, cpf, city, plate]):
+            flash("Conta criada! Agora complete os dados que saem no recibo.", "success")
+            return redirect(url_for("completar_cadastro"))
         flash("Conta criada! Já pode emitir e salvar seus recibos.", "success")
         return redirect(url_for("dashboard"))
 
-    return render_template("register.html")
+    return render_template("register.html", canal=canal)
+
+
+@app.route("/completar-cadastro", methods=["GET", "POST"])
+@login_required
+def completar_cadastro():
+    """Nome, CPF, cidade e placa de quem fez o cadastro curto do site (ou de
+    quem o painel criou só com o e-mail): são os dados que saem em cada recibo.
+    Mesmos campos e regras do /criar-senha. Conta completa volta ao painel."""
+    pede = o_que_o_primeiro_acesso_pede(g.user)
+    if not pede["faltam"]:
+        return redirect(url_for("dashboard"))
+    contexto = {"pede": pede, "faltam": rotulos_que_faltam(g.user),
+                "documento": rotulo_do_documento(g.user)}
+    if request.method == "POST":
+        erro, mudancas = dados_do_primeiro_acesso(g.user, pede)
+        if erro:
+            flash(erro, "danger")
+            return render_template("completar_cadastro.html", preenchido=request.form, **contexto), 400
+        try:
+            get_store().update_user(g.user["_id"], mudancas)
+        except Exception as exc:
+            app.logger.error("completar cadastro: não salvou os dados de %s: %s", g.user["_id"], exc)
+            flash("Não conseguimos salvar agora. Tente de novo em alguns instantes.", "danger")
+            return render_template("completar_cadastro.html", preenchido=request.form, **contexto), 503
+        app.logger.info("motorista %s completou o cadastro pelo site", g.user["_id"])
+        flash("Cadastro completo! Já pode emitir e salvar seus recibos.", "success")
+        return redirect(url_for("dashboard"))
+    return render_template("completar_cadastro.html", preenchido={}, **contexto)
 
 
 @app.get("/sair")
@@ -2985,6 +3039,7 @@ def dashboard():
     _, simbolo, casas, _ = dados_da_moeda(g.user.get("currency"))
     return render_template(
         "dashboard.html",
+        faltam_no_cadastro=rotulos_que_faltam(g.user),
         receipts=receipts,
         receipts_this_month=receipts_this_month,
         recibos_anteriores=recibos_anteriores,
@@ -3005,6 +3060,12 @@ def dashboard():
 @app.post("/recibo")
 @login_required
 def recibo_criar():
+    # Cadastro curto do site: nome, CPF, cidade e placa vêm antes do primeiro
+    # recibo, ou o recibo sairia sem quem o emitiu.
+    faltam = rotulos_que_faltam(g.user)
+    if faltam:
+        flash("Falta completar seu cadastro (" + ", ".join(faltam) + "): esses dados saem no recibo.", "warning")
+        return redirect(url_for("completar_cadastro"))
     erro_tamanho = field_limit_error(RECEIPT_FIELD_LIMITS)
     if erro_tamanho:
         flash(erro_tamanho, "danger")
@@ -4183,9 +4244,14 @@ OPCIONAIS_DO_PRIMEIRO_ACESSO = (("modelo_veiculo", "vehicle_model"), ("prefixo_t
 
 
 def campos_que_faltam(usuario: dict) -> list[str]:
-    """Os obrigatórios do cadastro do site que a conta ainda não tem (nomes do
-    formulário). Conta feita pelo painel só com o e-mail: o link de criar senha
-    pede esses dados no site, e só depois manda o motorista para o app."""
+    """Os obrigatórios do cadastro que a conta ainda não tem (nomes do
+    formulário): são os dados que saem em cada recibo.
+
+    Quem usa: o /criar-senha (conta feita pelo painel só com o e-mail), o
+    /completar-cadastro (cadastro curto do site), o aviso do painel do
+    motorista, o POST /recibo e o /api/recibos (que não emitem sem eles) e o
+    /api/sessao (`cadastro_incompleto`). Mudar a tupla muda tudo isso.
+    """
     return [campo for campo, coluna, _ in OBRIGATORIOS_DO_PRIMEIRO_ACESSO if not (usuario.get(coluna) or "").strip()]
 
 
@@ -4195,6 +4261,11 @@ def rotulos_que_faltam(usuario: dict) -> list[str]:
     if (usuario.get("country") or PAIS_PADRAO) != PAIS_PADRAO:
         rotulos["cpf"] = "documento"
     return [rotulos[campo] for campo in campos_que_faltam(usuario)]
+
+
+def rotulo_do_documento(usuario: dict) -> str:
+    """"CPF" no Brasil; fora, o documento de identidade do país."""
+    return "CPF" if (usuario.get("country") or PAIS_PADRAO) == PAIS_PADRAO else "Documento de identidade"
 
 
 def o_que_o_primeiro_acesso_pede(usuario: dict) -> dict:
@@ -4335,8 +4406,7 @@ def criar_senha(token: str):
     contexto = {"email": usuario.get("email", ""), "primeiro_nome": _primeiro_nome(usuario.get("full_name", "")),
                 "plano": plano, "rotulo": PLANOS_ROTULO.get(plano, ""), "prova": prova,
                 "pro_ativo": usuario.get("plan") in PAID_PLANS, "pede": pede,
-                "documento": "CPF" if (usuario.get("country") or PAIS_PADRAO) == PAIS_PADRAO
-                             else "Documento de identidade",
+                "documento": rotulo_do_documento(usuario),
                 # Volta o que ele digitou quando algo não confere (nunca a senha nem os números).
                 "preenchido": request.form if request.method == "POST" else {}}
     try:
@@ -4641,11 +4711,15 @@ def api_cadastro():
         return jsonify({"erro": "indisponivel"}), 503
 
     guardar_cooperativa(user_id, coop_name, coop_cnpj)
+    # `canal`: o utm_source que o Google Play entrega ao app no primeiro acesso
+    # (Install Referrer; app 1.9+). Opcional; fora do padrão, fica vazio.
+    canal = canal_de_cadastro(dados.get("canal"))
+    guardar_canal_do_cadastro(user_id, canal)
     registrar_indicacao(indicador, user_id)
     avisar_novo_cadastro(user_id, {
         "email": campos["email"], "full_name": campos["nome_completo"], "whatsapp": campos["whatsapp"],
         "city": campos["cidade"], "plate": campos["placa"], "vehicle_model": campos["modelo_veiculo"],
-        "country": pais, "currency": moeda,
+        "country": pais, "currency": moeda, "canal": canal,
     }, "app")
     tokens = auth_entrar_com_token(campos["email"], campos["senha"])
     if not tokens:
@@ -4667,6 +4741,9 @@ def api_sessao():
             "id": g.user["_id"],
             "nome": g.user.get("full_name", ""),
             "email": g.user.get("email", ""),
+            # Conta do cadastro curto do site que ainda não completou os dados
+            # do recibo (rótulos): o app 1.9+ manda completar antes de emitir.
+            "cadastro_incompleto": rotulos_que_faltam(g.user),
             "plano": plano,
             # O app imprime o recibo offline: guarda a moeda e o jeito de
             # escrevê-la, para o PDF sair igual à página do recibo.
@@ -4762,6 +4839,15 @@ def api_perfil():
     if faltando:
         return jsonify({"erro": "campos_obrigatorios", "campos": faltando}), 400
 
+    # CPF só entra quando a conta ainda não tem um (cadastro curto do site;
+    # app 1.9+). Conta com CPF: o campo é ignorado, como sempre foi — o
+    # gravado é a prova do /criar-senha e só muda no site.
+    cpf = "" if (g.user.get("cpf") or "").strip() else str(dados.get("cpf", "") or "").strip()
+    if len(cpf) > SIGNUP_FIELD_LIMITS["cpf"][1]:
+        return jsonify({"erro": "campo_longo", "campo": "cpf", "maximo": SIGNUP_FIELD_LIMITS["cpf"][1]}), 400
+    if cpf and (g.user.get("country") or PAIS_PADRAO) == PAIS_PADRAO and not cpf_valido(cpf):
+        return jsonify({"erro": "cpf_invalido", "mensagem": "Confira o CPF: os dígitos não conferem."}), 400
+
     try:
         coop_name, coop_cnpj = cooperativa_informada(
             campos["cooperativa"], campos["cnpj_cooperativa"], g.user.get("country") or PAIS_PADRAO)
@@ -4775,6 +4861,7 @@ def api_perfil():
         return jsonify({"erro": "senha_incorreta"}), 403
 
     get_store().update_user(g.user["_id"], {
+        **({"cpf": cpf} if cpf else {}),
         "full_name": campos["nome_completo"],
         "whatsapp": campos["whatsapp"],
         "city": campos["cidade"],
@@ -4818,6 +4905,15 @@ def api_criar_recibo():
     rid = str(dados.get("rid", "")).strip().upper()
     if not re.fullmatch(r"[0-9A-F]{%d}" % RID_LENGTH, rid):
         return jsonify({"erro": "rid_invalido"}), 400
+
+    # Cadastro curto do site sem os dados do recibo: o retrato do motorista
+    # fica congelado no recibo, então não emite. O app guarda o recibo como
+    # recusado (o 1.9+ manda completar em "Meus dados").
+    faltam = rotulos_que_faltam(g.user)
+    if faltam:
+        return jsonify({"erro": "cadastro_incompleto", "faltam": faltam,
+                        "mensagem": "Complete seu cadastro (" + ", ".join(faltam)
+                        + ") em Meus dados ou no site antes de emitir."}), 409
 
     passageiro = dados.get("passageiro")
     campos = {
@@ -6863,6 +6959,13 @@ _SQL_ADMIN = {
         select payment_method as forma, count(*) as n,
                coalesce(sum(amount) filter (where currency = 'BRL'), 0) as valor
           from public.receipts where created_at >= %(ini_30d)s group by 1 order by n desc limit 6""",
+    # Cadastros por canal de divulgação (migração 0018): o par do "cliques por
+    # canal". Com o gasto de cada anúncio, dá o custo real por cadastro.
+    "cadastros_canal": """
+        select case when signup_channel = '' then '(sem canal)' else signup_channel end as canal,
+               count(*) as n
+          from public.drivers where created_at >= %(ini_30d)s
+         group by 1 order by n desc, 1 limit 20""",
     # Cliques no /baixar por canal (migração 0014). `direto` é o link sem ?c=.
     "cliques_canal": """
         select channel || ' · ' || case store when 'play' then 'Android' when 'appstore' then 'iPhone'
@@ -7202,6 +7305,8 @@ def montar_dashboard_admin() -> dict:
         d[nome] = _com_maximo(d.get(nome) or [], "n")
     if d.get("cliques_canal") is not None:
         d["cliques_canal"] = _com_maximo(d["cliques_canal"], "n")
+    if d.get("cadastros_canal") is not None:
+        d["cadastros_canal"] = _com_maximo(d["cadastros_canal"], "n")
     d["cliques_grafico"] = montar_cliques_por_dia(d.get("cliques_dia"))
     # A Stripe fica fora da transação do banco: é uma ida à API, com o cache
     # de 60 s do painel em cima.
@@ -7422,6 +7527,12 @@ def admin_motorista(driver_id):
                     (perfil["referred_by"],)).fetchone() if perfil.get("referred_by") else None
         except Exception:
             indicacoes = None  # migração 0012 ainda não aplicada
+        try:
+            with conn.transaction():
+                canal_cadastro = conn.execute(
+                    "select signup_channel from public.drivers where id = %s", (did,)).fetchone()["signup_channel"]
+        except Exception:
+            canal_cadastro = None  # migração 0018 ainda não aplicada
     recibos = store.list_receipts_by_driver(did, limit=20)
     app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
     # Os links saem do motorista como o store devolve (datas em ISO, id em
@@ -7437,6 +7548,7 @@ def admin_motorista(driver_id):
         limite=FREE_MONTHLY_LIMIT,
         assina_loja=assina_pela_loja(motorista), status_prepago=STATUS_PREPAGO,
         interna=conta_interna(did),
+        canal_cadastro=canal_cadastro,
         venda=_venda_na_ficha(motorista, request.args) if motorista else None,
     )
 

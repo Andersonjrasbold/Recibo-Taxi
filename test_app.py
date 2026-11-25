@@ -460,9 +460,9 @@ _c_anual = novo_cliente("cardanual@teste.invalid")
 _preco_anual = os.environ.pop("STRIPE_PRO_ANUAL_PRICE_ID", None)
 try:
     check("sem o preco anual no site, o card da home leva ao app",
-          'href="/baixar"' in _card(A.app.test_client().get("/").get_data(as_text=True), "anual"))
+          'href="/baixar/ir"' in _card(A.app.test_client().get("/").get_data(as_text=True), "anual"))
     check("sem o preco anual no site, o card de /planos leva ao app",
-          'href="/baixar"' in _card(_c_anual.get("/planos").get_data(as_text=True), "anual"))
+          'href="/baixar/ir"' in _card(_c_anual.get("/planos").get_data(as_text=True), "anual"))
 finally:
     if _preco_anual is not None:
         os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = _preco_anual
@@ -1649,6 +1649,8 @@ check("planos tem descricao propria",
 r = A.app.test_client().get("/robots.txt"); _robots = r.get_data(as_text=True)
 check("robots.txt aponta o sitemap e fecha o painel",
       r.status_code == 200 and f"Sitemap: {A.SITE_URL}/sitemap.xml" in _robots and "Disallow: /admin" in _robots, r.status_code)
+check("robots.txt fecha a ida a loja e deixa a pagina /baixar aberta",
+      "Disallow: /baixar/ir\n" in _robots and "Disallow: /baixar\n" not in _robots)
 r = A.app.test_client().get("/sitemap.xml"); _mapa = r.get_data(as_text=True)
 check("sitemap.xml lista as paginas publicas e nao o login",
       r.status_code == 200 and f"<loc>{A.SITE_URL}/planos</loc>" in _mapa and "/login" not in _mapa, r.status_code)
@@ -2017,30 +2019,30 @@ r = _cli_em.post(f"/emails/sair/{_tok_em}", data="List-Unsubscribe=One-Click",
 check("descadastro de um clique do Gmail (RFC 8058)", r.status_code == 200 and _optout_em() is not None, r.status_code)
 check("token adulterado da 404", _cli_em.get(f"/emails/sair/{_tok_em}x").status_code == 404)
 check("cron de e-mails fica fechado sem o segredo", _cli_em.get("/tarefas/emails").status_code in (401, 503))
-check("/baixar no iPhone vai a App Store", _cli_em.get("/baixar", headers={
+check("/baixar/ir no iPhone vai a App Store", _cli_em.get("/baixar/ir", headers={
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"}).headers.get("Location") == A.APP_STORE_URL)
-check("/baixar no Android vai ao Google Play", _cli_em.get("/baixar", headers={
+check("/baixar/ir no Android vai ao Google Play", _cli_em.get("/baixar/ir", headers={
     "User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location") == A.PLAY_STORE_URL)
 # Canal de divulgacao: segue para a loja e e contado por dia, canal e loja.
 _ua_and = {"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}
 _ua_iph = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"}
 _canal_t = f"teste-suite-{_suf_em}"
-check("/baixar?c= no Android leva o canal no referrer do Play",
-      _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_and).headers.get("Location")
+check("/baixar/ir?c= no Android leva o canal no referrer do Play",
+      _cli_em.get(f"/baixar/ir?c={_canal_t}", headers=_ua_and).headers.get("Location")
       == f"{A.PLAY_STORE_URL}&referrer=utm_source%3D{_canal_t}%26utm_medium%3Dlink%26utm_campaign%3D{_canal_t}")
-check("/baixar?c= no iPhone sem token da Apple vai a ficha pura",
-      _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_iph).headers.get("Location") == A.APP_STORE_URL)
+check("/baixar/ir?c= no iPhone sem token da Apple vai a ficha pura",
+      _cli_em.get(f"/baixar/ir?c={_canal_t}", headers=_ua_iph).headers.get("Location") == A.APP_STORE_URL)
 _tok_ap = A.APPLE_PROVIDER_TOKEN
 A.APPLE_PROVIDER_TOKEN = "123456"
-check("/baixar?c= no iPhone com token leva pt e ct",
-      _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_iph).headers.get("Location")
+check("/baixar/ir?c= no iPhone com token leva pt e ct",
+      _cli_em.get(f"/baixar/ir?c={_canal_t}", headers=_ua_iph).headers.get("Location")
       == f"{A.APP_STORE_URL}?pt=123456&ct={_canal_t}&mt=8")
 A.APPLE_PROVIDER_TOKEN = _tok_ap
 check("canal fora do padrao e ignorado",
-      _cli_em.get("/baixar?c=Ponto%20T%C3%A1xi!", headers=_ua_and).headers.get("Location") == A.PLAY_STORE_URL)
+      _cli_em.get("/baixar/ir?c=Ponto%20T%C3%A1xi!", headers=_ua_and).headers.get("Location") == A.PLAY_STORE_URL)
 check("canal longo demais e ignorado",
-      _cli_em.get("/baixar?c=" + "a" * 31, headers=_ua_and).headers.get("Location") == A.PLAY_STORE_URL)
-check("e-mail manda ao /baixar com o canal 'email'", "/baixar?c=email" in _msg_em["html"])
+      _cli_em.get("/baixar/ir?c=" + "a" * 31, headers=_ua_and).headers.get("Location") == A.PLAY_STORE_URL)
+check("e-mail manda direto a loja (/baixar/ir) com o canal 'email'", "/baixar/ir?c=email" in _msg_em["html"])
 try:
     with _st_em.pool.connection() as _conn:
         _cl = {(l["store"], l["clicks"]) for l in _conn.execute(
@@ -2049,6 +2051,49 @@ try:
     check("cliques contados por canal e loja", _cl == {("play", 1), ("appstore", 2)}, str(_cl))
 except A.psycopg.errors.UndefinedTable:
     check("cliques contados por canal e loja (migracao 0014 nao aplicada; nada a conferir)", True)
+
+# Pagina /baixar (2026-11-22): o Google Ads reprovou o anuncio por "destino
+# incompativel", porque o celular saia do site direto para a loja. Agora o
+# /baixar responde a pagina com os botoes, e so o toque vai a loja.
+_r_pg = _cli_em.get(f"/baixar?c={_canal_t}&i=ABC234", headers=_ua_and)
+_h_pg = _r_pg.get_data(as_text=True)
+check("/baixar no Android responde a pagina, sem mandar a outro dominio",
+      _r_pg.status_code == 200 and "Location" not in _r_pg.headers and "Baixe o" in _h_pg, _r_pg.status_code)
+check("/baixar no Android poe o Google Play antes da App Store",
+      0 < _h_pg.find('id="btn-play"') < _h_pg.find('id="btn-appstore"'))
+check("os botoes da pagina vao ao /baixar/ir com a loja, o canal e o codigo",
+      f'href="/baixar/ir?loja=play&amp;c={_canal_t}&amp;i=ABC234"' in _h_pg
+      and f'href="/baixar/ir?loja=appstore&amp;c={_canal_t}&amp;i=ABC234"' in _h_pg)
+check("a pagina oferece o cadastro pelo site com o codigo preenchido", "/cadastro?indicacao=ABC234" in _h_pg)
+_h_pg_i = _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_iph).get_data(as_text=True)
+check("/baixar no iPhone poe a App Store primeiro",
+      0 < _h_pg_i.find('id="btn-appstore"') < _h_pg_i.find('id="btn-play"'))
+_h_pg_d = _cli_em.get("/baixar?c=Ponto%20T%C3%A1xi!").get_data(as_text=True)
+check("/baixar com canal fora do padrao: botoes sem canal",
+      'href="/baixar/ir?loja=play"' in _h_pg_d and 'href="/baixar/ir?loja=appstore"' in _h_pg_d)
+check("/baixar/ir?loja=play no computador vai ao Play com o canal",
+      _cli_em.get(f"/baixar/ir?loja=play&c={_canal_t}").headers.get("Location", "")
+      .startswith(f"{A.PLAY_STORE_URL}&referrer=utm_source%3D{_canal_t}"))
+check("/baixar/ir?loja=appstore no Android vai a App Store",
+      _cli_em.get(f"/baixar/ir?loja=appstore&c={_canal_t}", headers=_ua_and).headers.get("Location") == A.APP_STORE_URL)
+check("/baixar/ir sem loja no computador vai a secao do app",
+      _cli_em.get(f"/baixar/ir?c={_canal_t}&loja=xbox").headers.get("Location", "").endswith("/#app"))
+_ua_adsbot = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 "
+                            "(KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1 "
+                            "(compatible; AdsBot-Google-Mobile; +http://www.google.com/mobile/adsbot.html)"}
+check("o robo do Google Ads (agente de iPhone) ve a pagina, sem redirecionamento",
+      _cli_em.get(f"/baixar?c={_canal_t}", headers=_ua_adsbot).status_code == 200)
+_cli_em.get(f"/baixar/ir?c={_canal_t}", headers=_ua_adsbot)
+_cli_em.get(f"/baixar?c={_canal_t}", headers={"User-Agent": "WhatsApp/2.24.1 A"})
+try:
+    with _st_em.pool.connection() as _conn:
+        _cl = {(l["store"], l["clicks"]) for l in _conn.execute(
+            "select store, clicks from public.download_clicks where channel = %s and day = %s",
+            (_canal_t, A.today_br())).fetchall()}
+    check("visita a pagina conta como 'pagina', a ida a loja pela loja, robo nao conta",
+          _cl == {("play", 2), ("appstore", 3), ("pagina", 2), ("site", 1)}, str(_cl))
+except A.psycopg.errors.UndefinedTable:
+    check("contagem da pagina (migracao 0014 nao aplicada; nada a conferir)", True)
 
 # Painel: so leitura e um modelo criado e apagado (desligado).
 _adm_em = _st_em.upsert_admin(f"admin-em-{_suf_em}@teste.invalid", _gph("senha-da-suite-123"))
@@ -2938,16 +2983,16 @@ try:
     check("a pagina do convite abre com o codigo em qualquer caixa e diz quem convidou",
           _hc.status_code == 200 and f'value="{_cod}"' in _html_c and "te convidou" in _html_c, _hc.status_code)
     check("o convite leva a loja com o canal e o codigo, e ao cadastro do site como alternativa",
-          f"/baixar?c=indicacao&amp;i={_cod}" in _html_c and f"/cadastro?indicacao={_cod}" in _html_c)
+          f"/baixar/ir?c=indicacao&amp;i={_cod}" in _html_c and f"/cadastro?indicacao={_cod}" in _html_c)
     check("a pagina do convite nao vai para a busca, mas tem o banner do app (e para instalar)",
           'content="noindex, nofollow"' in _html_c and "apple-itunes-app" in _html_c)
     check("convite com codigo inexistente da 404",
           A.app.test_client().get("/i/ZZZZZZ").status_code == 404 and A.app.test_client().get("/i/abc").status_code == 404)
-    _loc_c = A.app.test_client().get(f"/baixar?c=indicacao&i={_cod}", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location", "")
+    _loc_c = A.app.test_client().get(f"/baixar/ir?c=indicacao&i={_cod}", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location", "")
     check("o Android recebe o codigo do convite no referrer do Play",
           _loc_c.startswith(A.PLAY_STORE_URL + "&referrer=utm_source%3Dindicacao") and f"utm_content%3D{_cod}" in _loc_c, _loc_c)
     check("codigo invalido no /baixar e ignorado",
-          "utm_content" not in A.app.test_client().get("/baixar?c=indicacao&i=../x", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location", ""))
+          "utm_content" not in A.app.test_client().get("/baixar/ir?c=indicacao&i=../x", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14)"}).headers.get("Location", ""))
     check("sem login, /indicar mostra as regras e convida a criar conta",
           "Como funciona" in A.app.test_client().get("/indicar").get_data(as_text=True))
     check("o link preenche o codigo no cadastro",
@@ -4205,7 +4250,17 @@ _js_g = _js_g[:_js_g.find("</script>")]
 check("painel: a dica dos graficos monta o texto com textContent, nunca innerHTML",
       "textContent" in _js_g and "innerHTML" not in _js_g, len(_js_g))
 with A.get_store().pool.connection() as _conn:
-    _conn.execute("delete from public.download_clicks where channel = %s", (f"teste-suite-{_suf_g}",))
+    _conn.execute("""insert into public.download_clicks (day, channel, store, clicks) values (%s, %s, 'pagina', 7)
+                     on conflict (day, channel, store) do update set clicks = excluded.clicks""",
+                  (_hoje_br, f"teste-suite-pg-{_suf_g}"))
+    _dd_pg = {"_tempos": {}}
+    A._executar_secoes(_conn, ["cliques_dia", "cliques_canal"], A._params_dashboard_admin(), _dd_pg)
+    _conn.execute("delete from public.download_clicks where channel in (%s, %s)",
+                  (f"teste-suite-{_suf_g}", f"teste-suite-pg-{_suf_g}"))
+check("painel: visita a pagina fica fora do grafico por dia e aparece na tabela como 'abriu a pagina'",
+      not any(l["canal"] == f"teste-suite-pg-{_suf_g}" for l in _dd_pg["cliques_dia"] or [])
+      and any(l["canal"] == f"teste-suite-pg-{_suf_g} · abriu a página" for l in _dd_pg["cliques_canal"] or []),
+      str(_dd_pg.get("cliques_canal"))[:300])
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

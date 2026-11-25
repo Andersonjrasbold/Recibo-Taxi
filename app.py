@@ -2386,6 +2386,8 @@ def robots_txt():
         "Disallow: /admin",
         "Disallow: /api/",
         "Disallow: /app/",
+        # A ida à loja só conta gente; a página /baixar fica aberta.
+        "Disallow: /baixar/ir",
         "Disallow: /dashboard",
         "Disallow: /perfil",
         "Disallow: /recibo/",
@@ -2426,23 +2428,19 @@ def index():
     return render_template("index.html")
 
 
-@app.get("/baixar")
-def baixar_app():
-    """Manda para a loja do celular de quem clicou. É o link de venda dos e-mails.
+# Robôs que abrem o link sem ser gente: o AdsBot do Google (que confere o
+# anúncio, com agente de iPhone), buscadores e as prévias de link do WhatsApp e
+# das redes. Não entram na contagem do /baixar. Lista fechada de propósito:
+# "bot" solto pegaria celular de verdade (o Android da marca CUBOT).
+ROBO_RE = re.compile(
+    r"Googlebot|AdsBot|Mediapartners-Google|Google-InspectionTool|bingbot|Applebot"
+    r"|facebookexternalhit|meta-externalagent|^WhatsApp/|TelegramBot|Twitterbot|Slackbot"
+    r"|Discordbot|YandexBot|DuckDuckBot|Baiduspider|AhrefsBot|SemrushBot|crawler|spider",
+    re.IGNORECASE)
 
-    A assinatura se faz dentro do app (a Stripe do site não está em produção),
-    e o e-mail é quase sempre lido no celular: no iPhone cai na App Store, no
-    Android no Google Play — e, com o app instalado, a loja mostra "Abrir". No
-    computador vai para a seção do app na página inicial.
 
-    `?c=CANAL` diz de onde veio o clique (cartão no ponto de táxi, cooperativa,
-    anúncio, e-mail). O canal segue para a loja — no Play dentro do `referrer`,
-    que o Play Console mostra como "Origem do UTM"; na App Store em `ct`, que
-    o App Store Connect mostra em Analytics → Campaigns — e é somado aqui por
-    dia, canal e loja. Sem `c`, ou com um valor fora do padrão, o link se
-    comporta exatamente como antes.
-    """
-    agente = request.headers.get("User-Agent", "")
+def _canal_e_codigo_do_baixar() -> tuple[str, str]:
+    """`?c=CANAL` e `?i=CÓDIGO` do /baixar, já conferidos ("" quando não servem)."""
     canal = request.args.get("c", "").strip().lower()
     if not CANAL_DOWNLOAD_RE.match(canal):
         canal = ""
@@ -2451,18 +2449,87 @@ def baixar_app():
     codigo = request.args.get("i", "").strip().upper()
     if not (canal and codigo_de_indicacao_valido(codigo)):
         codigo = ""
+    return canal, codigo
 
+
+def _loja_do_aparelho() -> str:
+    """'appstore' no iPhone, 'play' no Android, "" no computador."""
+    agente = request.headers.get("User-Agent", "")
     if re.search(r"iPhone|iPad|iPod", agente):
-        loja, destino = "appstore", (link_appstore_com_canal(canal) if canal else APP_STORE_URL)
-    elif "Android" in agente:
-        loja, destino = "play", (link_play_com_canal(canal, codigo) if canal else PLAY_STORE_URL)
+        return "appstore"
+    if "Android" in agente:
+        return "play"
+    return ""
+
+
+def _contar_baixar(canal: str, loja: str) -> None:
+    if ROBO_RE.search(request.headers.get("User-Agent", "")):
+        return
+    try:
+        get_store().bump_download_click(today_br(), canal or "direto", loja)
+    except Exception as exc:  # contar nunca pode impedir a página nem a ida à loja
+        app.logger.warning("/baixar: clique não contado (migração 0014 aplicada?): %s", exc)
+
+
+@app.get("/baixar")
+def baixar_pagina():
+    """Página com os botões das lojas: o link impresso no cartão, no cartaz e no anúncio.
+
+    Não redireciona. Até 2026-11-22 este endereço mandava o celular direto à
+    loja, e o Google Ads reprovou o anúncio de Pesquisa por "destino
+    incompatível": o anúncio mostra recibotaxi.com.br e o celular caía em
+    play.google.com. Agora o destino fica no site; a loja só abre no toque.
+
+    O botão da loja do aparelho vem primeiro (no computador, os dois lado a
+    lado) e leva ao /baixar/ir com o canal e o código, que conta e segue à
+    loja. A visita é somada como loja "pagina": o painel mostra quantos
+    abriram a página e quantos foram à loja, por canal.
+    """
+    canal, codigo = _canal_e_codigo_do_baixar()
+    _contar_baixar(canal, "pagina")
+    extra = {"c": canal or None, "i": codigo or None}
+    return render_template(
+        "baixar.html",
+        loja_do_aparelho=_loja_do_aparelho(),
+        link_appstore=url_for("baixar_app", loja="appstore", **extra),
+        link_play=url_for("baixar_app", loja="play", **extra),
+        link_cadastro=url_for("cadastro", indicacao=codigo) if codigo else url_for("cadastro"),
+    )
+
+
+@app.get("/baixar/ir")
+def baixar_app():
+    """Manda para a loja do celular de quem clicou, sem página no meio.
+
+    É o destino dos botões "Baixar o app" do próprio site (convite, criar
+    senha, pagamento, planos) e dos links dos e-mails e do WhatsApp: quem
+    tocou já decidiu baixar, então vai direto. No iPhone cai na App Store, no
+    Android no Google Play — e, com o app instalado, a loja mostra "Abrir". No
+    computador vai para a seção do app na página inicial. `?loja=play` ou
+    `?loja=appstore` (os botões da página /baixar) escolhe a loja na mão.
+
+    Nunca é o destino de anúncio: sai do domínio (ver baixar_pagina).
+
+    `?c=CANAL` diz de onde veio o clique (cartão no ponto de táxi, cooperativa,
+    anúncio, e-mail). O canal segue para a loja — no Play dentro do `referrer`,
+    que o Play Console mostra como "Origem do UTM"; na App Store em `ct`, que
+    o App Store Connect mostra em Analytics → Campaigns — e é somado aqui por
+    dia, canal e loja. Sem `c`, ou com um valor fora do padrão, vai à ficha
+    pura da loja.
+    """
+    canal, codigo = _canal_e_codigo_do_baixar()
+    loja = request.args.get("loja", "")
+    if loja not in ("appstore", "play"):
+        loja = _loja_do_aparelho()
+
+    if loja == "appstore":
+        destino = link_appstore_com_canal(canal) if canal else APP_STORE_URL
+    elif loja == "play":
+        destino = link_play_com_canal(canal, codigo) if canal else PLAY_STORE_URL
     else:
         loja, destino = "site", url_for("index") + "#app"
 
-    try:
-        get_store().bump_download_click(today_br(), canal or "direto", loja)
-    except Exception as exc:  # contar nunca pode impedir o redirecionamento
-        app.logger.warning("/baixar: clique não contado (migração 0014 aplicada?): %s", exc)
+    _contar_baixar(canal, loja)
     return redirect(destino)
 
 
@@ -3161,7 +3228,7 @@ def convite(codigo: str):
     """Página do convite: quem recebeu o link de um colega cai aqui.
 
     Mostra quem convidou, o código em letras grandes e o botão da loja do
-    aparelho (/baixar?c=indicacao&i=CÓDIGO, que conta o clique e leva o código
+    aparelho (/baixar/ir?c=indicacao&i=CÓDIGO, que conta o clique e leva o código
     no referrer do Play). Quem prefere o computador cria a conta pelo site com
     o código já preenchido. Código que não existe dá 404: link adivinhado não
     revela nada.
@@ -6770,14 +6837,17 @@ _SQL_ADMIN = {
     # Cliques no /baixar por canal (migração 0014). `direto` é o link sem ?c=.
     "cliques_canal": """
         select channel || ' · ' || case store when 'play' then 'Android' when 'appstore' then 'iPhone'
+                                               when 'pagina' then 'abriu a página'
                                                else 'computador' end as canal,
                sum(clicks) as n
           from public.download_clicks where day >= %(dia_30d)s
          group by channel, store order by n desc, channel limit 20""",
     # O mesmo, dia a dia e só por canal (o aparelho fica de fora), para o gráfico.
+    # Só as idas à loja: a visita à página ('pagina', desde 2026-11-22) somada
+    # ao toque no botão contaria a mesma pessoa duas vezes.
     "cliques_dia": """
         select day as dia, channel as canal, sum(clicks) as n
-          from public.download_clicks where day >= %(dia_cliques)s
+          from public.download_clicks where day >= %(dia_cliques)s and store <> 'pagina'
          group by 1, 2 order by 1, 2""",
     # Faturamento que entrou pelas lojas (RevenueCat): compras e renovações de
     # produção, em reais. Reembolso chega como CANCELLATION com preço negativo.

@@ -2,6 +2,7 @@ import atexit
 import calendar
 import hashlib
 import json
+import unicodedata
 import hmac
 import math
 import os
@@ -15,7 +16,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from email.message import EmailMessage
-from functools import wraps
+from functools import lru_cache, wraps
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -109,6 +110,45 @@ APP_STORE_ID = "6811583712"
 # endereço que o app usa para a API e que nunca pode ser redirecionado: para
 # o Google, o dono do conteúdo tem de ser sempre o domínio próprio.
 SITE_URL = "https://www.recibotaxi.com.br"
+
+# ── UF e municípios do Brasil ────────────────────────────────────────────────
+# O cadastro do site pede a UF e a cidade de uma lista oficial (IBGE, API de
+# localidades, lida em 2026-11-25): "Sao Paulo", "são paulo" e "SÃO PAULO" viram
+# "São Paulo", e o painel deixa de ter dez grafias da mesma cidade. Os nomes
+# ficam em public/static/data/municipios/UF.json — o mesmo arquivo que o
+# formulário carrega para o filtro — e o servidor confere por aqui.
+UFS = {
+    "AC": "Acre", "AL": "Alagoas", "AP": "Amapá", "AM": "Amazonas", "BA": "Bahia", "CE": "Ceará",
+    "DF": "Distrito Federal", "ES": "Espírito Santo", "GO": "Goiás", "MA": "Maranhão", "MT": "Mato Grosso",
+    "MS": "Mato Grosso do Sul", "MG": "Minas Gerais", "PA": "Pará", "PB": "Paraíba", "PR": "Paraná",
+    "PE": "Pernambuco", "PI": "Piauí", "RJ": "Rio de Janeiro", "RN": "Rio Grande do Norte",
+    "RS": "Rio Grande do Sul", "RO": "Rondônia", "RR": "Roraima", "SC": "Santa Catarina", "SP": "São Paulo",
+    "SE": "Sergipe", "TO": "Tocantins",
+}
+MUNICIPIOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public", "static", "data", "municipios")
+
+
+def sem_acento(texto: str) -> str:
+    """Chave de comparação de nomes: sem acento, minúsculas, um espaço só."""
+    base = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode()
+    return " ".join(base.casefold().split())
+
+
+@lru_cache(maxsize=None)
+def municipios_da_uf(uf: str) -> dict[str, str]:
+    """{chave sem acento: nome oficial} dos municípios da UF; UF desconhecida: vazio."""
+    if uf not in UFS:
+        return {}
+    with open(os.path.join(MUNICIPIOS_DIR, f"{uf}.json"), encoding="utf-8") as arquivo:
+        return {sem_acento(nome): nome for nome in json.load(arquivo)}
+
+
+def cidade_do_brasil(uf, cidade) -> tuple[str, str]:
+    """(UF, nome oficial) quando a cidade existe na UF; ("", "") quando não."""
+    uf = str(uf or "").strip().upper()
+    nome = municipios_da_uf(uf).get(sem_acento(str(cidade or "")))
+    return (uf, nome) if nome else ("", "")
+
 
 # Canal de divulgação no link /baixar?c=CANAL (plano de 2026-11-09). Vai ao
 # Play dentro do `referrer` (utm_source) e à App Store em `ct`, e é somado na
@@ -1093,16 +1133,18 @@ def canal_de_cadastro(valor) -> str:
     return canal if CANAL_DOWNLOAD_RE.match(canal) else ""
 
 
-def guardar_canal_do_cadastro(user_id: str, canal: str) -> None:
-    """Grava de onde veio o cadastro (migração 0018). Como a cooperativa: a
-    linha em `drivers` nasce pelo trigger do Auth, e falha aqui (a coluna ainda
-    sem a migração) não derruba o cadastro — só deixa o canal de fora."""
-    if not canal:
+def guardar_extras_do_cadastro(user_id: str, canal: str = "", uf: str = "") -> None:
+    """Grava o canal de divulgação (migração 0018) e a UF (0019) de um cadastro
+    recém-criado. Como a cooperativa: a linha em `drivers` nasce pelo trigger
+    do Auth, que não conhece as colunas novas, e falha aqui não derruba o
+    cadastro — só deixa os dois de fora, com aviso no log."""
+    campos = {k: v for k, v in (("signup_channel", canal), ("state", uf)) if v}
+    if not campos:
         return
     try:
-        get_store().update_user(user_id, {"signup_channel": canal})
+        get_store().update_user(user_id, campos)
     except Exception as exc:
-        app.logger.warning("canal do cadastro %s não gravado (migração 0018 aplicada?): %s", user_id, exc)
+        app.logger.warning("canal/UF do cadastro %s não gravados (migrações 0018/0019 aplicadas?): %s", user_id, exc)
 
 
 def chave_de_reconfirmacao(user_id: str) -> str:
@@ -1374,7 +1416,7 @@ class PostgresStore:
     _DRIVER_COLS = """
         id as _id, email, password_changed_at, full_name, cpf,
         whatsapp, city, plate, vehicle_model, taxi_prefix, license_number,
-        coop_name, coop_cnpj,
+        coop_name, coop_cnpj, state,
         plan, stripe_customer_id, stripe_subscription_id, subscription_status,
         country, currency, referral_code, referred_by, pro_until, pro_reminder_sent_at,
         referral_coupon_granted_at, referral_coupon_used_at, created_at, updated_at
@@ -1460,7 +1502,7 @@ class PostgresStore:
             "stripe_subscription_id", "subscription_status",
             "country", "currency", "referral_code", "referred_by", "pro_until",
             "pro_reminder_sent_at", "referral_coupon_granted_at", "referral_coupon_used_at",
-            "signup_channel",
+            "signup_channel", "state",
         }
         campos = {k: v for k, v in updates.items() if k in permitidas}
         if not campos:
@@ -2375,6 +2417,7 @@ def inject_globals() -> dict:
         "canonical_url": SITE_URL + (request.path if has_request_context() else "/"),
         "og_image_url": SITE_URL + "/static/img/og-recibo-taxi.png",
         "paises": PAISES,
+        "ufs": UFS,
         "moedas": MOEDAS,
         "preco_pro_anual_pix": PRECO_PRO_ANUAL_PIX,
         "preco_pro_mensal": PRECO_PRO_MENSAL,
@@ -2616,10 +2659,11 @@ def login():
 
 @app.route("/cadastro", methods=["GET", "POST"])
 def cadastro():
-    """Cadastro pelo site. Pede só e-mail, senha e WhatsApp (desde 2026-11-24);
-    nome, CPF, cidade e placa vêm no /completar-cadastro, antes do primeiro
-    recibo. Se o formulário mandar esses campos mesmo assim (um parceiro, um
-    teste), eles valem e são conferidos como antes: CPF pelo dígito, no Brasil.
+    """Cadastro pelo site. Pede nome, e-mail, senha, WhatsApp, UF e cidade
+    (desde 2026-11-25; a cidade vem da lista do IBGE, com a UF); CPF e placa
+    vêm no /completar-cadastro, antes do primeiro recibo. Se o formulário
+    mandar esses campos mesmo assim (um parceiro, um teste), eles valem e são
+    conferidos como antes: CPF pelo dígito, no Brasil.
 
     `?c=CANAL` é o canal de divulgação que o /baixar repassa; fica gravado no
     cadastro (migração 0018) para o painel contar cadastros por canal.
@@ -2637,20 +2681,21 @@ def cadastro():
         if erro_tamanho:
             return recusar(erro_tamanho)
 
+        full_name = request.form.get("nome_completo", "").strip()
         email = normalize_email(request.form.get("email", ""))
         password = request.form.get("senha", "")
         whatsapp = request.form.get("whatsapp", "").strip()
-        # Fora do formulário curto; valem quando vêm.
-        full_name = request.form.get("nome_completo", "").strip()
-        cpf = request.form.get("cpf", "").strip()
+        uf = request.form.get("uf", "").strip().upper()
         city = request.form.get("cidade", "").strip()
+        # Fora do formulário curto; valem quando vêm.
+        cpf = request.form.get("cpf", "").strip()
         plate = request.form.get("placa", "").strip().upper()
         vehicle_model = request.form.get("modelo_veiculo", "").strip()
         taxi_prefix = request.form.get("prefixo_taxi", "").strip()
         license_number = request.form.get("numero_alvara", "").strip()
 
-        if not all([email, password, whatsapp]):
-            return recusar("Preencha e-mail, senha e WhatsApp.")
+        if not all([full_name, email, password, whatsapp, city]):
+            return recusar("Preencha nome, e-mail, senha, WhatsApp e cidade.")
         if not email_valido(email):
             return recusar("Confira o e-mail: ele não parece válido.")
         if len(password) < 8:
@@ -2663,6 +2708,13 @@ def cadastro():
         # vendedor e do link do WhatsApp.
         if not phone_e164(whatsapp, pais):
             return recusar("Confira o WhatsApp: com DDD (fora do Brasil, com + e o código do país).")
+        if pais == PAIS_PADRAO:
+            # Cidade da lista oficial, com a UF: "sao paulo" vira "São Paulo".
+            uf, city = cidade_do_brasil(uf, city)
+            if not city:
+                return recusar("Escolha a UF e a cidade na lista.")
+        else:
+            uf = ""
         if cpf and pais == PAIS_PADRAO and not cpf_valido(cpf):
             return recusar("Confira o CPF: os dígitos não conferem.")
         # Cooperativa (opcional, pedido de um taxista): conferida aqui, gravada
@@ -2706,7 +2758,7 @@ def cadastro():
             return recusar(str(exc), 503)
 
         guardar_cooperativa(user_id, coop_name, coop_cnpj)
-        guardar_canal_do_cadastro(user_id, canal)
+        guardar_extras_do_cadastro(user_id, canal=canal, uf=uf)
         registrar_indicacao(indicador, user_id)
         avisar_novo_cadastro(user_id, {
             "email": email, "full_name": full_name, "whatsapp": whatsapp, "city": city,
@@ -2724,7 +2776,7 @@ def cadastro():
             # recibo ficam para o painel, que avisa.
             flash("Conta criada!", "success")
             return iniciar_checkout(novo, plano)
-        if not all([full_name, cpf, city, plate]):
+        if not all([cpf, plate]):
             flash("Conta criada! Agora complete os dados que saem no recibo.", "success")
             return redirect(url_for("completar_cadastro"))
         flash("Conta criada! Já pode emitir e salvar seus recibos.", "success")
@@ -2743,7 +2795,7 @@ def completar_cadastro():
     if not pede["faltam"]:
         return redirect(url_for("dashboard"))
     contexto = {"pede": pede, "faltam": rotulos_que_faltam(g.user),
-                "documento": rotulo_do_documento(g.user)}
+                "documento": rotulo_do_documento(g.user), "pais": g.user.get("country") or PAIS_PADRAO}
     if request.method == "POST":
         erro, mudancas = dados_do_primeiro_acesso(g.user, pede)
         if erro:
@@ -4302,9 +4354,16 @@ def dados_do_primeiro_acesso(usuario: dict, pede: dict) -> tuple[str, dict]:
         return "Confira o WhatsApp: com DDD (fora do Brasil, com + e o código do país).", {}
     if "cpf" in valores and pais == PAIS_PADRAO and not cpf_valido(valores["cpf"]):
         return "Confira o CPF: os dígitos não conferem.", {}
+    uf = ""
+    if "cidade" in valores and pais == PAIS_PADRAO:
+        uf, valores["cidade"] = cidade_do_brasil(request.form.get("uf", ""), valores["cidade"])
+        if not valores["cidade"]:
+            return "Escolha a UF e a cidade na lista.", {}
     colunas = {campo: coluna for campo, coluna, _ in OBRIGATORIOS_DO_PRIMEIRO_ACESSO}
     colunas.update(OPCIONAIS_DO_PRIMEIRO_ACESSO)
     mudancas = {colunas[campo]: valor for campo, valor in valores.items() if valor}
+    if uf:
+        mudancas["state"] = uf
     if pede["cooperativa"]:
         try:
             coop_name, coop_cnpj = cooperativa_informada(
@@ -4406,7 +4465,7 @@ def criar_senha(token: str):
     contexto = {"email": usuario.get("email", ""), "primeiro_nome": _primeiro_nome(usuario.get("full_name", "")),
                 "plano": plano, "rotulo": PLANOS_ROTULO.get(plano, ""), "prova": prova,
                 "pro_ativo": usuario.get("plan") in PAID_PLANS, "pede": pede,
-                "documento": rotulo_do_documento(usuario),
+                "documento": rotulo_do_documento(usuario), "pais": usuario.get("country") or PAIS_PADRAO,
                 # Volta o que ele digitou quando algo não confere (nunca a senha nem os números).
                 "preenchido": request.form if request.method == "POST" else {}}
     try:
@@ -4714,7 +4773,7 @@ def api_cadastro():
     # `canal`: o utm_source que o Google Play entrega ao app no primeiro acesso
     # (Install Referrer; app 1.9+). Opcional; fora do padrão, fica vazio.
     canal = canal_de_cadastro(dados.get("canal"))
-    guardar_canal_do_cadastro(user_id, canal)
+    guardar_extras_do_cadastro(user_id, canal=canal)
     registrar_indicacao(indicador, user_id)
     avisar_novo_cadastro(user_id, {
         "email": campos["email"], "full_name": campos["nome_completo"], "whatsapp": campos["whatsapp"],

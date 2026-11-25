@@ -1,0 +1,71 @@
+{#- UF e cidade do Brasil, da lista oficial do IBGE. A UF é um select; a cidade
+    é um campo de texto com datalist, preenchido com os municípios da UF
+    escolhida (public/static/data/municipios/UF.json, o mesmo arquivo que o
+    servidor usa para conferir). Se a página tiver o select #pais (cadastro do
+    site) e ele não for BR, a UF some e a cidade vira texto livre.
+    Importar "with context": usa `ufs` e o nonce da CSP. -#}
+{% macro campos(uf_atual, cidade_atual, label_cls, input_cls, col_uf, col_cidade) %}
+<div class="{{ col_uf }}" data-uf-bloco>
+  <label for="uf" class="{{ label_cls }}">UF <span class="required-star">*</span></label>
+  <select id="uf" name="uf" class="form-select {{ input_cls }}" required>
+    <option value="">Selecione</option>
+    {% for sigla, nome in ufs.items() %}<option value="{{ sigla }}"{% if sigla == (uf_atual or '') %} selected{% endif %}>{{ sigla }} · {{ nome }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="{{ col_cidade }}">
+  <label for="cidade" class="{{ label_cls }}">Cidade <span class="required-star">*</span></label>
+  <input type="text" id="cidade" name="cidade" class="form-control {{ input_cls }}" maxlength="80"
+    list="lista-cidades" autocomplete="off" placeholder="Escolha a UF primeiro" required
+    value="{{ cidade_atual or '' }}" data-cidade-base="{{ url_for('public_static', filename='data/municipios/') }}">
+  <datalist id="lista-cidades"></datalist>
+</div>
+{% endmacro %}
+
+{% macro script() %}
+<script nonce="{{ csp_nonce }}">
+  (function () {
+    var uf = document.getElementById('uf');
+    var cidade = document.getElementById('cidade');
+    var lista = document.getElementById('lista-cidades');
+    var pais = document.getElementById('pais');
+    if (!uf || !cidade || !lista) return;
+    var base = cidade.getAttribute('data-cidade-base');
+    function carregar() {
+      var sigla = uf.value;
+      lista.innerHTML = '';
+      if (!sigla) { cidade.placeholder = 'Escolha a UF primeiro'; return; }
+      cidade.placeholder = 'Digite e escolha na lista';
+      fetch(base + sigla + '.json', { credentials: 'omit' })
+        .then(function (r) { return r.json(); })
+        .then(function (nomes) {
+          if (uf.value !== sigla) return;
+          var frag = document.createDocumentFragment();
+          nomes.forEach(function (n) { var o = document.createElement('option'); o.value = n; frag.appendChild(o); });
+          lista.innerHTML = '';
+          lista.appendChild(frag);
+        })
+        .catch(function () {});
+    }
+    function ajustar() {
+      var bloco = uf.closest('[data-uf-bloco]');
+      if (!pais || pais.value === 'BR') {
+        if (bloco) bloco.hidden = false;
+        uf.required = true;
+        cidade.setAttribute('list', 'lista-cidades');
+        carregar();
+      } else {
+        if (bloco) bloco.hidden = true;
+        uf.required = false;
+        uf.value = '';
+        cidade.removeAttribute('list');
+        cidade.placeholder = 'Sua cidade';
+        lista.innerHTML = '';
+      }
+    }
+    uf.addEventListener('change', function () { cidade.value = ''; carregar(); });
+    if (pais) pais.addEventListener('change', ajustar);
+    ajustar();
+  })();
+</script>
+{% endmacro %}

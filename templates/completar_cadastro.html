@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% import "_uf_cidade.html" as uc with context %}
 {# Dados do recibo de quem fez o cadastro curto do site (ou de quem o painel
-   criou só com o e-mail): nome, CPF, cidade e placa. Mesmos campos e regras
-   do /criar-senha, pelo parcial _campos_do_cadastro.html. #}
+   criou só com o e-mail): CPF e placa (e o que mais faltar). Mesmos campos e
+   regras do /criar-senha, pelo parcial _campos_do_cadastro.html. #}
 {% block title %}Complete seu cadastro{% endblock %}
 {% block description %}Complete os dados que saem nos seus recibos.{% endblock %}
 {% block banner_app %}{% endblock %}
@@ -37,3 +38,5 @@
   </div>
 </section>
 {% endblock %}
+
+{% block scripts %}{{ uc.script() }}{% endblock %}

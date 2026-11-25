@@ -155,7 +155,7 @@ def recibo_bruto(rid, created_at, driver_id=None, is_guest=True):
 def novo_cliente(email="a@teste.invalid"):
     c = A.app.test_client()
     c.post("/cadastro", data={"nome_completo":"Ana Souza","email":email,"senha":"senha12345",
-        "whatsapp":"11999998888","cpf":"11144477735","cidade":"SP","placa":"abc1d23"})
+        "whatsapp":"11999998888","cpf":"11144477735","uf":"SP","cidade":"São Paulo","placa":"abc1d23"})
     return c
 
 print("\n── Páginas públicas novas ──")
@@ -532,7 +532,7 @@ check("recibo normal continua passando", "/recibo/" in r.headers.get("Location",
 
 cc = A.app.test_client()
 r = cc.post("/cadastro", data={"nome_completo":grande,"email":"x@teste.invalid","senha":"senha12345",
-    "whatsapp":"11999998888","cpf":"11144477735","cidade":"SP","placa":"abc1d23"})
+    "whatsapp":"11999998888","cpf":"11144477735","uf":"SP","cidade":"São Paulo","placa":"abc1d23"})
 check("cadastro recusa nome gigante (400)", r.status_code == 400, r.status_code)
 check("conta nao foi criada", A.get_store().get_user_by_email("x@teste.invalid") is None)
 
@@ -567,7 +567,7 @@ base = {"nome_completo":"Ana Souza Lima","email":"perfil@teste.invalid","whatsap
 r = cpf_.post("/perfil", data={**base, "senha_atual":"errada"})
 check("senha errada nao salva nada", r.status_code == 401, r.status_code)
 check("dados continuam os antigos",
-      A.get_store().get_user_by_email("perfil@teste.invalid")["city"] == "SP")
+      A.get_store().get_user_by_email("perfil@teste.invalid")["city"] == "São Paulo")
 
 r = cpf_.post("/perfil", data={**base, "senha_atual":"senha12345"})
 check("salva com a senha certa", r.status_code == 302, r.status_code)
@@ -1320,7 +1320,7 @@ check("site apaga quem tem Pro de indicacao", A.get_store().get_user_by_email("l
 
 # Cooperativa no cadastro (site e app): opcional, os dois juntos, CNPJ conferido.
 _base_coop = {"nome_completo": "Coop Teste", "senha": "senha12345", "whatsapp": "45998238620",
-              "cpf": "52998224725", "cidade": "Cascavel", "placa": "COO1P23"}
+              "cpf": "52998224725", "uf": "PR", "cidade": "Cascavel", "placa": "COO1P23"}
 _cc = A.app.test_client()
 _r = _cc.post("/api/cadastro", json={**_base_coop, "email": "coop-api-1@teste.invalid", "cooperativa": "Coopertáxi", "cnpj_cooperativa": ""})
 check("app: cooperativa sem CNPJ e recusada", _r.status_code == 400 and (_r.get_json() or {}).get("erro") == "cooperativa_incompleta", f"{_r.status_code} {_r.get_json()}")
@@ -2363,7 +2363,7 @@ A.get_stripe = lambda: _sf
 _env_precos = {k: os.environ.get(k) for k in ("STRIPE_PRO_PRICE_ID", "STRIPE_PRO_ANUAL_PRICE_ID")}
 os.environ["STRIPE_PRO_PRICE_ID"] = "price_falso_mensal"
 os.environ["STRIPE_PRO_ANUAL_PRICE_ID"] = "price_falso_anual"
-_dados_pg = {"senha": "senha12345", "whatsapp": "11999998888", "cpf": "11144477735", "cidade": "SP", "placa": "abc1d23"}
+_dados_pg = {"senha": "senha12345", "whatsapp": "11999998888", "cpf": "11144477735", "uf": "SP", "cidade": "São Paulo", "placa": "abc1d23"}
 try:
     _c = A.app.test_client()
     h = _c.get("/cadastro?plano=pro_anual").get_data(as_text=True)
@@ -2763,9 +2763,20 @@ check("cadastro sem os campos novos fica no Brasil",
 print("\n-- Cadastro curto e canal --")
 _suf_cc = os.urandom(3).hex()
 _h_cc = A.app.test_client().get("/cadastro?c=Meta_Taxista").get_data(as_text=True)
-check("formulario curto: e-mail, senha e WhatsApp, sem nome, CPF nem placa",
-      'name="email"' in _h_cc and 'name="whatsapp"' in _h_cc and 'name="senha"' in _h_cc
-      and 'name="nome_completo"' not in _h_cc and 'name="cpf"' not in _h_cc and 'name="placa"' not in _h_cc)
+check("formulario curto: nome, e-mail, senha, WhatsApp, UF e cidade; sem CPF nem placa",
+      all(f'name="{_c}"' in _h_cc for _c in ("nome_completo", "email", "senha", "whatsapp", "uf", "cidade"))
+      and 'name="cpf"' not in _h_cc and 'name="placa"' not in _h_cc)
+check("cidade e um campo com lista filtrada pela UF (datalist) e a UF tem as 27 opcoes",
+      'list="lista-cidades"' in _h_cc and 'data/municipios/' in _h_cc and _h_cc.count('<option value="') >= 28)
+_r_sp = A.app.test_client().get("/static/data/municipios/SP.json")
+check("lista de municipios do IBGE e servida pelo site", _r_sp.status_code == 200 and "São Paulo" in _r_sp.get_json() and len(_r_sp.get_json()) == 645, _r_sp.status_code)
+check("todas as 27 UFs tem municipios", all(A.municipios_da_uf(_u) for _u in A.UFS) and len(A.UFS) == 27
+      and sum(len(A.municipios_da_uf(_u)) for _u in A.UFS) == 5571)
+check("cidade_do_brasil aceita sem acento e em qualquer caixa e devolve o nome oficial",
+      A.cidade_do_brasil("sp", "SAO PAULO") == ("SP", "São Paulo") and A.cidade_do_brasil("PR", " cascavel ") == ("PR", "Cascavel")
+      and A.cidade_do_brasil("SP", "Cascavel") == ("", "") and A.cidade_do_brasil("XX", "São Paulo") == ("", "")
+      and A.cidade_do_brasil("", "") == ("", "") and A.cidade_do_brasil(None, None) == ("", ""))
+_base_cc = {"nome_completo": "Curto Silva", "uf": "SP", "cidade": "sao paulo"}
 check("canal do /baixar vai escondido no formulario, normalizado", 'name="canal" value="meta_taxista"' in _h_cc)
 check("canal fora do padrao nao entra no formulario",
       'name="canal"' not in A.app.test_client().get("/cadastro?c=Ponto%20T%C3%A1xi!").get_data(as_text=True))
@@ -2773,37 +2784,48 @@ _h_bx = A.app.test_client().get("/baixar?c=meta_taxista", headers=_ua_pc).get_da
 check("/baixar?c= leva o canal ao cadastro do site", "/cadastro?c=meta_taxista" in _h_bx)
 _ccc = A.app.test_client()
 _email_cc = f"curto-{_suf_cc}@teste.invalid"
-r = _ccc.post("/cadastro", data={"email": _email_cc, "senha": "senha12345", "whatsapp": "11988887777", "canal": "meta_taxista"})
+r = _ccc.post("/cadastro", data={**_base_cc, "email": _email_cc, "senha": "senha12345", "whatsapp": "11988887777", "canal": "meta_taxista"})
 _u_cc = store.get_user_by_email(_email_cc)
 check("cadastro curto cria a conta e manda completar os dados",
       r.status_code == 302 and r.headers.get("Location", "").endswith("/completar-cadastro") and _u_cc is not None,
       f"{r.status_code} {r.headers.get('Location')}")
-check("conta nasce sem nome, CPF, cidade e placa, com o WhatsApp",
-      bool(_u_cc) and not any((_u_cc.get(k) or "") for k in ("full_name", "cpf", "city", "plate")) and _u_cc.get("whatsapp") == "11988887777")
+check("conta nasce com nome, WhatsApp e a cidade oficial, sem CPF e placa",
+      bool(_u_cc) and _u_cc.get("full_name") == "Curto Silva" and _u_cc.get("city") == "São Paulo"
+      and _u_cc.get("state") == "SP" and _u_cc.get("whatsapp") == "11988887777"
+      and not any((_u_cc.get(k) or "") for k in ("cpf", "plate")), str(_u_cc and (_u_cc.get("city"), _u_cc.get("state"))))
 try:
     with store.pool.connection() as _conn:
         _canal_cc = _conn.execute("select signup_channel from public.drivers where id = %s", (_u_cc["_id"],)).fetchone()["signup_channel"]
     check("canal gravado no cadastro", _canal_cc == "meta_taxista", _canal_cc)
 except A.psycopg.errors.UndefinedColumn:
     check("canal gravado no cadastro (migracao 0018 nao aplicada; nada a conferir)", True)
+for _dados_ruins, _motivo in (({**_base_cc, "cidade": "Cascavel"}, "cidade de outra UF"), ({**_base_cc, "uf": ""}, "sem UF"),
+                              ({**_base_cc, "cidade": "Cidade Inventada"}, "cidade fora da lista"), ({**_base_cc, "nome_completo": " "}, "sem nome")):
+    _r_ruim = A.app.test_client().post("/cadastro", data={**_dados_ruins, "email": f"ruim-{_suf_cc}@teste.invalid", "senha": "senha12345", "whatsapp": "11988887777"})
+    check(f"cadastro recusa {_motivo} (400)", _r_ruim.status_code == 400 and not store.get_user_by_email(f"ruim-{_suf_cc}@teste.invalid"), _r_ruim.status_code)
+_r_fora = A.app.test_client().post("/cadastro", data={"nome_completo": "Fora Silva", "email": f"fora-{_suf_cc}@teste.invalid", "senha": "senha12345",
+                                                      "whatsapp": "+506 8888 7777", "pais": "CR", "moeda": "CRC", "cidade": "Alajuela"})
+_u_fora = store.get_user_by_email(f"fora-{_suf_cc}@teste.invalid")
+check("fora do Brasil a cidade e texto livre, sem UF", _r_fora.status_code == 302 and _u_fora and _u_fora.get("city") == "Alajuela" and _u_fora.get("state") == "",
+      f"{_r_fora.status_code} {_u_fora and (_u_fora.get('city'), _u_fora.get('state'))}")
 _h_db = _ccc.get("/dashboard").get_data(as_text=True)
-check("painel avisa o que falta no cadastro", "Falta completar seu cadastro (nome, CPF, cidade, placa)" in _h_db and "/completar-cadastro" in _h_db)
+check("painel avisa o que falta no cadastro", "Falta completar seu cadastro (CPF, placa)" in _h_db and "/completar-cadastro" in _h_db)
 check("painel esconde o formulario de recibo enquanto falta cadastro", 'action="/recibo"' not in _h_db)
 r = _ccc.post("/recibo", data={"passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"})
 check("recibo antes de completar o cadastro vai para o /completar-cadastro",
       r.status_code == 302 and r.headers.get("Location", "").endswith("/completar-cadastro"), f"{r.status_code} {r.headers.get('Location')}")
 _h_comp = _ccc.get("/completar-cadastro").get_data(as_text=True)
-check("/completar-cadastro pede so o que falta, com a cooperativa opcional",
-      'name="nome_completo"' in _h_comp and 'name="cpf"' in _h_comp and 'name="cidade"' in _h_comp and 'name="placa"' in _h_comp
-      and 'name="cooperativa"' in _h_comp and 'name="whatsapp"' not in _h_comp)
-r = _ccc.post("/completar-cadastro", data={"nome_completo": "Curto Silva", "cpf": "123", "cidade": "SP", "placa": "abc1d23"})
+check("/completar-cadastro pede so o que falta (CPF e placa), com a cooperativa opcional",
+      'name="cpf"' in _h_comp and 'name="placa"' in _h_comp and 'name="cooperativa"' in _h_comp
+      and 'name="nome_completo"' not in _h_comp and 'name="cidade"' not in _h_comp and 'name="whatsapp"' not in _h_comp)
+r = _ccc.post("/completar-cadastro", data={"cpf": "123", "placa": "abc1d23"})
 check("CPF errado ao completar e recusado (400)", r.status_code == 400 and "CPF" in r.get_data(as_text=True), r.status_code)
-r = _ccc.post("/completar-cadastro", data={"nome_completo": "Curto Silva", "cpf": "11144477735", "cidade": "SP", "placa": "abc1d23",
+r = _ccc.post("/completar-cadastro", data={"cpf": "11144477735", "placa": "abc1d23",
                                           "cooperativa": "Coopertáxi", "cnpj_cooperativa": "11.222.333/0001-81"})
 _u_cc = store.get_user_by_email(_email_cc)
 check("completar grava os dados e volta ao painel",
       r.status_code == 302 and r.headers.get("Location", "").endswith("/dashboard") and _u_cc.get("full_name") == "Curto Silva"
-      and _u_cc.get("plate") == "ABC1D23" and _u_cc.get("city") == "SP" and _u_cc.get("coop_name") == "Coopertáxi",
+      and _u_cc.get("plate") == "ABC1D23" and _u_cc.get("city") == "São Paulo" and _u_cc.get("coop_name") == "Coopertáxi",
       f"{r.status_code} {_u_cc.get('full_name')} {_u_cc.get('plate')}")
 check("conta completa: /completar-cadastro volta ao painel",
       _ccc.get("/completar-cadastro").headers.get("Location", "").endswith("/dashboard"))
@@ -2814,16 +2836,16 @@ check("recibo sai depois de completar", "/recibo/" in r.headers.get("Location", 
 check("/completar-cadastro sem login manda entrar",
       A.app.test_client().get("/completar-cadastro").status_code in (302, 401))
 check("cadastro curto sem WhatsApp e recusado",
-      A.app.test_client().post("/cadastro", data={"email": f"semzap-{_suf_cc}@teste.invalid", "senha": "senha12345"}).status_code == 400)
+      A.app.test_client().post("/cadastro", data={**_base_cc, "email": f"semzap-{_suf_cc}@teste.invalid", "senha": "senha12345"}).status_code == 400)
 check("WhatsApp sem DDD e recusado",
-      A.app.test_client().post("/cadastro", data={"email": f"ddd-{_suf_cc}@teste.invalid", "senha": "senha12345", "whatsapp": "99999999"}).status_code == 400)
+      A.app.test_client().post("/cadastro", data={**_base_cc, "email": f"ddd-{_suf_cc}@teste.invalid", "senha": "senha12345", "whatsapp": "99999999"}).status_code == 400)
 check("CPF errado no formulario completo continua recusado",
-      A.app.test_client().post("/cadastro", data={"email": f"cpfx-{_suf_cc}@teste.invalid", "senha": "senha12345",
+      A.app.test_client().post("/cadastro", data={**_base_cc, "email": f"cpfx-{_suf_cc}@teste.invalid", "senha": "senha12345",
                                                   "whatsapp": "11999998888", "cpf": "123"}).status_code == 400)
 # Formulario completo (parceiro, teste): os campos valem e a conta nasce pronta.
 _cfull = A.app.test_client()
 r = _cfull.post("/cadastro", data={"nome_completo": "Completo Silva", "email": f"completo-{_suf_cc}@teste.invalid", "senha": "senha12345",
-                                   "whatsapp": "11999998888", "cpf": "11144477735", "cidade": "SP", "placa": "abc1d23"})
+                                   "whatsapp": "11999998888", "cpf": "11144477735", "uf": "SP", "cidade": "São Paulo", "placa": "abc1d23"})
 check("formulario completo vai direto ao painel", r.status_code == 302 and r.headers.get("Location", "").endswith("/dashboard"),
       f"{r.status_code} {r.headers.get('Location')}")
 # API do app: o canal vem do Install Referrer (app 1.9+); a sessao diz o que falta.
@@ -2843,11 +2865,11 @@ check("api/sessao diz que o cadastro esta completo", _s_api.get("cadastro_incomp
 # Pelo app (1.9+): a API nao emite sem os dados, a sessao diz o que falta e o
 # CPF entra em Meus dados so enquanto a conta nao tem um.
 _c2e = f"curto2-{_suf_cc}@teste.invalid"
-A.app.test_client().post("/cadastro", data={"email": _c2e, "senha": "senha12345", "whatsapp": "11988887777"})
+A.app.test_client().post("/cadastro", data={**_base_cc, "email": _c2e, "senha": "senha12345", "whatsapp": "11988887777"})
 _tok2 = (A.app.test_client().post("/api/login", json={"email": _c2e, "senha": "senha12345"}).get_json() or {}).get("access_token", "")
 _cab2 = {"Authorization": f"Bearer {_tok2}"}
 _s2 = A.app.test_client().get("/api/sessao", headers=_cab2).get_json() or {}
-check("api/sessao lista o que falta no cadastro curto", _s2.get("cadastro_incompleto") == ["nome", "CPF", "cidade", "placa"], str(_s2.get("cadastro_incompleto")))
+check("api/sessao lista o que falta no cadastro curto", _s2.get("cadastro_incompleto") == ["CPF", "placa"], str(_s2.get("cadastro_incompleto")))
 _rid2 = "ABCDEF01234567"[:A.RID_LENGTH]
 _rec2 = {"rid": _rid2, "passageiro": "Maria", "data": "2026-09-12", "origem": "A", "destino": "B", "valor": "10"}
 r = A.app.test_client().post("/api/recibos", headers=_cab2, json=_rec2)
@@ -3827,7 +3849,7 @@ try:
                                                   "modelo_veiculo", "cooperativa", "senha"))
           and 'name="digitos"' not in _h, r.status_code)
     _dados_so = {"nome_completo": "Davi Teste", "whatsapp": "(41) 99876-1234", "cpf": "529.982.247-25",
-                 "cidade": "Curitiba", "placa": "abc1d23", "modelo_veiculo": "Spin",
+                 "uf": "PR", "cidade": "Curitiba", "placa": "abc1d23", "modelo_veiculo": "Spin",
                  "senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"}
 
     def _sem_senha_so():
@@ -3873,7 +3895,7 @@ try:
     check("criar senha: com CPF salvo, pede os 4 numeros e so o que falta, sem mostrar o CPF nem o nome",
           bool(_tok_cpf) and 'name="digitos"' in _h and 'name="cidade"' in _h and 'name="whatsapp"' in _h
           and 'name="cpf"' not in _h and 'name="nome_completo"' not in _h and "529.982" not in _h)
-    _dados_cpf = {"whatsapp": "(41) 99876-4321", "cidade": "Londrina", "placa": "xyz9a88", "digitos": "5299",
+    _dados_cpf = {"whatsapp": "(41) 99876-4321", "uf": "PR", "cidade": "Londrina", "placa": "xyz9a88", "digitos": "5299",
                   "senha": "senha-nova-123", "confirmar_senha": "senha-nova-123"}
     _ccpf = A.app.test_client()
     for _i in range(A.CRIAR_SENHA_TENTATIVAS + 1):

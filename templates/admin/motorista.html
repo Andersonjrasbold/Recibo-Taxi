@@ -15,7 +15,7 @@
         <tr><td>E-mail</td><td>{{ m.email }}{% if not m.email_confirmed_at %} <small class="adm-falha">(não confirmado)</small>{% endif %}</td></tr>
         <tr><td>WhatsApp</td><td>{{ m.whatsapp }}</td></tr>
         <tr><td>CPF</td><td>{{ m.cpf | mascarar_cpf }}</td></tr>
-        <tr><td>Cidade</td><td>{{ m.city }}</td></tr>
+        <tr><td>Cidade · UF</td><td>{{ m.city }} · {{ m.state or '-' }}</td></tr>
         <tr><td>País · moeda</td><td>{{ (paises.get(m.country) or (m.country,))[0] }} · {{ m.currency }}</td></tr>
         <tr><td>Placa · veículo</td><td>{{ m.plate }} · {{ m.vehicle_model or '-' }}</td></tr>
         <tr><td>Prefixo · alvará</td><td>{{ m.taxi_prefix or '-' }} · {{ m.license_number or '-' }}</td></tr>

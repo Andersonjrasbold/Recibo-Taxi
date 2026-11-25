@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_uf_cidade.html" as uc with context %}
 {# Primeiro acesso de quem o painel cadastrou (/criar-senha/<token>). O token é
    a credencial: a prévia do WhatsApp lê título e descrição, então nada de nome
    ou e-mail neles. #}
@@ -145,4 +146,5 @@
     });
   }
 </script>
+{{ uc.script() }}
 {% endblock %}

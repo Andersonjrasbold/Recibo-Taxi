@@ -3,6 +3,7 @@
     (cadastro curto do site) mostram os mesmos campos, com as mesmas regras.
     Espera `pede` (o_que_o_primeiro_acesso_pede), `preenchido` (o formulário
     devolvido com erro) e `documento` ("CPF" ou "Documento de identidade"). -#}
+{% import "_uf_cidade.html" as uc with context %}
 {% set f = preenchido or {} %}
             <div class="form-section">
               <div class="form-section-title"><i class="bi bi-person-fill me-2"></i>Seus dados</div>
@@ -32,11 +33,15 @@
                 </div>
                 {% endif %}
                 {% if 'cidade' in pede.faltam %}
+                {% if (pais or 'BR') == 'BR' %}
+                {{ uc.campos(f.get('uf', ''), f.get('cidade', ''), 'form-label-auth', 'form-control-auth', 'col-md-4', 'col-md-8') }}
+                {% else %}
                 <div class="col-md-8">
                   <label for="cidade" class="form-label-auth">Cidade <span class="required-star">*</span></label>
                   <input type="text" id="cidade" name="cidade" class="form-control form-control-auth"
-                    maxlength="80" placeholder="São Paulo" required value="{{ f.get('cidade', '') }}">
+                    maxlength="80" placeholder="Sua cidade" required value="{{ f.get('cidade', '') }}">
                 </div>
+                {% endif %}
                 {% endif %}
                 {% if 'placa' in pede.faltam %}
                 <div class="col-md-4">

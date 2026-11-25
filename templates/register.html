@@ -80,7 +80,7 @@
               </div>
             </div>
 
-            <p class="text-secondary small mb-0">Ao criar a conta, você concorda com os <a href="{{ url_for('termos') }}">Termos de Uso</a> e a <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>.</p>
+            <p class="text-secondary small mb-0">Ao criar a conta, você concorda com os <a href="{{ url_for('termos') }}">Termos de Uso</a> e a <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>, e aceita receber mensagens do Recibo Táxi pelo WhatsApp sobre a sua conta e os planos. Dá para parar quando quiser.</p>
             <button type="submit" class="btn btn-auth-submit w-100">
               <i class="bi bi-person-check-fill me-2"></i>{{ 'Criar conta e ir para o pagamento' if plano_pedido else 'Criar minha conta grátis' }}
             </button>

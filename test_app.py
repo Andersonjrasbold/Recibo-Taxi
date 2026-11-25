@@ -2145,6 +2145,198 @@ try:
 except A.psycopg.errors.UndefinedTable:
     check("cliques do utm_source (migracao 0014 nao aplicada; nada a conferir)", True)
 
+print("\n-- Ofertas pelo WhatsApp oficial (migracao 0020) --")
+for _k in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN",
+           "WHATSAPP_OFERTAS_A_PARTIR"):
+    os.environ.pop(_k, None)
+os.environ["CRON_SECRET"] = "segredo-de-teste"
+_cw = A.app.test_client()
+check("sem credenciais: tarefa responde desligada, webhook fechado (503)",
+      _cw.get("/tarefas/whatsapp", headers={"Authorization": "Bearer segredo-de-teste"}).get_json().get("motivo") == "sem_credenciais"
+      and _cw.get("/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=x&hub.challenge=1").status_code == 503
+      and _cw.post("/webhook/whatsapp", data="{}", content_type="application/json").status_code == 503)
+check("tarefa sem o segredo do cron e recusada", _cw.get("/tarefas/whatsapp").status_code == 401)
+os.environ.update({"WHATSAPP_TOKEN": "token-de-teste", "WHATSAPP_PHONE_NUMBER_ID": "123",
+                   "WHATSAPP_APP_SECRET": "segredo-wa", "WHATSAPP_VERIFY_TOKEN": "verifica-wa"})
+_hoje_wa = A.datetime.now(A.BR_TZ).date()
+check("sem a data da Politica a tarefa fica desligada", A.rodar_ofertas_whatsapp()["motivo"] == "sem_data")
+os.environ["WHATSAPP_OFERTAS_A_PARTIR"] = (_hoje_wa + A.timedelta(days=1)).isoformat()
+check("antes da data a tarefa fica desligada", A.rodar_ofertas_whatsapp()["motivo"] == "antes_da_data"
+      and A.estado_das_ofertas_whatsapp().startswith("Começa em "))
+os.environ["WHATSAPP_OFERTAS_A_PARTIR"] = "25/11/2026"
+check("data fora do formato desliga em vez de quebrar", A.rodar_ofertas_whatsapp()["motivo"] == "data_invalida")
+os.environ["WHATSAPP_OFERTAS_A_PARTIR"] = _hoje_wa.isoformat()
+_dia_wa = A.datetime.now(A.BR_TZ)
+while _dia_wa.weekday() >= 5:
+    _dia_wa += A.timedelta(days=1)
+_util_wa = _dia_wa.replace(hour=10, minute=30, second=0, microsecond=0)   # proximo dia util, 10h30
+_sab_wa = _util_wa + A.timedelta(days=5 - _util_wa.weekday())              # sabado
+_noite_wa = _util_wa.replace(hour=21)
+check("so dia util em horario comercial",
+      A.horario_de_ofertas(_util_wa) and not A.horario_de_ofertas(_sab_wa) and not A.horario_de_ofertas(_noite_wa))
+check("fora do horario a rodada nao manda", A.rodar_ofertas_whatsapp(agora=_noite_wa)["motivo"] == "fora_do_horario")
+_get_planos_wa = A.planos_do_link_disponiveis
+A.planos_do_link_disponiveis = lambda: {}
+check("sem plano a venda (Stripe sem Price) a rodada nao manda",
+      A.rodar_ofertas_whatsapp(agora=_util_wa)["motivo"] == "plano_indisponivel")
+A.planos_do_link_disponiveis = lambda: {"pro_anual": "Anual", "pro": "Mensal"}
+
+
+def _wa_motorista(nome, usados=99, optout=False, fone="11999998888"):
+    email = f"wa-{nome}-{_suf_em}@teste.invalid"
+    novo_cliente(email)
+    did = _st_em.get_user_by_email(email)["_id"]
+    with _st_em.pool.connection() as conn:
+        conn.execute("update public.drivers set whatsapp = %s, marketing_optout_at = %s where id = %s",
+                     (fone, _agora_em if optout else None, did))
+        if usados:
+            conn.execute("""insert into public.receipt_quotas (driver_id, period, used) values (%s, public.br_period(), %s)
+                            on conflict (driver_id, period) do update set used = excluded.used""", (did, usados))
+    return did
+
+
+def _wa_linhas(did, direction):
+    with _st_em.pool.connection() as conn:
+        return [dict(r) for r in conn.execute(
+            """select wa_message_id, status, kind, link_nonce, to_phone, template, error from public.whatsapp_messages
+                where driver_id = %s and direction = %s and created_at > now() - interval '1 hour' order by id""",
+            (did, direction)).fetchall()]
+
+
+_wa_a = _wa_motorista("teto", fone="11988887777")       # bateu o teto: recebe
+_wa_b = _wa_motorista("parou", optout=True)             # pediu para parar: nao
+_wa_c = _wa_motorista("abaixo", usados=1)               # abaixo do teto: nao
+_wa_d = _wa_motorista("semfone", fone="123")            # WhatsApp fora do padrao: pulado
+_wa_e = _wa_motorista("recente")                        # recebeu ha 3 dias: nao
+_wa_f = _wa_motorista("falhou", fone="11977776666")     # falhou ha 10 dias: pode de novo
+with _st_em.pool.connection() as _conn:
+    _conn.execute("""insert into public.whatsapp_messages
+                         (driver_id, direction, kind, template, wa_message_id, to_phone, status, created_at)
+                     values (%s, 'saida', 'oferta_teto', 'oferta_pro_anual_limite', %s, '5511999998888', 'enviado', now() - interval '3 days'),
+                            (%s, 'saida', 'oferta_teto', 'oferta_pro_anual_limite', %s, '5511977776666', 'falhou', now() - interval '10 days')""",
+                  (_wa_e, f"wamid.e-{_suf_em}", _wa_f, f"wamid.f-{_suf_em}"))
+_envios_wa = []
+
+
+def _fake_envio_wa(cfg, fone, template, corpo, sufixo_url=""):
+    _envios_wa.append({"fone": fone, "template": template, "corpo": corpo, "token": sufixo_url, "phone_id": cfg["phone_id"]})
+    return f"wamid.t{len(_envios_wa)}-{_suf_em}", ""
+
+
+_envio_real_wa = A.enviar_template_whatsapp
+A.enviar_template_whatsapp = _fake_envio_wa
+_r_wa = A.rodar_ofertas_whatsapp(agora=_util_wa)
+check("rodada manda a quem bateu o teto e a quem teve falha ha 10 dias; pula parou, abaixo, recente e sem fone",
+      _r_wa["ok"] and _r_wa["enviados"] == len(_envios_wa) >= 2 and _r_wa["pulados"] >= 1 and _r_wa["plano"] == "pro_anual"
+      and len(_wa_linhas(_wa_a, "saida")) == 1 and len(_wa_linhas(_wa_f, "saida")) == 1
+      and not _wa_linhas(_wa_b, "saida") and not _wa_linhas(_wa_c, "saida") and not _wa_linhas(_wa_d, "saida")
+      and not _wa_linhas(_wa_e, "saida"), str(_r_wa))
+_env_a = next((e for e in _envios_wa if (A.ler_link_de_pagamento(e["token"])[0] or {}).get("uid") == _wa_a), None)
+_link_a = A.ler_link_de_pagamento(_env_a["token"])[0] if _env_a else {}
+check("mensagem leva o modelo, o primeiro nome, o teto e o token do /pagar do proprio motorista (anual, origem whatsapp)",
+      _env_a is not None and _env_a["template"] == "oferta_pro_anual_limite" and _env_a["fone"] == "5511988887777"
+      and _env_a["corpo"] == ["Ana", str(A.FREE_MONTHLY_LIMIT)] and _env_a["phone_id"] == "123"
+      and _link_a.get("plano") == "pro_anual" and _link_a.get("origem") == "whatsapp"
+      and _wa_linhas(_wa_a, "saida")[0]["link_nonce"] == _link_a.get("nonce")
+      and _wa_linhas(_wa_a, "saida")[0]["status"] == "enviado", str(_env_a)[:200])
+_r_wa2 = A.rodar_ofertas_whatsapp(agora=_util_wa)
+check("segunda rodada no mesmo mes nao repete a oferta",
+      len(_wa_linhas(_wa_a, "saida")) == 1 and len(_wa_linhas(_wa_f, "saida")) == 1, str(_r_wa2))
+_wa_g = _wa_motorista("erro", usados=98, fone="11966665555")
+A.enviar_template_whatsapp = lambda cfg, fone, template, corpo, sufixo_url="": ("", "HTTP 400: (#131026) Message undeliverable")
+_r_wa3 = A.rodar_ofertas_whatsapp(agora=_util_wa)
+check("falha da Meta fica registrada como 'falhou' com o erro, sem derrubar a rodada",
+      _r_wa3["ok"] and _r_wa3["falhas"] >= 1 and _wa_linhas(_wa_g, "saida")
+      and _wa_linhas(_wa_g, "saida")[0]["status"] == "falhou" and "131026" in _wa_linhas(_wa_g, "saida")[0]["error"]
+      and _wa_linhas(_wa_g, "saida")[0]["wa_message_id"] is None, str(_r_wa3))
+A.enviar_template_whatsapp = _envio_real_wa
+A.planos_do_link_disponiveis = _get_planos_wa
+
+
+def _assinar_wa(corpo: bytes) -> str:
+    return "sha256=" + A.hmac.new(b"segredo-wa", corpo, A.hashlib.sha256).hexdigest()
+
+
+def _post_wa(payload, assinar=True):
+    corpo = A.json.dumps(payload).encode("utf-8")
+    headers = {"X-Hub-Signature-256": _assinar_wa(corpo)} if assinar else {}
+    return _cw.post("/webhook/whatsapp", data=corpo, content_type="application/json", headers=headers)
+
+
+def _evento_wa(valor):
+    return {"object": "whatsapp_business_account", "entry": [{"id": "1", "changes": [{"field": "messages", "value": valor}]}]}
+
+
+def _optout_wa(did):
+    with _st_em.pool.connection() as conn:
+        return conn.execute("select marketing_optout_at from public.drivers where id = %s", (did,)).fetchone()["marketing_optout_at"]
+
+
+check("verificacao do webhook: token certo devolve o challenge, errado da 403",
+      _cw.get("/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=verifica-wa&hub.challenge=abc123").get_data(as_text=True) == "abc123"
+      and _cw.get("/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=errado&hub.challenge=abc123").status_code == 403)
+check("webhook sem assinatura ou com assinatura errada e recusado (403)",
+      _post_wa(_evento_wa({}), assinar=False).status_code == 403
+      and _cw.post("/webhook/whatsapp", data=b"{}", content_type="application/json",
+                   headers={"X-Hub-Signature-256": "sha256=00"}).status_code == 403)
+check("webhook com assinatura certa e corpo torto da 400",
+      _cw.post("/webhook/whatsapp", data=b"[1]", content_type="application/json",
+               headers={"X-Hub-Signature-256": _assinar_wa(b"[1]")}).status_code == 400)
+_wamid_a = _wa_linhas(_wa_a, "saida")[0]["wa_message_id"]
+_wamid_f = _wa_linhas(_wa_f, "saida")[0]["wa_message_id"]
+_r_st = _post_wa(_evento_wa({"statuses": [{"id": _wamid_a, "status": "delivered"}, {"id": _wamid_a, "status": "read"}]}))
+_r_st2 = _post_wa(_evento_wa({"statuses": [{"id": _wamid_a, "status": "delivered"}]}))
+check("status entregue e lido atualizam a oferta, e 'entregue' depois de 'lido' nao volta atras",
+      _r_st.status_code == 200 and _r_st.get_json()["status"] == 2 and _r_st2.get_json()["status"] == 0
+      and _wa_linhas(_wa_a, "saida")[0]["status"] == "lido", str(_wa_linhas(_wa_a, "saida")))
+_post_wa(_evento_wa({"statuses": [{"id": _wamid_f, "status": "failed",
+                                   "errors": [{"code": 131026, "title": "Message undeliverable"}]}]}))
+check("status 'failed' vira falhou com o erro da Meta",
+      _wa_linhas(_wa_f, "saida")[0]["status"] == "falhou" and "131026" in _wa_linhas(_wa_f, "saida")[0]["error"])
+_parar_wa = _evento_wa({"messages": [{"from": "5511988887777", "id": f"wamid.in1-{_suf_em}", "type": "button",
+                                      "button": {"payload": "Parar ofertas", "text": "Parar ofertas"}}]})
+_r_in = _post_wa(_parar_wa)
+check("'Parar ofertas' marca o motorista como sem ofertas e registra a resposta",
+      _r_in.status_code == 200 and _r_in.get_json()["pararam"] == 1 and _optout_wa(_wa_a) is not None
+      and [r["kind"] for r in _wa_linhas(_wa_a, "entrada")] == ["parar"], str(_r_in.get_json()))
+_r_dup = _post_wa(_parar_wa)
+check("a Meta reentregando a mesma mensagem nao duplica",
+      _r_dup.get_json()["respostas"] == 0 and len(_wa_linhas(_wa_a, "entrada")) == 1)
+_r_x = _post_wa(_evento_wa({"messages": [{"from": "5599000000000", "id": f"wamid.x-{_suf_em}", "type": "text",
+                                          "text": {"body": "oi"}}]}))
+check("mensagem de quem nunca recebeu oferta e ignorada", _r_x.status_code == 200 and _r_x.get_json()["respostas"] == 0)
+_r_t = _post_wa(_evento_wa({"messages": [{"from": "551188887777", "id": f"wamid.t-{_suf_em}", "type": "text",
+                                          "text": {"body": "Quero sim, como pago?"}}]}))
+check("resposta livre (numero sem o nono digito) fica registrada como texto e casa com o motorista",
+      _r_t.get_json()["respostas"] == 1 and [r["kind"] for r in _wa_linhas(_wa_a, "entrada")] == ["parar", "texto"],
+      str(_r_t.get_json()))
+check("'SAIR' em texto tambem para as ofertas",
+      _optout_wa(_wa_f) is None
+      and _post_wa(_evento_wa({"messages": [{"from": "5511977776666", "id": f"wamid.s-{_suf_em}", "type": "text",
+                                             "text": {"body": "Sair."}}]})).get_json()["pararam"] == 1
+      and _optout_wa(_wa_f) is not None)
+check("numeros equivalentes: com e sem o nono digito",
+      A._numeros_equivalentes_br("5511988887777") == ["551188887777", "5511988887777"]
+      and A._numeros_equivalentes_br("551188887777") == ["551188887777", "5511988887777"]
+      and A._numeros_equivalentes_br("5491155551234") == ["5491155551234"])
+_email_adm_wa = f"admin-wa-{_suf_em}@teste.invalid"
+_st_em.upsert_admin(_email_adm_wa, _gph("senha-da-suite-123"))
+_cadm_wa = A.app.test_client()
+_cadm_wa.post("/admin/login", data={"email": _email_adm_wa, "senha": "senha-da-suite-123"},
+              environ_base={"REMOTE_ADDR": "203.0.113.250"})
+_h_ficha_wa = _cadm_wa.get(f"/admin/motoristas/{_wa_a}").get_data(as_text=True)
+check("ficha mostra a oferta pelo WhatsApp (lida) e o pedido para parar",
+      "Ofertas pelo WhatsApp" in _h_ficha_wa and "oferta lida" in _h_ficha_wa and "pediu para parar" in _h_ficha_wa)
+_h_dash_wa = _cadm_wa.get("/admin?atualizar=1").get_data(as_text=True)
+check("painel mostra a secao das ofertas pelo WhatsApp, ligada, com os KPIs e as ultimas mensagens",
+      "Ofertas pelo WhatsApp oficial (30 dias)" in _h_dash_wa and "Ligada." in _h_dash_wa
+      and "Pediram para parar" in _h_dash_wa and "Pagaram pelo link" in _h_dash_wa and "oferta lida" in _h_dash_wa)
+for _k in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN",
+           "WHATSAPP_OFERTAS_A_PARTIR"):
+    os.environ.pop(_k, None)
+check("cadastro do site diz que a conta aceita mensagens pelo WhatsApp (opt-in que a Meta exige)",
+      "aceita receber mensagens do Recibo Táxi pelo WhatsApp" in _cw.get("/cadastro").get_data(as_text=True))
+
 # Painel: so leitura e um modelo criado e apagado (desligado).
 _adm_em = _st_em.upsert_admin(f"admin-em-{_suf_em}@teste.invalid", _gph("senha-da-suite-123"))
 _ce = A.app.test_client()

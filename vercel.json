@@ -28,6 +28,10 @@
     {
       "path": "/tarefas/emails",
       "schedule": "5 * * * *"
+    },
+    {
+      "path": "/tarefas/whatsapp",
+      "schedule": "30 13,17 * * 1-5"
     }
   ],
   "regions": [

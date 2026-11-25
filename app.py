@@ -440,6 +440,22 @@ PLANOS_DO_LINK = {
 # o representante de vendas só começam nesta data, e o aviso vai por e-mail.
 POLITICA_ATUALIZADA_EM = "21 de novembro de 2026"
 CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
+# Ofertas do Pro pelo WhatsApp oficial (Cloud API da Meta), a quem bateu o teto
+# do Grátis (migração 0020). A tarefa /tarefas/whatsapp nasce desligada: só
+# manda a partir de WHATSAPP_OFERTAS_A_PARTIR (AAAA-MM-DD, dia de Brasília), a
+# data em que vence o aviso de 15 dias da Política que cita a Meta como
+# operadora. As credenciais (token do usuário de sistema, id do número, segredo
+# do app e token de verificação do webhook) ficam na Vercel. O modelo precisa
+# estar aprovado no WhatsApp Manager com dois parâmetros no corpo (primeiro
+# nome, teto do Grátis), um botão de URL cujo fim é o token do /pagar e um
+# botão de resposta rápida "Parar ofertas".
+WHATSAPP_API_VERSAO = "v21.0"
+WHATSAPP_TEMPLATE_OFERTA_PADRAO = "oferta_pro_anual_limite"
+WHATSAPP_OFERTAS_POR_RODADA = 5             # por chamada do cron (duas por dia útil)
+WHATSAPP_OFERTAS_INTERVALO_DIAS = 30        # uma oferta por motorista neste prazo
+WHATSAPP_OFERTAS_HORARIO = (9, 19)          # horas de Brasília, dias úteis
+WHATSAPP_OFERTA_PLANOS = ("pro_anual_pix", "pro_anual")  # o primeiro que estiver à venda
+WHATSAPP_PARAR = {"parar ofertas", "parar", "sair", "stop", "nao quero", "nao quero mais"}
 # Marca, no app_metadata do Supabase Auth, a conta que o painel criou. O
 # app_metadata o motorista não consegue editar (o user_metadata, sim).
 MARCA_CRIADO_PELO_PAINEL = "criado_pelo_painel"
@@ -4029,14 +4045,24 @@ def planos_do_link_disponiveis() -> dict[str, str]:
             if os.environ.get(STRIPE_PRICE_IDS[plano], "").strip()}
 
 
-def gerar_link_de_pagamento(driver_id: str, plano: str) -> tuple[str, datetime]:
-    """URL pública do /pagar para um motorista e um plano, e quando ela vence.
+def gerar_token_de_pagamento(driver_id: str, plano: str, origem: str = "") -> tuple[str, str]:
+    """Token assinado do /pagar e o seu `n`, a identidade do link.
 
-    O `n` é a identidade do link: entra na chave de idempotência da Stripe e na
-    marca de "já pago". Dois links gerados para o mesmo motorista são dois.
+    O `n` entra na chave de idempotência da Stripe e na marca de "já pago":
+    dois links gerados para o mesmo motorista são dois. `origem` diz quem gerou
+    ("whatsapp" para a oferta automática; vazio = painel) e segue na metadata
+    do Checkout como `via`.
     """
-    token = _serializador(LINK_PAGAMENTO_SALT).dumps(
-        {"u": str(driver_id), "p": plano, "n": secrets.token_urlsafe(9)})
+    nonce = secrets.token_urlsafe(9)
+    dados = {"u": str(driver_id), "p": plano, "n": nonce}
+    if origem:
+        dados["o"] = origem
+    return _serializador(LINK_PAGAMENTO_SALT).dumps(dados), nonce
+
+
+def gerar_link_de_pagamento(driver_id: str, plano: str) -> tuple[str, datetime]:
+    """URL pública do /pagar para um motorista e um plano, e quando ela vence."""
+    token, _ = gerar_token_de_pagamento(driver_id, plano)
     return absolute_url("pagar_link", token=token), _fim_do_link(datetime.now(timezone.utc))
 
 
@@ -4063,7 +4089,8 @@ def ler_link_de_pagamento(token: str, folga_dias: int = 0) -> tuple[dict | None,
     vence = _fim_do_link(emitido)
     if datetime.now(timezone.utc) > vence + timedelta(days=folga_dias):
         return None, "vencido"
-    return {"uid": str(dados["u"]), "plano": dados["p"], "nonce": str(dados["n"]), "vence": vence}, ""
+    return {"uid": str(dados["u"]), "plano": dados["p"], "nonce": str(dados["n"]), "vence": vence,
+            "origem": str(dados.get("o") or "")}, ""
 
 
 def situacao_do_link(motorista: dict, plano: str, nonce: str) -> str:
@@ -4162,7 +4189,7 @@ def pagar_link_confirmar(token: str):
             # Uma chave por link e domínio: tocar de novo em 24 h devolve a
             # mesma sessão, e o link não colide com o "Assinar" do site.
             idempotency_key=f"pagar:{link['nonce']}:{motorista['_id']}:{plano}:{request.host}",
-            metadata_extra={"origem": "link_painel", "link": link["nonce"]},
+            metadata_extra={"origem": "link_painel", "link": link["nonce"], "via": link.get("origem") or "painel"},
         )
     except Exception as exc:
         # CupomIndisponivel também cai aqui: a página só diz para tentar de novo.
@@ -6167,6 +6194,318 @@ def tarefa_emails():
         raise
 
 
+# ---------------------------------------------------------------------------
+# Ofertas pelo WhatsApp oficial (Cloud API da Meta; migração 0020)
+# ---------------------------------------------------------------------------
+
+def whatsapp_config() -> dict:
+    """Credenciais e regras da Cloud API, lidas na hora (variáveis da Vercel)."""
+    return {
+        "token": os.environ.get("WHATSAPP_TOKEN", "").strip(),
+        "phone_id": os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "").strip(),
+        "verify": os.environ.get("WHATSAPP_VERIFY_TOKEN", "").strip(),
+        "app_secret": os.environ.get("WHATSAPP_APP_SECRET", "").strip(),
+        "template": os.environ.get("WHATSAPP_TEMPLATE_OFERTA", "").strip() or WHATSAPP_TEMPLATE_OFERTA_PADRAO,
+        "a_partir": os.environ.get("WHATSAPP_OFERTAS_A_PARTIR", "").strip(),
+    }
+
+
+def ofertas_whatsapp_ligadas(cfg: dict | None = None, hoje=None) -> tuple[bool, str]:
+    """(ligada?, motivo). Sem credenciais ou antes da data da Política, desligada."""
+    cfg = cfg or whatsapp_config()
+    if not (cfg["token"] and cfg["phone_id"]):
+        return False, "sem_credenciais"
+    if not cfg["a_partir"]:
+        return False, "sem_data"
+    try:
+        inicio = datetime.strptime(cfg["a_partir"], "%Y-%m-%d").date()
+    except ValueError:
+        return False, "data_invalida"
+    if (hoje or datetime.now(BR_TZ).date()) < inicio:
+        return False, "antes_da_data"
+    return True, ""
+
+
+def estado_das_ofertas_whatsapp() -> str:
+    """Frase do painel: por que a tarefa está desligada, ou que está ligada."""
+    cfg = whatsapp_config()
+    ligada, motivo = ofertas_whatsapp_ligadas(cfg)
+    if ligada:
+        return "Ligada."
+    if motivo == "antes_da_data":
+        return "Começa em " + datetime.strptime(cfg["a_partir"], "%Y-%m-%d").strftime("%d/%m/%Y") + "."
+    return {
+        "sem_credenciais": "Desligada: faltam as credenciais da Cloud API na Vercel.",
+        "sem_data": "Desligada: falta WHATSAPP_OFERTAS_A_PARTIR, a data em que o aviso da Política vence.",
+        "data_invalida": "Desligada: WHATSAPP_OFERTAS_A_PARTIR não está no formato AAAA-MM-DD.",
+    }.get(motivo, "Desligada.")
+
+
+def enviar_template_whatsapp(cfg: dict, fone: str, template: str, corpo: list[str],
+                             sufixo_url: str = "") -> tuple[str, str]:
+    """Manda um modelo aprovado pela Cloud API. Devolve (id da mensagem, erro).
+
+    Os parâmetros do corpo entram na ordem dos {{1}}, {{2}}…; `sufixo_url` é
+    o que a Meta cola no fim da URL do botão (o token do /pagar).
+    """
+    componentes: list[dict] = [{"type": "body", "parameters": [{"type": "text", "text": p} for p in corpo]}]
+    if sufixo_url:
+        componentes.append({"type": "button", "sub_type": "url", "index": "0",
+                            "parameters": [{"type": "text", "text": sufixo_url}]})
+    dados = json.dumps({
+        "messaging_product": "whatsapp", "to": fone, "type": "template",
+        "template": {"name": template, "language": {"code": "pt_BR"}, "components": componentes},
+    }).encode("utf-8")
+    pedido = urllib.request.Request(
+        f"https://graph.facebook.com/{WHATSAPP_API_VERSAO}/{cfg['phone_id']}/messages", data=dados,
+        headers={"Authorization": f"Bearer {cfg['token']}", "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(pedido, timeout=10) as resposta:
+            retorno = json.loads(resposta.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        return "", f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}"
+    except Exception as exc:  # rede, timeout, JSON torto
+        return "", str(exc)[:300]
+    mensagens = retorno.get("messages") or []
+    wa_id = str((mensagens[0] or {}).get("id") or "") if mensagens else ""
+    return wa_id, ("" if wa_id else "resposta sem id de mensagem")
+
+
+def candidatos_a_oferta_whatsapp(conn, quantos: int) -> list[dict]:
+    """Quem bateu o teto do Grátis este mês e ainda pode receber a oferta.
+
+    Fora: quem pediu para parar, quem recebeu nos últimos 30 dias (7, se o
+    envio falhou) e quem já saiu do Grátis. A ordem é por uso: quem mais
+    emitiu tem mais motivo para assinar.
+    """
+    return [dict(r) for r in conn.execute(
+        """select d.id, d.full_name, d.email, d.whatsapp, d.country, q.used
+             from public.receipt_quotas q join public.drivers d on d.id = q.driver_id
+            where q.period = public.br_period() and q.used >= %(limite)s and d.plan = 'free'
+              and d.marketing_optout_at is null
+              and not exists (
+                    select 1 from public.whatsapp_messages w
+                     where w.driver_id = d.id and w.direction = 'saida'
+                       and w.created_at > now() - case when w.status = 'falhou' then interval '7 days'
+                                                       else make_interval(days => %(intervalo)s::int) end)
+            order by q.used desc, d.created_at limit %(n)s""",
+        {"limite": FREE_MONTHLY_LIMIT, "intervalo": WHATSAPP_OFERTAS_INTERVALO_DIAS, "n": quantos}).fetchall()]
+
+
+def registrar_whatsapp(conn, driver_id, direction: str, kind: str, *, template: str = "", wa_id: str = "",
+                       fone: str = "", status: str = "enviado", erro: str = "", nonce: str = ""):
+    """Uma linha em whatsapp_messages; a mesma mensagem da Meta não entra duas vezes."""
+    return conn.execute(
+        """insert into public.whatsapp_messages
+               (driver_id, direction, kind, template, wa_message_id, to_phone, status, error, link_nonce)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+           on conflict (wa_message_id) do nothing returning id""",
+        (str(driver_id), direction, kind, template, wa_id or None, fone, status, erro[:300], nonce)).fetchone()
+
+
+def horario_de_ofertas(agora: datetime) -> bool:
+    """Dia útil, das 9h às 19h de Brasília: ninguém quer oferta de madrugada."""
+    agora = agora.astimezone(BR_TZ)
+    return agora.weekday() < 5 and WHATSAPP_OFERTAS_HORARIO[0] <= agora.hour < WHATSAPP_OFERTAS_HORARIO[1]
+
+
+def rodar_ofertas_whatsapp(agora: datetime | None = None) -> dict:
+    """Uma rodada da oferta: até WHATSAPP_OFERTAS_POR_RODADA mensagens.
+
+    Cada envio vira uma linha em whatsapp_messages: é ela que impede a segunda
+    oferta no mesmo mês e que casa a resposta ("Parar ofertas") com o
+    motorista. Conta da casa e WhatsApp fora do padrão são pulados.
+    """
+    agora = agora or datetime.now(BR_TZ)
+    cfg = whatsapp_config()
+    ligada, motivo = ofertas_whatsapp_ligadas(cfg, hoje=agora.astimezone(BR_TZ).date())
+    if not ligada:
+        return {"ok": True, "enviados": 0, "motivo": motivo}
+    if not horario_de_ofertas(agora):
+        return {"ok": True, "enviados": 0, "motivo": "fora_do_horario"}
+    a_venda = planos_do_link_disponiveis()
+    plano = next((p for p in WHATSAPP_OFERTA_PLANOS if p in a_venda), "")
+    if not plano:
+        return {"ok": True, "enviados": 0, "motivo": "plano_indisponivel"}
+
+    enviados = falhas = pulados = 0
+    with get_store().pool.connection() as conn:
+        candidatos = candidatos_a_oferta_whatsapp(conn, WHATSAPP_OFERTAS_POR_RODADA * 3)
+        for m in candidatos:
+            if enviados + falhas >= WHATSAPP_OFERTAS_POR_RODADA:
+                break
+            fone = phone_e164(m.get("whatsapp") or "", m.get("country") or PAIS_PADRAO)
+            if not fone or conta_interna(m["id"]):
+                pulados += 1
+                continue
+            token, nonce = gerar_token_de_pagamento(m["id"], plano, origem="whatsapp")
+            nome = _primeiro_nome(m.get("full_name") or "") or "motorista"
+            wa_id, erro = enviar_template_whatsapp(cfg, fone, cfg["template"], [nome, str(FREE_MONTHLY_LIMIT)], token)
+            registrar_whatsapp(conn, m["id"], "saida", "oferta_teto", template=cfg["template"], wa_id=wa_id,
+                               fone=fone, status="enviado" if wa_id else "falhou", erro=erro, nonce=nonce)
+            if wa_id:
+                enviados += 1
+            else:
+                falhas += 1
+                app.logger.warning("oferta pelo WhatsApp falhou para %s: %s", m["id"], erro)
+    if enviados or falhas:
+        _ADMIN_CACHE.pop("dashboard", None)
+    return {"ok": True, "enviados": enviados, "falhas": falhas, "pulados": pulados, "plano": plano}
+
+
+_WHATSAPP_STATUS = {"sent": "enviado", "delivered": "entregue", "read": "lido", "failed": "falhou"}
+
+
+def _texto_da_mensagem_whatsapp(msg: dict) -> str:
+    """O que o motorista respondeu: o botão do modelo, a resposta rápida ou o texto."""
+    tipo = msg.get("type")
+    if tipo == "button":
+        botao = msg.get("button") or {}
+        return str(botao.get("payload") or botao.get("text") or "")
+    if tipo == "interactive":
+        resposta = (msg.get("interactive") or {}).get("button_reply") or {}
+        return str(resposta.get("title") or resposta.get("id") or "")
+    if tipo == "text":
+        return str((msg.get("text") or {}).get("body") or "")
+    return ""
+
+
+def _numeros_equivalentes_br(fone: str) -> list[str]:
+    """O mesmo celular brasileiro com e sem o nono dígito: a Meta ainda
+    identifica alguns números antigos sem ele."""
+    variantes = {fone}
+    if fone.startswith("55") and len(fone) == 13 and fone[4] == "9":
+        variantes.add(fone[:4] + fone[5:])
+    elif fone.startswith("55") and len(fone) == 12:
+        variantes.add(fone[:4] + "9" + fone[4:])
+    return sorted(variantes)
+
+
+def avisar_resposta_whatsapp(driver_id: str, texto: str) -> bool:
+    """E-mail à equipe: o motorista respondeu à oferta e alguém precisa continuar."""
+    motorista = get_store().get_user_by_id(driver_id) or {}
+    destino = destino_dos_avisos(motorista.get("email", ""))
+    if not destino:
+        return False
+    try:
+        corpo = "\n".join([
+            f"{(motorista.get('full_name') or '(sem nome)').strip()} respondeu à oferta do Pro pelo WhatsApp.",
+            "",
+            f"Resposta: {texto.strip()[:300] or '(sem texto: áudio, imagem ou figurinha)'}",
+            f"Quando: {datetime.now(BR_TZ).strftime('%d/%m/%Y %H:%M')} (horário de Brasília)",
+            "",
+            "A conversa continua pela caixa de entrada do número oficial; a janela de resposta livre dura 24 horas.",
+            f"Ficha no painel: {absolute_url('admin_motorista', driver_id=driver_id)}",
+        ])
+        return send_email(destino, "Resposta à oferta pelo WhatsApp", corpo, timeout=4)
+    except Exception as exc:
+        app.logger.error("aviso de resposta no WhatsApp falhou para %s: %s", driver_id, exc)
+        return False
+
+
+def processar_webhook_whatsapp(dados: dict) -> dict:
+    """Status das ofertas (entregue, lido, falhou) e respostas do motorista.
+
+    "Parar ofertas" (o botão) ou "SAIR" marca marketing_optout_at, a mesma
+    marca do descadastro por e-mail. Outra resposta avisa a equipe por e-mail
+    para continuar a conversa à mão. Só mensagens de quem recebeu uma oferta
+    entram; o resto é da caixa de entrada do número.
+    """
+    atualizados = respostas = pararam = 0
+    with get_store().pool.connection() as conn:
+        for entrada in dados.get("entry") or []:
+            for mudanca in entrada.get("changes") or []:
+                valor = mudanca.get("value") or {}
+                for st in valor.get("statuses") or []:
+                    novo = _WHATSAPP_STATUS.get(str(st.get("status") or ""))
+                    if not novo or not st.get("id"):
+                        continue
+                    erro = "; ".join(f"{e.get('code')}: {e.get('title')}" for e in (st.get("errors") or []))[:300]
+                    # Não volta atrás: lido > entregue > enviado. "falhou" vale sempre.
+                    atualizados += conn.execute(
+                        """update public.whatsapp_messages
+                              set status = %(novo)s, updated_at = now(),
+                                  error = case when %(erro)s <> '' then %(erro)s else error end
+                            where wa_message_id = %(id)s
+                              and (%(novo)s = 'falhou'
+                                   or case status when 'enviado' then 1 when 'entregue' then 2 when 'lido' then 3 else 0 end
+                                      < case %(novo)s when 'enviado' then 1 when 'entregue' then 2 when 'lido' then 3 else 0 end)""",
+                        {"novo": novo, "erro": erro, "id": str(st["id"])}).rowcount
+                for msg in valor.get("messages") or []:
+                    wa_id = str(msg.get("id") or "")
+                    fone = sanitize_phone(str(msg.get("from") or ""))
+                    if not wa_id or not fone:
+                        continue
+                    origem = conn.execute(
+                        """select driver_id from public.whatsapp_messages
+                            where to_phone = any(%s) and direction = 'saida' order by created_at desc limit 1""",
+                        (_numeros_equivalentes_br(fone),)).fetchone()
+                    if not origem:
+                        continue
+                    texto = _texto_da_mensagem_whatsapp(msg)
+                    parar = sem_acento(texto).strip(" .!") in WHATSAPP_PARAR
+                    if not registrar_whatsapp(conn, origem["driver_id"], "entrada", "parar" if parar else "texto",
+                                              wa_id=wa_id, fone=fone, status="recebido"):
+                        continue  # a Meta reentregou a mesma mensagem
+                    respostas += 1
+                    if parar:
+                        conn.execute("""update public.drivers set marketing_optout_at = coalesce(marketing_optout_at, now())
+                                         where id = %s""", (str(origem["driver_id"]),))
+                        pararam += 1
+                    else:
+                        avisar_resposta_whatsapp(str(origem["driver_id"]), texto)
+    if atualizados or respostas:
+        _ADMIN_CACHE.pop("dashboard", None)
+    return {"ok": True, "status": atualizados, "respostas": respostas, "pararam": pararam}
+
+
+@app.get("/tarefas/whatsapp")
+def tarefa_whatsapp():
+    """Rodada das ofertas pelo WhatsApp. Chamada pelo Cron da Vercel em dia útil."""
+    exigir_cron()
+    try:
+        return jsonify(rodar_ofertas_whatsapp())
+    except psycopg.errors.UndefinedTable:
+        app.logger.warning("Ofertas pelo WhatsApp: migração 0020 ainda não aplicada.")
+        return jsonify({"ok": False, "motivo": "migracao_0020_pendente"})
+
+
+@app.get("/webhook/whatsapp")
+def whatsapp_webhook_verificacao():
+    """A Meta confere o endereço do webhook com o token de verificação."""
+    cfg = whatsapp_config()
+    if not cfg["verify"]:
+        abort(503)
+    enviado = request.args.get("hub.verify_token", "").encode("utf-8", "replace")
+    if request.args.get("hub.mode") != "subscribe" or not hmac.compare_digest(enviado, cfg["verify"].encode("utf-8")):
+        abort(403)
+    return request.args.get("hub.challenge", ""), 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.post("/webhook/whatsapp")
+def whatsapp_webhook():
+    """Status e respostas da Cloud API, com a assinatura do app conferida."""
+    cfg = whatsapp_config()
+    if not cfg["app_secret"]:
+        abort(503)
+    corpo = request.get_data()
+    esperado = "sha256=" + hmac.new(cfg["app_secret"].encode("utf-8"), corpo, hashlib.sha256).hexdigest()
+    recebido = request.headers.get("X-Hub-Signature-256", "").encode("utf-8", "replace")
+    if not hmac.compare_digest(recebido, esperado.encode("utf-8")):
+        abort(403)
+    try:
+        dados = json.loads(corpo.decode("utf-8") or "{}")
+    except ValueError:
+        abort(400)
+    if not isinstance(dados, dict):
+        abort(400)
+    try:
+        return jsonify(processar_webhook_whatsapp(dados))
+    except psycopg.errors.UndefinedTable:
+        app.logger.warning("Webhook do WhatsApp: migração 0020 ainda não aplicada.")
+        return jsonify({"ok": False, "motivo": "migracao_0020_pendente"})
+
+
 @app.route("/emails/sair/<token>", methods=["GET", "POST"])
 def email_descadastro(token: str):
     """Descadastro da automação. GET só mostra o botão; quem descadastra é o POST.
@@ -7062,6 +7401,22 @@ _SQL_ADMIN = {
                coalesce(sum(clicks) filter (where store = 'pagina'), 0) as abriram
           from public.download_clicks where day >= %(dia_cliques)s and store <> 'robo'
          group by 1, 2 order by 1, 2""",
+    # Ofertas pelo WhatsApp oficial (migração 0020), 30 dias. "pagaram" = o link
+    # do /pagar que foi na mensagem virou pagamento (marca link_pago:<n>).
+    "whatsapp_ofertas": """
+        select count(*) filter (where direction = 'saida') as enviadas,
+               count(*) filter (where direction = 'saida' and status in ('entregue', 'lido')) as entregues,
+               count(*) filter (where direction = 'saida' and status = 'lido') as lidas,
+               count(*) filter (where direction = 'saida' and status = 'falhou') as falhas,
+               count(*) filter (where direction = 'entrada' and kind = 'parar') as pararam,
+               count(*) filter (where direction = 'entrada' and kind <> 'parar') as responderam,
+               count(*) filter (where direction = 'saida' and link_nonce <> '' and exists (
+                   select 1 from public.rate_limits r where r.key = 'link_pago:' || link_nonce and r.count > 0)) as pagaram
+          from public.whatsapp_messages where created_at >= %(ini_30d)s""",
+    "whatsapp_ultimas": """
+        select w.created_at, w.direction, w.kind, w.status, d.id, d.full_name, d.city
+          from public.whatsapp_messages w join public.drivers d on d.id = w.driver_id
+         order by w.created_at desc limit 15""",
     # Faturamento que entrou pelas lojas (RevenueCat): compras e renovações de
     # produção, em reais. Reembolso chega como CANCELLATION com preço negativo.
     # PRODUCT_CHANGE fica fora: a cobrança da troca chega como compra ou renovação.
@@ -7243,7 +7598,7 @@ _SQL_ADMIN = {
 # Uma linha (fetchone) ou varias (fetchall)?
 _ADMIN_UMA_LINHA = {
     "geral", "recibos_mes", "recibos_estim", "ativacao", "funil", "ticket", "logins",
-    "sessoes", "inativos_30d", "retencao", "ultimo_webhook", "corrida", "estimativas",
+    "sessoes", "inativos_30d", "retencao", "ultimo_webhook", "corrida", "estimativas", "whatsapp_ofertas",
 }
 
 
@@ -7372,6 +7727,7 @@ def montar_dashboard_admin() -> dict:
             d["latencia_ms"] = round((_time.perf_counter() - t0) * 1000, 1)
             _executar_secoes(conn, list(_SQL_ADMIN), params, d)
     d["_tempos"]["total"] = round((_time.perf_counter() - inicio) * 1000)
+    d["whatsapp_estado"] = estado_das_ofertas_whatsapp()
 
     # Series com os dias/meses vazios preenchidos e a barra ja calculada.
     d["novos_por_dia"] = _com_maximo(_serie_dias(d.get("novos_por_dia") or [], 30, ("n",)), "n")
@@ -7613,6 +7969,13 @@ def admin_motorista(driver_id):
                     "select signup_channel from public.drivers where id = %s", (did,)).fetchone()["signup_channel"]
         except Exception:
             canal_cadastro = None  # migração 0018 ainda não aplicada
+        try:
+            with conn.transaction():
+                whatsapp_envios = [dict(w) for w in conn.execute(
+                    """select created_at, direction, kind, status from public.whatsapp_messages
+                        where driver_id = %s order by created_at desc limit 10""", (did,)).fetchall()]
+        except Exception:
+            whatsapp_envios = None  # migração 0020 ainda não aplicada
     recibos = store.list_receipts_by_driver(did, limit=20)
     app.logger.info("admin %s abriu a ficha de %s", g.admin["email"], did)
     # Os links saem do motorista como o store devolve (datas em ISO, id em
@@ -7628,7 +7991,7 @@ def admin_motorista(driver_id):
         limite=FREE_MONTHLY_LIMIT,
         assina_loja=assina_pela_loja(motorista), status_prepago=STATUS_PREPAGO,
         interna=conta_interna(did),
-        canal_cadastro=canal_cadastro,
+        canal_cadastro=canal_cadastro, whatsapp_envios=whatsapp_envios,
         venda=_venda_na_ficha(motorista, request.args) if motorista else None,
     )
 

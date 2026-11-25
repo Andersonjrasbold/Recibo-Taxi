@@ -69,14 +69,14 @@
 {% endmacro %}
 
 {% macro cliques(cg) %}
-<h3 class="adm-h3 mt-4">Cliques no link de download por dia ({{ cg.dias }} dia{{ '' if cg.dias == 1 else 's' }}, {{ cg.total }} no total)</h3>
+<h3 class="adm-h3 mt-4">Cliques no link de download por dia ({{ cg.dias }} dia{{ '' if cg.dias == 1 else 's' }}: {{ cg.total }} foram à loja, {{ cg.abriram }} abriram a página)</h3>
 <div class="adm-legenda">
-  {% for l in cg.linhas %}<span class="adm-legenda-item"><span class="adm-amostra adm-amostra-linha {{ 'linha-total' if l.nome == 'total' else ('linha-outros' if l.nome == 'outros' else 'linha-' ~ l.serie) }}"></span>{{ l.rotulo }} <span class="adm-suave">({{ l.soma }})</span></span>{% endfor %}
+  {% for l in cg.linhas %}<span class="adm-legenda-item"><span class="adm-amostra adm-amostra-linha {{ l.classe }}"></span>{{ l.rotulo }} <span class="adm-suave">({{ l.soma }})</span></span>{% endfor %}
 </div>
 <div class="adm-grafico" data-grafico="linhas">
   <div class="adm-grafico-rolagem">
     <svg viewBox="0 0 {{ cg.largura }} {{ cg.altura }}" role="img" tabindex="0"
-         aria-label="Cliques por dia no link de download, total e por canal. Os números estão na tabela abaixo; use as setas para andar pelos dias.">
+         aria-label="Cliques por dia no link de download: idas à loja, no total e por canal, e quantos abriram a página. Os números estão na tabela abaixo; use as setas para andar pelos dias.">
       <g class="grade">
         {% for t in cg.marcas %}
         <line x1="{{ cg.margem.esq }}" x2="{{ cg.largura - cg.margem.dir }}" y1="{{ '%.1f' | format(t.y) }}" y2="{{ '%.1f' | format(t.y) }}"></line>
@@ -85,10 +85,10 @@
       </g>
       {% for p in cg.rotulos_x %}<text class="marca" x="{{ '%.1f' | format(p.x) }}" y="{{ cg.base + 17 }}" text-anchor="middle">{{ p.rotulo }}</text>{% endfor %}
       {% for l in cg.linhas | reverse %}
-      <polyline class="linha {{ 'linha-total' if l.nome == 'total' else ('linha-outros' if l.nome == 'outros' else 'linha-' ~ l.serie) }}" points="{{ l.pontos }}"></polyline>
+      <polyline class="linha {{ l.classe }}" points="{{ l.pontos }}"></polyline>
       {% endfor %}
       {% set total = cg.linhas[0] %}
-      {% if cg.serie %}<text class="rotulo" x="{{ '%.1f' | format(cg.serie[-1].x - 4) }}" y="{{ '%.1f' | format(total.fim_y - 8) }}" text-anchor="end">Total: {{ cg.serie[-1].total }} hoje</text>{% endif %}
+      {% if cg.serie %}<text class="rotulo" x="{{ '%.1f' | format(cg.serie[-1].x - 4) }}" y="{{ '%.1f' | format(total.fim_y - 8) }}" text-anchor="end">Foram à loja: {{ cg.serie[-1].total }} hoje</text>{% endif %}
       <line class="mira" x1="0" x2="0" y1="{{ cg.margem.topo }}" y2="{{ cg.base }}"></line>
       <line class="eixo" x1="{{ cg.margem.esq }}" x2="{{ cg.largura - cg.margem.dir }}" y1="{{ cg.base }}" y2="{{ cg.base }}"></line>
       <rect class="alvo-mira" x="{{ cg.margem.esq }}" y="{{ cg.margem.topo }}" width="{{ cg.largura - cg.margem.esq - cg.margem.dir }}" height="{{ cg.base - cg.margem.topo }}"></rect>
@@ -100,9 +100,9 @@
 <details class="adm-detalhes">
   <summary>Ver os cliques em tabela</summary>
   <div class="table-responsive"><table class="adm-tabela adm-tabela-mini">
-    <thead><tr><th>Dia</th><th class="adm-num">Total</th>{% for c in cg.canais %}<th class="adm-num">{{ c }}</th>{% endfor %}</tr></thead>
+    <thead><tr><th>Dia</th><th class="adm-num">Foram à loja</th>{% for c in cg.canais %}<th class="adm-num">{{ c }}</th>{% endfor %}<th class="adm-num">Abriram a página</th></tr></thead>
     <tbody>{% for p in cg.serie | reverse %}
-    <tr><td>{{ p.dia.strftime('%d/%m/%Y') }}</td><td class="adm-num"><strong>{{ p.total }}</strong></td>{% for c in cg.canais %}<td class="adm-num">{{ p.canais[c] }}</td>{% endfor %}</tr>
+    <tr><td>{{ p.dia.strftime('%d/%m/%Y') }}</td><td class="adm-num"><strong>{{ p.total }}</strong></td>{% for c in cg.canais %}<td class="adm-num">{{ p.canais[c] }}</td>{% endfor %}<td class="adm-num">{{ p.abriram }}</td></tr>
     {% endfor %}</tbody>
   </table></div>
 </details>
@@ -163,7 +163,8 @@
         var p = dados[atual];
         mira.setAttribute('x1', p.x); mira.setAttribute('x2', p.x); mira.style.display = 'block';
         var linhas = p.canais.map(function (c, k) { return { classe: classeDo(c[0], k), valor: String(c[1]), rotulo: c[0] }; });
-        montarDica(dica, p.titulo, p.total + ' clique' + (p.total === 1 ? '' : 's'), linhas);
+        if (p.abriram !== undefined) { linhas.push({ classe: 'linha-abriram', valor: String(p.abriram), rotulo: 'abriram a página' }); }
+        montarDica(dica, p.titulo, p.total + (p.total === 1 ? ' foi' : ' foram') + ' à loja', linhas);
         if (xTela === undefined) {
           var m = svg.getScreenCTM();
           var pt = svg.createSVGPoint(); pt.x = p.x; pt.y = 40;

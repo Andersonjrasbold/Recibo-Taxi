@@ -1674,7 +1674,7 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
 /* As cores moram no painel inteiro: a legenda fica fora do gráfico. */
 .admin-shell {
   --serie-1:#3987e5; --serie-2:#d95926; --serie-3:#199e70; --serie-4:#c98500; --serie-5:#d55181; --serie-6:#0ca30c;
-  --serie-outros:#898781; --serie-total:#f0efec;
+  --serie-outros:#898781; --serie-total:#f0efec; --serie-abriram:#b79cf5;
   --grade:rgba(255,244,236,.08); --eixo:rgba(255,244,236,.24); --texto-mudo:rgba(255,244,236,.55);
 }
 .adm-grafico { position:relative; margin:.25rem 0 .5rem; }
@@ -1704,6 +1704,8 @@ select.form-control-db { background-color: rgba(255,255,255,.78); color: var(--i
 .linha-6 { stroke:var(--serie-6); background:var(--serie-6); }
 .linha-outros { stroke:var(--serie-outros); background:var(--serie-outros); }
 .linha-total { stroke:var(--serie-total); background:var(--serie-total); }
+.linha-abriram { stroke:var(--serie-abriram); background:repeating-linear-gradient(90deg, var(--serie-abriram) 0 5px, transparent 5px 8px); }
+.adm-grafico .linha-abriram { stroke-dasharray:6 4; }
 .adm-grafico .mira { stroke:rgba(255,244,236,.4); stroke-width:1; display:none; }
 .adm-grafico svg:focus { outline:2px solid rgba(255,197,49,.6); outline-offset:4px; border-radius:6px; }
 .adm-legenda { display:flex; flex-wrap:wrap; gap:.35rem 1.1rem; margin:.4rem 0 .2rem; font-size:.8rem; color:rgba(255,244,236,.78); }

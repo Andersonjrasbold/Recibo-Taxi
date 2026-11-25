@@ -2515,8 +2515,13 @@ ROBO_RE = re.compile(
 
 
 def _canal_e_codigo_do_baixar() -> tuple[str, str]:
-    """`?c=CANAL` e `?i=CÓDIGO` do /baixar, já conferidos ("" quando não servem)."""
-    canal = canal_de_cadastro(request.args.get("c"))
+    """`?c=CANAL` e `?i=CÓDIGO` do /baixar, já conferidos ("" quando não servem).
+
+    Sem `c`, vale o `utm_source` do link, no mesmo padrão: os anúncios da Meta
+    chegam com `utm_source=ig` (ou `fb`, `an`, `msg`) e sem `c`, e até
+    2026-11-25 caíam todos em "direto". Fora do padrão, "direto".
+    """
+    canal = canal_de_cadastro(request.args.get("c")) or canal_de_cadastro(request.args.get("utm_source"))
     # `i` = código de quem indicou (vem da página do convite). Só com canal, e
     # só no formato do código; segue ao Play em utm_content.
     codigo = request.args.get("i", "").strip().upper()
@@ -2607,8 +2612,8 @@ def baixar_app():
     anúncio, e-mail). O canal segue para a loja — no Play dentro do `referrer`,
     que o Play Console mostra como "Origem do UTM"; na App Store em `ct`, que
     o App Store Connect mostra em Analytics → Campaigns — e é somado aqui por
-    dia, canal e loja. Sem `c`, ou com um valor fora do padrão, vai à ficha
-    pura da loja.
+    dia, canal e loja. Sem `c` nem `utm_source`, ou com um valor fora do
+    padrão, vai à ficha pura da loja.
     """
     canal, codigo = _canal_e_codigo_do_baixar()
     loja = request.args.get("loja", "")
@@ -6873,15 +6878,21 @@ def montar_faturamento(d: dict, agora: datetime | None = None, da_stripe=None) -
 
 
 def montar_cliques_por_dia(linhas: list[dict] | None, hoje=None) -> dict | None:
-    """Cliques no /baixar por dia: o total e os canais que mais trouxeram."""
+    """Cliques no /baixar por dia: idas à loja (total e por canal) e, à parte,
+    quantos abriram a página (`abriram`, desde 2026-11-22; antes a visita já
+    era a ida à loja)."""
     if linhas is None:
         return None
     hoje = hoje or datetime.now(BR_TZ).date()
     por_canal: dict[str, int] = {}
+    abriram_no_dia: dict[str, int] = {}
     for linha in linhas:
         por_canal[linha["canal"]] = por_canal.get(linha["canal"], 0) + int(linha["n"] or 0)
-    # Ordem fixa pelo volume do período: a cor segue o canal, não a posição do dia.
-    ordem = sorted(por_canal, key=lambda c: (-por_canal[c], c))
+        dia = str(linha["dia"])
+        abriram_no_dia[dia] = abriram_no_dia.get(dia, 0) + int(linha.get("abriram") or 0)
+    # Ordem fixa pelo volume do período: a cor segue o canal, não a posição do
+    # dia. Canal sem ida à loja (só abriu a página) não ganha linha.
+    ordem = sorted((c for c in por_canal if por_canal[c] > 0), key=lambda c: (-por_canal[c], c))
     canais = ordem[:CLIQUES_CANAIS]
     nomes = canais + (["outros"] if len(ordem) > len(canais) else [])
     # Começa no primeiro dia com clique: antes disso não havia contagem, e um
@@ -6896,13 +6907,14 @@ def montar_cliques_por_dia(linhas: list[dict] | None, hoje=None) -> dict | None:
     serie = []
     for dia in dias:
         por_dia = {nome: valores.get((dia.isoformat(), nome), 0) for nome in nomes}
-        serie.append({"dia": dia, "rotulo": dia.strftime("%d/%m"), "canais": por_dia, "total": sum(por_dia.values())})
+        serie.append({"dia": dia, "rotulo": dia.strftime("%d/%m"), "canais": por_dia, "total": sum(por_dia.values()),
+                      "abriram": abriram_no_dia.get(dia.isoformat(), 0)})
 
     margem = GRAFICO_MARGEM
     largura_util = GRAFICO_LARGURA - margem["esq"] - margem["dir"]
     altura_util = GRAFICO_ALTURA - margem["topo"] - margem["base"]
     base = margem["topo"] + altura_util
-    topo_eixo, marcas = _escala(float(max((p["total"] for p in serie), default=0)))
+    topo_eixo, marcas = _escala(float(max((max(p["total"], p["abriram"]) for p in serie), default=0)))
     passo_x = largura_util / max(len(serie) - 1, 1)
     for i, p in enumerate(serie):
         p["x"] = margem["esq"] + i * passo_x if len(serie) > 1 else margem["esq"] + largura_util / 2
@@ -6910,22 +6922,28 @@ def montar_cliques_por_dia(linhas: list[dict] | None, hoje=None) -> dict | None:
     def linha_de(chave_valor) -> str:
         return " ".join(f"{p['x']:.1f},{base - chave_valor(p) / topo_eixo * altura_util:.1f}" for p in serie)
 
-    linhas_svg = [{"nome": "total", "rotulo": "Total", "pontos": linha_de(lambda p: p["total"]),
+    linhas_svg = [{"nome": "total", "rotulo": "Foram à loja (total)", "classe": "linha-total",
+                   "pontos": linha_de(lambda p: p["total"]),
                    "fim_y": base - serie[-1]["total"] / topo_eixo * altura_util if serie else base,
                    "soma": sum(p["total"] for p in serie)}]
     for i, nome in enumerate(nomes):
         linhas_svg.append({"nome": nome, "rotulo": nome, "serie": i + 1,
+                           "classe": "linha-outros" if nome == "outros" else f"linha-{i + 1}",
                            "pontos": linha_de(lambda p, n=nome: p["canais"][n]),
                            "soma": sum(p["canais"][nome] for p in serie)})
+    # Tracejada: quem abriu a página (desde 2026-11-22). Não soma com as idas
+    # à loja: quem tocou no botão está nas duas.
+    linhas_svg.append({"nome": "abriram", "rotulo": "Abriram a página", "classe": "linha-abriram",
+                       "pontos": linha_de(lambda p: p["abriram"]), "soma": sum(p["abriram"] for p in serie)})
     rotulos_x = [p for i, p in enumerate(serie) if i % 7 == (len(serie) - 1) % 7]
     # O que a dica mostra em cada dia (o JavaScript só lê; tudo está na tabela).
     dados_js = [{"x": round(p["x"], 1), "titulo": p["dia"].strftime("%d/%m/%Y"), "total": p["total"],
-                 "canais": [[nome, p["canais"][nome]] for nome in nomes]} for p in serie]
+                 "abriram": p["abriram"], "canais": [[nome, p["canais"][nome]] for nome in nomes]} for p in serie]
     return {
         "serie": serie, "canais": nomes, "linhas": linhas_svg, "rotulos_x": rotulos_x, "dados_js": dados_js,
         "marcas": [{"valor": v, "y": base - v / topo_eixo * altura_util} for v in marcas],
         "largura": GRAFICO_LARGURA, "altura": GRAFICO_ALTURA, "base": base, "margem": margem,
-        "total": sum(p["total"] for p in serie), "dias": len(serie),
+        "total": sum(p["total"] for p in serie), "abriram": sum(p["abriram"] for p in serie), "dias": len(serie),
     }
 
 
@@ -7035,11 +7053,14 @@ _SQL_ADMIN = {
           from public.download_clicks where day >= %(dia_30d)s
          group by channel, store order by n desc, channel limit 20""",
     # O mesmo, dia a dia e só por canal (o aparelho fica de fora), para o gráfico.
-    # Só as idas à loja: a visita à página ('pagina', desde 2026-11-22) somada
-    # ao toque no botão contaria a mesma pessoa duas vezes.
+    # `n` são as idas à loja; `abriram`, as visitas à página ('pagina', desde
+    # 2026-11-22), à parte: somadas ao toque no botão contariam a mesma pessoa
+    # duas vezes. Robô fica fora das duas.
     "cliques_dia": """
-        select day as dia, channel as canal, sum(clicks) as n
-          from public.download_clicks where day >= %(dia_cliques)s and store not in ('pagina', 'robo')
+        select day as dia, channel as canal,
+               coalesce(sum(clicks) filter (where store <> 'pagina'), 0) as n,
+               coalesce(sum(clicks) filter (where store = 'pagina'), 0) as abriram
+          from public.download_clicks where day >= %(dia_cliques)s and store <> 'robo'
          group by 1, 2 order by 1, 2""",
     # Faturamento que entrou pelas lojas (RevenueCat): compras e renovações de
     # produção, em reais. Reembolso chega como CANCELLATION com preço negativo.

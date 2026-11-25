@@ -133,6 +133,15 @@ def link_play_com_canal(canal: str, conteudo: str = "") -> str:
     return f"{PLAY_STORE_URL}&referrer={quote(utm, safe='')}"
 
 
+def qr_svg(texto: str) -> str:
+    """QR como SVG inline: a CSP só deixa imagem de 'self' e data:, e um SVG no
+    HTML dispensa as duas. Só o desenho; o tamanho e o fundo vêm do CSS."""
+    import qrcode
+    import qrcode.image.svg
+    imagem = qrcode.make(texto, image_factory=qrcode.image.svg.SvgPathImage, box_size=10, border=2)
+    return imagem.to_string(encoding="unicode")
+
+
 def link_appstore_com_canal(canal: str) -> str:
     """Ficha da App Store com o canal em `ct`; sem o token da conta, a ficha pura."""
     if not APPLE_PROVIDER_TOKEN:
@@ -2462,9 +2471,23 @@ def _loja_do_aparelho() -> str:
     return ""
 
 
+def _agente_e_robo(agente: str) -> bool:
+    """Robô conhecido, ou agente que navegador nenhum manda.
+
+    Todo navegador (e todo WebView) começa o User-Agent com "Mozilla/"; curl,
+    python-requests, Go, Java, as prévias de link e o agente vazio, não. Até
+    2026-11-24 só a lista fechada ficava de fora e o resto caía em
+    "computador": o painel chegou a 1.000 cliques de "computador" em 30 dias,
+    sem anúncio nenhum para computador.
+    """
+    return bool(ROBO_RE.search(agente)) or "Mozilla/" not in agente
+
+
 def _contar_baixar(canal: str, loja: str) -> None:
-    if ROBO_RE.search(request.headers.get("User-Agent", "")):
-        return
+    # Robô conta à parte, como loja "robo": somado, dá para ver quanto do
+    # tráfego é máquina; fora da conta, ele sumia no meio de "computador".
+    if _agente_e_robo(request.headers.get("User-Agent", "")):
+        loja = "robo"
     try:
         get_store().bump_download_click(today_br(), canal or "direto", loja)
     except Exception as exc:  # contar nunca pode impedir a página nem a ida à loja
@@ -2481,19 +2504,25 @@ def baixar_pagina():
     play.google.com. Agora o destino fica no site; a loja só abre no toque.
 
     O botão da loja do aparelho vem primeiro (no computador, os dois lado a
-    lado) e leva ao /baixar/ir com o canal e o código, que conta e segue à
-    loja. A visita é somada como loja "pagina": o painel mostra quantos
-    abriram a página e quantos foram à loja, por canal.
+    lado, mais um QR que leva o celular ao /baixar/ir) e leva ao /baixar/ir
+    com o canal e o código, que conta e segue à loja. A visita é somada como
+    loja "pagina": o painel mostra quantos abriram a página e quantos foram à
+    loja, por canal.
     """
     canal, codigo = _canal_e_codigo_do_baixar()
     _contar_baixar(canal, "pagina")
     extra = {"c": canal or None, "i": codigo or None}
+    loja_do_aparelho = _loja_do_aparelho()
     return render_template(
         "baixar.html",
-        loja_do_aparelho=_loja_do_aparelho(),
+        loja_do_aparelho=loja_do_aparelho,
         link_appstore=url_for("baixar_app", loja="appstore", **extra),
         link_play=url_for("baixar_app", loja="play", **extra),
         link_cadastro=url_for("cadastro", indicacao=codigo) if codigo else url_for("cadastro"),
+        # No computador, o QR leva o celular ao /baixar/ir com o mesmo canal e
+        # código: a loja abre no aparelho certo e o toque conta como Android ou
+        # iPhone, não como "computador".
+        qr=qr_svg(absolute_url("baixar_app", **extra)) if not loja_do_aparelho else "",
     )
 
 
@@ -6838,6 +6867,7 @@ _SQL_ADMIN = {
     "cliques_canal": """
         select channel || ' · ' || case store when 'play' then 'Android' when 'appstore' then 'iPhone'
                                                when 'pagina' then 'abriu a página'
+                                               when 'robo' then 'robôs'
                                                else 'computador' end as canal,
                sum(clicks) as n
           from public.download_clicks where day >= %(dia_30d)s
@@ -6847,7 +6877,7 @@ _SQL_ADMIN = {
     # ao toque no botão contaria a mesma pessoa duas vezes.
     "cliques_dia": """
         select day as dia, channel as canal, sum(clicks) as n
-          from public.download_clicks where day >= %(dia_cliques)s and store <> 'pagina'
+          from public.download_clicks where day >= %(dia_cliques)s and store not in ('pagina', 'robo')
          group by 1, 2 order by 1, 2""",
     # Faturamento que entrou pelas lojas (RevenueCat): compras e renovações de
     # produção, em reais. Reembolso chega como CANCELLATION com preço negativo.
@@ -7050,6 +7080,26 @@ def _executar_secoes(conn, nomes: list[str], params: dict, dados: dict) -> None:
         dados["_tempos"][nome] = round((_time.perf_counter() - inicio) * 1000)
 
 
+def _modo_da_chave_stripe(chave: str) -> str:
+    """Rótulo da chave secreta da Stripe na saúde do painel, só pelo prefixo.
+
+    `sk_live_` é a chave padrão e `rk_live_` a chave restrita: as duas cobram
+    de verdade. O site usa uma restrita, e até 2026-11-24 o painel a rotulava
+    "modo teste" (só conhecia `sk_live_`), o que virou um alarme falso de
+    "ninguém está sendo cobrado". `sk_test_`/`rk_test_` são o sandbox. Outro
+    prefixo é chave errada: já aconteceu de colar a `pk_` no lugar.
+    """
+    if not chave:
+        return ""
+    if chave.startswith("sk_live_"):
+        return "modo live"
+    if chave.startswith("rk_live_"):
+        return "modo live (chave restrita)"
+    if chave.startswith(("sk_test_", "rk_test_")):
+        return "modo teste: ninguém é cobrado"
+    return "prefixo desconhecido: confira a chave"
+
+
 def _saude_do_sistema() -> dict:
     """Configuracao presente ou ausente. Nunca o valor — so booleano e prefixo."""
     def tem(nome: str) -> bool:
@@ -7058,8 +7108,7 @@ def _saude_do_sistema() -> dict:
     stripe_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
     return {
         "integracoes": [
-            ("Stripe (chave secreta)", bool(stripe_key),
-             "modo live" if stripe_key.startswith("sk_live_") else "modo teste" if stripe_key else ""),
+            ("Stripe (chave secreta)", bool(stripe_key), _modo_da_chave_stripe(stripe_key)),
             ("Stripe (webhook)", tem("STRIPE_WEBHOOK_SECRET"), ""),
             ("Stripe (preço Pro mensal)", tem("STRIPE_PRO_PRICE_ID"), ""),
             ("Stripe (preço Pro anual)", tem("STRIPE_PRO_ANUAL_PRICE_ID"), ""),

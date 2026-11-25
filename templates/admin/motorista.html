@@ -21,6 +21,7 @@
         <tr><td>Prefixo · alvará</td><td>{{ m.taxi_prefix or '-' }} · {{ m.license_number or '-' }}</td></tr>
         <tr><td>Cooperativa · CNPJ</td><td>{{ m.coop_name or '-' }} · {{ m.coop_cnpj or '-' }}</td></tr>
         <tr><td>Cadastro</td><td>{{ m.created_at | data_br }}</td></tr>
+        <tr><td>Canal do cadastro</td><td>{{ canal_cadastro or '-' }}</td></tr>
         <tr><td>Senha alterada</td><td>{{ m.password_changed_at | data_br }}</td></tr>
         <tr><td>Último login</td><td>{{ m.last_sign_in_at | data_br }}</td></tr>
         <tr><td>Sessões vivas</td><td>{{ sessoes if sessoes is not none else '-' }}</td></tr>

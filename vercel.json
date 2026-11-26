@@ -28,6 +28,10 @@
     {
       "path": "/tarefas/emails",
       "schedule": "5 * * * *"
+    },
+    {
+      "path": "/tarefas/crm",
+      "schedule": "*/15 * * * *"
     }
   ],
   "regions": [

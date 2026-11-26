@@ -440,6 +440,15 @@ PLANOS_DO_LINK = {
 # o representante de vendas só começam nesta data, e o aviso vai por e-mail.
 POLITICA_ATUALIZADA_EM = "21 de novembro de 2026"
 CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
+# Integração com o PilotPostAi (CRM e atendimento da mesma empresa): cada
+# motorista vira cliente da conta do suporte lá (migração 0021). Um trigger em
+# `drivers` enfileira criação, alteração, "parar ofertas" e exclusão em
+# crm_sync; o envio (/tarefas/crm a cada 15 min, e logo depois do cadastro)
+# manda o estado ATUAL do motorista, não o evento antigo. Desligado sem
+# CRM_URL + CRM_SECRET na Vercel. Vai só o que a Política dá ao atendimento:
+# nome, WhatsApp, e-mail, cidade, UF, plano, canal e opt-out. Nunca CPF,
+# placa, recibos ou pagamentos.
+CRM_POR_RODADA = 50
 # Marca, no app_metadata do Supabase Auth, a conta que o painel criou. O
 # app_metadata o motorista não consegue editar (o user_metadata, sim).
 MARCA_CRIADO_PELO_PAINEL = "criado_pelo_painel"
@@ -2770,6 +2779,7 @@ def cadastro():
             "plate": plate, "vehicle_model": vehicle_model, "country": pais, "currency": moeda,
             "canal": canal,
         }, "site")
+        sincronizar_crm_agora(user_id)
         session["user_id"] = user_id
         session["pw_stamp"] = ""
         registrar_acesso(user_id, "site_cadastro")
@@ -3036,6 +3046,7 @@ def excluir_conta():
 
     # Apagar no Auth basta: o cascade leva perfil, recibos e cotas.
     auth_excluir_usuario(g.user["_id"])
+    sincronizar_crm_agora(g.user["_id"])  # o trigger já anotou a exclusão; o CRM anonimiza na hora
     session.clear()
 
     flash(
@@ -4650,6 +4661,7 @@ def api_excluir_conta():
         return jsonify({"erro": "assinatura_na_loja"}), 409
 
     auth_excluir_usuario(g.user["_id"])
+    sincronizar_crm_agora(g.user["_id"])
     return jsonify({"excluida": True})
 
 
@@ -4785,6 +4797,7 @@ def api_cadastro():
         "city": campos["cidade"], "plate": campos["placa"], "vehicle_model": campos["modelo_veiculo"],
         "country": pais, "currency": moeda, "canal": canal,
     }, "app")
+    sincronizar_crm_agora(user_id)
     tokens = auth_entrar_com_token(campos["email"], campos["senha"])
     if not tokens:
         return jsonify({"erro": "criado_sem_login"}), 500
@@ -6167,6 +6180,164 @@ def tarefa_emails():
         raise
 
 
+# ---------------------------------------------------------------------------
+# CRM (PilotPostAi): fila crm_sync → POST /internal/integracoes/recibo-taxi/clientes
+# ---------------------------------------------------------------------------
+
+def crm_config() -> dict:
+    """Endereço e segredo do PilotPostAi, lidos na hora (variáveis da Vercel)."""
+    return {"url": os.environ.get("CRM_URL", "").strip(), "secret": os.environ.get("CRM_SECRET", "").strip()}
+
+
+def crm_configurado(cfg: dict | None = None) -> bool:
+    cfg = cfg or crm_config()
+    return bool(cfg["url"] and cfg["secret"])
+
+
+def _crm_evento(linhas: list) -> str:
+    """Vários eventos pendentes do mesmo motorista viram um: exclusão vence,
+    depois criação, depois "parar ofertas"; o resto é alteração."""
+    eventos = {l["event"] for l in linhas}
+    if "deleted" in eventos:
+        return "driver.deleted"
+    if "created" in eventos:
+        return "driver.created"
+    if "opted_out" in eventos:
+        return "driver.opted_out"
+    return "driver.updated"
+
+
+def payload_crm(conn, driver_id: str, evento: str, event_id: str) -> dict | None:
+    """O que o PilotPostAi recebe: o estado atual do motorista, só os campos que
+    a Política dá ao atendimento. None se o motorista sumiu sem o evento de
+    exclusão ainda (ele vem logo atrás)."""
+    agora = datetime.now(timezone.utc).isoformat()
+    if evento == "driver.deleted":
+        return {"event": evento, "event_id": event_id, "occurred_at": agora, "external_id": str(driver_id)}
+    linha = conn.execute(
+        """select id, full_name, email, whatsapp, city, state, country, plan, subscription_status,
+                  signup_channel, created_at, marketing_optout_at
+             from public.drivers where id = %s""", (str(driver_id),)).fetchone()
+    if not linha:
+        return None
+    criado = linha["created_at"]
+    return {
+        "event": evento,
+        "event_id": event_id,
+        "occurred_at": agora,
+        "external_id": str(linha["id"]),
+        "name": (linha["full_name"] or "").strip(),
+        "phone": phone_e164(linha["whatsapp"] or "", linha["country"] or PAIS_PADRAO),
+        "email": normalize_email(linha["email"] or ""),
+        "city": (linha["city"] or "").strip(),
+        "state": (linha["state"] or "").strip().upper(),
+        "plan": linha["plan"] or "free",
+        "plan_status": linha["subscription_status"] or "",
+        "signup_channel": linha["signup_channel"] or "",
+        "signup_at": criado.isoformat() if hasattr(criado, "isoformat") else str(criado or ""),
+        "whatsapp_opt_out": linha["marketing_optout_at"] is not None,
+        # Termos e Política de hoje já cobrem as ofertas por WhatsApp com o
+        # "SAIR"; o cadastro do site diz isso em letras. Quem pediu para parar
+        # chega com o opt-out marcado, e o PilotPostAi zera o aceite.
+        "marketing_consent": True,
+    }
+
+
+def montar_pedido_crm(cfg: dict, payload: dict) -> urllib.request.Request:
+    """POST assinado como o PilotPostAi confere: Bearer e HMAC-SHA256 do corpo cru."""
+    corpo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    assinatura = "sha256=" + hmac.new(cfg["secret"].encode("utf-8"), corpo, hashlib.sha256).hexdigest()
+    return urllib.request.Request(
+        cfg["url"], data=corpo, method="POST",
+        headers={"Authorization": f"Bearer {cfg['secret']}", "X-Recibo-Signature": assinatura,
+                 "Content-Type": "application/json", "User-Agent": "ReciboTaxi-CRM/1"})
+
+
+def enviar_crm_http(cfg: dict, payload: dict, timeout: int = 10) -> tuple[int, str]:
+    """(status HTTP, começo do corpo). 0 = nem chegou (rede, DNS, tempo)."""
+    try:
+        with urllib.request.urlopen(montar_pedido_crm(cfg, payload), timeout=timeout) as resposta:
+            return resposta.status, resposta.read().decode("utf-8", "replace")[:300]
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")[:300]
+    except Exception as exc:  # rede, DNS, tempo esgotado
+        return 0, str(exc)[:300]
+
+
+def processar_fila_crm(limite: int = CRM_POR_RODADA, driver_id: str | None = None, timeout: int = 10) -> dict:
+    """Manda ao PilotPostAi o que está pendente em crm_sync, um envio por motorista.
+
+    2xx marca tudo como enviado. 400 é corpo que nunca vai dar certo: marca
+    como enviado com o erro anotado, sem repetir. O resto (401, 5xx, rede)
+    fica na fila com espera dobrada a cada tentativa, até um dia.
+    """
+    cfg = crm_config()
+    if not crm_configurado(cfg):
+        return {"ok": True, "enviados": 0, "motivo": "nao_configurado"}
+    enviados = falhas = descartados = 0
+    with get_store().pool.connection() as conn:
+        filtro = "and driver_id = %(did)s" if driver_id else ""
+        pendentes = conn.execute(
+            f"""select id, driver_id, event, attempts from public.crm_sync
+                 where sent_at is null and next_try_at <= now() {filtro}
+                 order by id limit %(n)s""",
+            {"n": limite * 5, "did": str(driver_id) if driver_id else None}).fetchall()
+        por_motorista: dict[str, list] = {}
+        for l in pendentes:
+            por_motorista.setdefault(str(l["driver_id"]), []).append(l)
+        for did, linhas in list(por_motorista.items())[:limite]:
+            ids = [l["id"] for l in linhas]
+            evento = _crm_evento(linhas)
+            payload = payload_crm(conn, did, evento, f"crm-{max(ids)}")
+            if payload is None:
+                continue  # motorista apagado sem o 'deleted' ainda: a próxima rodada pega
+            status, corpo = enviar_crm_http(cfg, payload, timeout=timeout)
+            if 200 <= status < 300:
+                conn.execute("update public.crm_sync set sent_at = now(), last_error = '' where id = any(%s)", (ids,))
+                enviados += 1
+            elif status == 400:
+                conn.execute("update public.crm_sync set sent_at = now(), last_error = %s where id = any(%s)",
+                             (f"400: {corpo}"[:300], ids))
+                descartados += 1
+                app.logger.warning("CRM recusou o motorista %s: %s", did, corpo)
+            else:
+                tentativas = max(l["attempts"] for l in linhas) + 1
+                espera_min = min(5 * 2 ** tentativas, 24 * 60)
+                conn.execute(
+                    """update public.crm_sync set attempts = %s, last_error = %s,
+                              next_try_at = now() + make_interval(mins => %s::int) where id = any(%s)""",
+                    (tentativas, f"{status}: {corpo}"[:300], espera_min, ids))
+                falhas += 1
+                app.logger.warning("CRM: envio do motorista %s falhou (%s); tentativa %s, de novo em %s min",
+                                   did, status, tentativas, espera_min)
+    if enviados or descartados:
+        _ADMIN_CACHE.pop("dashboard", None)
+    return {"ok": True, "enviados": enviados, "falhas": falhas, "descartados": descartados}
+
+
+def sincronizar_crm_agora(driver_id) -> None:
+    """Logo depois do cadastro, do "parar ofertas" e da exclusão: tenta mandar na
+    hora, com prazo curto. O que falhar fica na fila para o cron. Nunca derruba
+    a requisição que a chamou."""
+    if not crm_configurado():
+        return
+    try:
+        processar_fila_crm(limite=1, driver_id=str(driver_id), timeout=4)
+    except Exception as exc:  # fila ausente (migração 0021), banco fora, etc.
+        app.logger.warning("CRM: envio imediato de %s falhou: %s", driver_id, exc)
+
+
+@app.get("/tarefas/crm")
+def tarefa_crm():
+    """Rodada da fila do CRM. Chamada pelo Cron da Vercel a cada 15 minutos."""
+    exigir_cron()
+    try:
+        return jsonify(processar_fila_crm())
+    except psycopg.errors.UndefinedTable:
+        app.logger.warning("CRM: migração 0021 ainda não aplicada.")
+        return jsonify({"ok": False, "motivo": "migracao_0021_pendente"})
+
+
 @app.route("/emails/sair/<token>", methods=["GET", "POST"])
 def email_descadastro(token: str):
     """Descadastro da automação. GET só mostra o botão; quem descadastra é o POST.
@@ -7062,6 +7233,15 @@ _SQL_ADMIN = {
                coalesce(sum(clicks) filter (where store = 'pagina'), 0) as abriram
           from public.download_clicks where day >= %(dia_cliques)s and store <> 'robo'
          group by 1, 2 order by 1, 2""",
+    # Fila do CRM (PilotPostAi, migração 0021): o que espera envio e o que falhou.
+    "crm_fila": """
+        select count(*) filter (where sent_at is null) as pendentes,
+               count(*) filter (where sent_at is null and attempts > 0) as com_falha,
+               count(*) filter (where sent_at >= now() - interval '24 hours' and last_error = '') as enviados_24h,
+               count(*) filter (where sent_at is not null and last_error <> '') as descartados,
+               (select last_error from public.crm_sync where last_error <> '' order by id desc limit 1) as ultimo_erro,
+               (select max(sent_at) from public.crm_sync where last_error = '') as ultimo_envio
+          from public.crm_sync""",
     # Faturamento que entrou pelas lojas (RevenueCat): compras e renovações de
     # produção, em reais. Reembolso chega como CANCELLATION com preço negativo.
     # PRODUCT_CHANGE fica fora: a cobrança da troca chega como compra ou renovação.
@@ -7243,7 +7423,7 @@ _SQL_ADMIN = {
 # Uma linha (fetchone) ou varias (fetchall)?
 _ADMIN_UMA_LINHA = {
     "geral", "recibos_mes", "recibos_estim", "ativacao", "funil", "ticket", "logins",
-    "sessoes", "inativos_30d", "retencao", "ultimo_webhook", "corrida", "estimativas",
+    "sessoes", "inativos_30d", "retencao", "ultimo_webhook", "corrida", "estimativas", "crm_fila",
 }
 
 
@@ -7301,6 +7481,8 @@ def _saude_do_sistema() -> dict:
             ("RevenueCat (webhook)", tem("REVENUECAT_WEBHOOK_SECRET"), ""),
             ("Cron de limpeza", tem("CRON_SECRET"), "04:00 UTC, diário"),
             ("Cron da automação de e-mails", tem("CRON_SECRET"), "de hora em hora"),
+            ("Cron do CRM (PilotPostAi)", tem("CRON_SECRET"), "a cada 15 minutos"),
+            ("CRM PilotPostAi (CRM_URL + CRM_SECRET)", crm_configurado(), os.environ.get("CRM_URL", "").strip()[:70]),
             ("Resposta dos e-mails automáticos (EMAIL_REPLY_TO)", tem("EMAIL_REPLY_TO"),
              os.environ.get("EMAIL_REPLY_TO", "").strip()),
             ("Avisos para a equipe (cadastro e assinatura)", bool(os.environ.get("EMAIL_AVISOS", EMAIL_AVISOS_PADRAO).strip()),
@@ -7676,6 +7858,7 @@ def admin_excluir_motorista(driver_id):
     try:
         # O cascade do Auth leva perfil, recibos e cotas junto.
         auth_excluir_usuario(did)
+        sincronizar_crm_agora(did)
     except Exception as exc:
         app.logger.error("admin: falha ao excluir %s no Auth: %s", did, exc)
         flash("O Supabase recusou a exclusão. Nada foi apagado; tente de novo.", "danger")
@@ -7762,10 +7945,29 @@ def admin_sem_ofertas(driver_id):
     if not linha:
         abort(404)
     _ADMIN_CACHE.pop("dashboard", None)
+    sincronizar_crm_agora(did)
     app.logger.warning("admin %s marcou %s como sem ofertas", g.admin["email"], did)
     flash("Pronto: este motorista não recebe mais ofertas por e-mail, WhatsApp nem telefone. "
           "Tire o nome dele da lista do vendedor.", "success")
     return redirect(url_for("admin_motorista", driver_id=did))
+
+
+@app.post("/admin/crm/enfileirar-todos")
+@admin_required
+def admin_crm_enfileirar_todos():
+    """Carga inicial (e reenvio geral) do CRM: todo motorista entra na fila como
+    'created'. O PilotPostAi é idempotente pela chave do motorista, então
+    repetir só atualiza. O cron manda em lotes de CRM_POR_RODADA a cada 15 min."""
+    try:
+        with get_store().pool.connection() as conn:
+            n = conn.execute("insert into public.crm_sync (driver_id, event) select id, 'created' from public.drivers").rowcount
+    except psycopg.errors.UndefinedTable:
+        flash("A fila do CRM ainda não existe no banco: rode a migração 0021 antes.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    _ADMIN_CACHE.pop("dashboard", None)
+    app.logger.warning("admin %s enfileirou %s motorista(s) para o CRM", g.admin["email"], n)
+    flash(f"{n} motorista(s) na fila do CRM. O envio sai em lotes de {CRM_POR_RODADA} a cada 15 minutos.", "success")
+    return redirect(url_for("admin_dashboard"))
 
 
 # ── Painel: vender o Pro (link de pagamento, cadastro e formulário) ──────────
@@ -7969,6 +8171,7 @@ def admin_motorista_novo():
 
     guardar_cooperativa(user_id, coop_name, coop_cnpj)
     avisar_novo_cadastro(user_id, {**dados, "email": email}, "painel")
+    sincronizar_crm_agora(user_id)
     _ADMIN_CACHE.pop("dashboard", None)
     app.logger.warning("admin %s cadastrou o motorista %s (%s) pelo painel", g.admin["email"], user_id,
                        filtro_mascarar_email(email))

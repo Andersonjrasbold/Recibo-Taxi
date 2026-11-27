@@ -2100,7 +2100,9 @@ window.addEventListener('load', async () => {
       await guardarVarios([lanc('l-passado1', { tipo: 'receita', categoria: 'corrida', centavos: 420000, data: diaPassado, hora: '09:00', forma: 'Pix' }),
                            lanc('l-passado2', { tipo: 'despesa', categoria: 'aluguel_veiculo', centavos: 33000, data: diaPassado, hora: '08:00' })]);
       await abrirCaixa(diaPassado);
-      const isca = `${nomeCurtoDoMes(mesPassado, mesAtual)} fechou com R$ 3.870,00 de líquido.`;
+      // No dia 1º o l-ontem (R$ 30,00) cai no mes passado e entra na conta dele.
+      const liquidoPassado = ontemTravado ? 'R$ 3.900,00' : 'R$ 3.870,00';
+      const isca = `${nomeCurtoDoMes(mesPassado, mesAtual)} fechou com ${liquidoPassado} de líquido.`;
       ok('Gratis: dia de mes anterior mostra o bloqueio com o total do mes, sem o dia nem os lancamentos',
          visivel('caixa-bloqueio') && textoDe('caixa-bloqueio').includes('Os meses anteriores ficam no Pro.') && textoDe('caixa-bloqueio').includes(isca)
          && !visivel('caixa-dia') && !visivel('btn-abrir-mes') && !q('tela-caixa').innerText.includes('4.200,00'), textoDe('caixa-bloqueio'));
@@ -2148,7 +2150,7 @@ window.addEventListener('load', async () => {
       window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
       await atualizarSessao(); await espera(400);
       ok('virou Pro com o mes na tela: destrava sozinho, com categorias e dias', !visivel('mes-bloqueio') && visivel('mes-conteudo')
-         && textoDe('mes-liquido') === 'R$ 3.870,00' && textoDe('mes-cat-despesas').includes('Aluguel do veículo')
+         && textoDe('mes-liquido') === liquidoPassado && textoDe('mes-cat-despesas').includes('Aluguel do veículo')
          && !!q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${diaPassado}"]`), textoDe('mes-liquido'));
       await abrirCaixa(diaPassado);
       ok('Pro: o dia do mes anterior mostra os lancamentos', !visivel('caixa-bloqueio') && !!itemDa('l-passado1') && visivel('btn-abrir-mes'));

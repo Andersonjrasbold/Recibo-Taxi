@@ -2387,9 +2387,14 @@ def corpo_json() -> dict:
     """O JSON do pedido, ou {} quando nao ha um objeto la.
 
     `get_json(silent=True) or {}` deixava passar lista, texto e numero, e o
-    `.get` seguinte derrubava a rota com 500.
+    `.get` seguinte derrubava a rota com 500. E o silent so engole ValueError:
+    um JSON aninhado demais ([[[[...]]]], milhares de niveis em poucos KB)
+    estoura com RecursionError no decodificador, e tambem virava 500.
     """
-    dados = request.get_json(silent=True)
+    try:
+        dados = request.get_json(silent=True)
+    except RecursionError:
+        dados = None
     return dados if isinstance(dados, dict) else {}
 
 

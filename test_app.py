@@ -2645,6 +2645,13 @@ try:
     for _rota, _esperado in (("/api/login", 401), ("/api/recuperar-senha", 400), ("/api/refresh", 401)):
         _r = _cest.post(_rota, json=[1, 2])
         check(f"lista no corpo de {_rota} nao da 500", _r.status_code == _esperado, str(_r.status_code))
+    # JSON aninhado demais estoura com RecursionError no decodificador, que o
+    # silent do get_json nao engole: dava 500 em toda rota que le o corpo.
+    _aninhado = "[" * 50000 + "]" * 50000
+    for _rota, _esperado in (("/api/login", 401), ("/api/recuperar-senha", 400)):
+        _r = _cest.post(_rota, data=_aninhado, content_type="application/json")
+        check(f"JSON aninhado demais no corpo de {_rota} nao da 500", _r.status_code == _esperado,
+              str(_r.status_code))
     _r = _cest.post("/api/recibos", headers=_cabe, json="texto")
     check("texto no corpo de /api/recibos devolve 400", _r.status_code == 400, str(_r.status_code))
     _r = _cest.get("/app/")
@@ -4918,6 +4925,12 @@ for _nome_cx, _corpo_cx in (("lote vazio", {"lancamentos": []}), ("corpo sem a l
     check(f"caixa: {_nome_cx} devolve 400 lote_invalido",
           _r.status_code == 400 and _r.get_json() == {"erro": "lote_invalido", "maximo": A.LANCAMENTOS_POR_LOTE},
           f"{_r.status_code} {_r.get_json()}")
+# Aninhado demais, o decodificador estoura com RecursionError (era 500).
+_r = _ccx.post("/api/lancamentos", headers=_cabx, data='{"lixo": ' + "[" * 50000 + "]" * 50000 + "}",
+               content_type="application/json")
+check("caixa: JSON aninhado demais devolve 400 lote_invalido, e nao 500",
+      _r.status_code == 400 and _r.get_json() == {"erro": "lote_invalido", "maximo": A.LANCAMENTOS_POR_LOTE},
+      f"{_r.status_code} {_r.content_type}")
 check("caixa: lote invalido nao gasta o teto do dia", _contador_cx() == _antes_cx, f"{_antes_cx} -> {_contador_cx()}")
 _r = _enviar_cx(*[_lanc() for _ in range(A.LANCAMENTOS_POR_LOTE)])
 check("caixa: lote de 100 cabe", _r.status_code == 200 and len(_r.get_json()["aceitos"]) == A.LANCAMENTOS_POR_LOTE,

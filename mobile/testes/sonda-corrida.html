@@ -5,6 +5,9 @@
 //   #c=asserts             fluxo inteiro conferido, resultado em #resultado-teste
 //   #c=rede                envio de recibos com servidor simulado (lento, antigo, sem cota),
 //                          e no fim os dados e o envio do caixa (1.8)
+//   #c=caixa               as telas do caixa (1.8): dia, mes, lancamento, cartao do
+//                          inicio e fim da corrida, conferidos pelos botoes
+//   #c=caixa&passo=N       para na tela N do caixa (fotos)
 //   #passo=N               para no passo N (fotos)
 //   #c=negado&passo=1      localizacao negada
 localStorage.clear();
@@ -16,6 +19,11 @@ const NEGADO = H.get('c') === 'negado';
 // servidor. __regra(corpo) diz como responder a cada POST /api/recibos.
 const REDE = H.get('c') === 'rede';
 if (REDE) localStorage.setItem('access_token', JSON.stringify('token-falso'));
+// Modo caixa: o mesmo servidor simulado, mas a sessao so entra depois de a
+// sonda limpar o banco (ver o fim): sem ela, o app para no login e nao mexe
+// nele enquanto o que as outras partes deixaram e apagado.
+const CAIXA = H.get('c') === 'caixa';
+const SERVIDOR = REDE || CAIXA;
 window.__regra = () => ({});
 window.__sessao = null;                 // corpo do GET /api/sessao; null = 503
 window.__refresh = null;                // {status, corpo} do POST /api/refresh; null = sem rede
@@ -63,7 +71,7 @@ window.fetch = async (url, op) => {
   }
   const json = (corpo, status) => new Response(JSON.stringify(corpo),
     { status, headers: { 'Content-Type': 'application/json' } });
-  if (REDE && String(url).endsWith('/api/recibos') && op && op.method === 'POST') {
+  if (SERVIDOR && String(url).endsWith('/api/recibos') && op && op.method === 'POST') {
     const corpo = JSON.parse(op.body);
     window.__ordem.push('recibo');
     const regra = window.__regra(corpo) || {};
@@ -72,31 +80,31 @@ window.fetch = async (url, op) => {
     return json(regra.corpo || { rid: corpo.rid, url: 'https://exemplo.invalid/recibo/' + corpo.rid, criado_agora: true },
                 regra.status || 201);
   }
-  if (REDE && String(url).endsWith('/api/sessao')) {
+  if (SERVIDOR && String(url).endsWith('/api/sessao')) {
     await new Promise((ok) => setTimeout(ok, window.__sessaoAtraso || 0));
     return window.__sessao ? json(window.__sessao, 200) : json({}, 503);
   }
-  if (REDE && String(url).endsWith('/api/refresh')) {
+  if (SERVIDOR && String(url).endsWith('/api/refresh')) {
     window.__refreshes++;
     if (!window.__refresh) throw new TypeError('sonda: sem rede');
     await new Promise((ok) => setTimeout(ok, window.__refresh.atraso || 0));
     return json(window.__refresh.corpo || {}, window.__refresh.status);
   }
-  if (REDE && String(url).endsWith('/api/perfil')) {
+  if (SERVIDOR && String(url).endsWith('/api/perfil')) {
     window.__perfis.push(JSON.parse(op.body));
     window.__ordem.push('perfil');
     const p = window.__perfil || { status: 503, corpo: {} };
     await new Promise((ok) => setTimeout(ok, p.atraso || 0));
     return json(p.corpo || {}, p.status);
   }
-  if (REDE && /\/api\/recibos\/[A-Z0-9]+\/email$/.test(String(url))) {
+  if (SERVIDOR && /\/api\/recibos\/[A-Z0-9]+\/email$/.test(String(url))) {
     return json({}, window.__email_status || 200);
   }
   // O caixa sobe no fim de cada passada da fila. Sem esta resposta, cada
   // passada do modo rede acabaria em "rede caida" e reagendaria a seguinte.
   // __regraCaixa(corpo) pode atrasar, derrubar a conexao, mudar o status ou
   // recusar alguns ids ({recusados: [{id, erro}]}); o resto volta aceito.
-  if (REDE && String(url).endsWith('/api/lancamentos') && op && op.method === 'POST') {
+  if (SERVIDOR && String(url).endsWith('/api/lancamentos') && op && op.method === 'POST') {
     const corpo = JSON.parse(op.body);
     window.__lotes.push(corpo);
     const regra = window.__regraCaixa(corpo) || {};
@@ -1400,6 +1408,565 @@ window.addEventListener('load', async () => {
          && (await todosOsLancamentos()).some((x) => x.dono === 'web-motorista') && Guardado.get('caixa_meta:web-motorista') === 40000);
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
+    }
+    terminar(r);
+    return;
+  }
+
+  if (CAIXA) {
+    // ── Caixa (1.8): as telas ───────────────────────────────────────────────
+    // O dia, o mes, o lancamento, o cartao do inicio e o fim da corrida, pelos
+    // botoes, como o motorista usa. Os dados e o envio por baixo ja sao
+    // conferidos no fim do modo rede; aqui, o que as telas fazem com eles.
+    const r = [];
+    const ok = (nome, cond, extra = '') => r.push(`${cond ? 'OK   ' : 'FALHA'} caixa: ${nome}${cond ? '' : ' :: ' + extra}`);
+    const visivel = (id) => !!q(id) && !q(id).hidden && !q(id).closest('[hidden]');
+    const textoDe = (id) => q(id).textContent.replace(/\s+/g, ' ').trim();
+    const reais = (c) => Caixa.formatar(c, 2, 'R$');
+    const retrato = { full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' };
+    const sessaoGratis = { id: 'web-motorista', plano: 'free', limite_mensal: 6, usados_no_mes: 0, passageiro_opcional: true, motorista: retrato };
+    const naLoja = async (lojas, faz) => {
+      const banco = await abrirBanco();
+      await new Promise((ok2, falha) => {
+        const tx = banco.transaction(lojas, 'readwrite');
+        faz(tx);
+        tx.oncomplete = ok2; tx.onerror = () => falha(tx.error);
+      });
+    };
+    const guardarVarios = (lista) => naLoja('lancamentos', (tx) => lista.forEach((l) => tx.objectStore('lancamentos').put(l)));
+    // Lancamento pronto, ja enviado (as fotos e os totais nao dependem da fila).
+    const lanc = (id, campos, extra = {}) => ({ ...Caixa.novoLancamento(campos, { id, dono: 'web-motorista', moeda: 'BRL' }), pendente: false, ...extra });
+    const categoria = (id) => q('l-categorias').querySelector(`[data-categoria="${id}"]`);
+    const itemDa = (id) => q('caixa-lista').querySelector(`.caixa-item[data-id="${id}"]`);
+    const hoje = Caixa.diaLocal();
+    const ontem = Caixa.somarDias(hoje, -1);
+    const mesAtual = Caixa.mesDe(hoje);
+    const mesPassado = Caixa.mesAnterior(mesAtual);
+    const tarifa = { bandeirada: 5.5, km1: 3.5, km2: 4.55, hora: 42 };
+    const corridaEncerrada = (extra = {}) => guardarCorrida({
+      motorista: 'web-motorista', origem: 'Avenida Paulista, 1578', destino: 'Aeroporto de Congonhas',
+      inicio: new Date(Date.now() - 31 * 60000).toISOString(), fim: new Date().toISOString(), bandeira: 1,
+      estimativa: { km: 14.2, minutos: 31, minutos_sem_transito: 22, destino: 'Aeroporto de Congonhas', origem: 'Avenida Paulista, 1578' },
+      ...extra,
+    });
+
+    // Um mes de trabalho com cara de verdade, para as fotos: hoje, os dias
+    // anteriores e o mes passado inteiro, com o domingo de folga.
+    const sorte = (n) => { const x = Math.sin(n * 12.9898) * 43758.5453; return x - Math.floor(x); };
+    const ROTAS = ['Rodoviária → Centro', 'Centro → Aeroporto', 'Shopping Iguatemi → Hospital São Lucas',
+                   'Aeroporto → Hotel Ibis Paulista', 'Estação da Luz → Vila Madalena', 'Hospital das Clínicas → Moema'];
+    const FORMAS = ['Pix', 'Dinheiro', 'Cartão', 'Pix', 'Pix'];
+    let serie = 0;
+    const diaDeTrabalho = (data) => {
+      const n = Number(data.replace(/-/g, ''));
+      const semana = new Date(`${data}T12:00:00`).getDay();
+      if (semana === 0) return [];
+      const novo = (campos) => lanc(`l-foto${++serie}`, { data, ...campos });
+      const lista = [];
+      const corridas = 3 + Math.floor(sorte(n) * 5);
+      for (let i = 0; i < corridas; i++) {
+        const s = sorte(n * 7 + i);
+        lista.push(novo({ tipo: 'receita', categoria: 'corrida', centavos: 2500 + Math.round(s * 45) * 100 + (i % 2 ? 50 : 0),
+          hora: `${String(7 + i * 2).padStart(2, '0')}:${String(5 + Math.floor(s * 50)).padStart(2, '0')}`,
+          forma: FORMAS[i % FORMAS.length], origem: 'corrida', rota: ROTAS[(n + i) % ROTAS.length] }));
+      }
+      if (n % 2) lista.push(novo({ tipo: 'despesa', categoria: 'combustivel', centavos: 8000 + Math.round(sorte(n + 3) * 40) * 100, hora: '07:30', forma: 'Cartão', litros: '30,5' }));
+      lista.push(novo({ tipo: 'despesa', categoria: 'alimentacao', centavos: 1800 + Math.round(sorte(n + 5) * 15) * 100, hora: '12:15', forma: 'Dinheiro' }));
+      if (semana === 1) lista.push(novo({ tipo: 'despesa', categoria: 'aluguel_veiculo', centavos: 35000, hora: '08:00', forma: 'Pix' }));
+      if (semana === 6) lista.push(novo({ tipo: 'despesa', categoria: 'lavagem', centavos: 4000, hora: '18:00' }));
+      if (sorte(n + 13) > 0.6) lista.push(novo({ tipo: 'despesa', categoria: 'pedagio', centavos: 1240, hora: '10:10' }));
+      if (sorte(n + 9) > 0.7) lista.push(novo({ tipo: 'receita', categoria: 'gorjeta', centavos: 500 + Math.round(sorte(n + 11) * 10) * 100, hora: '16:40' }));
+      if (sorte(n + 17) > 0.5) lista.push(novo({ tipo: 'receita', categoria: 'aplicativo', centavos: 6000 + Math.round(sorte(n + 19) * 60) * 100, hora: '20:30', forma: 'Aplicativo' }));
+      return lista;
+    };
+    const hojeDaFoto = [
+      ['07:40', 'despesa', 'combustivel', 8600, { forma: 'Cartão', litros: '30,5' }],
+      ['08:15', 'receita', 'corrida', 3200, { forma: 'Pix', origem: 'corrida', rota: 'Rodoviária → Centro' }],
+      ['09:02', 'receita', 'corrida', 5800, { forma: 'Dinheiro', origem: 'corrida', rota: 'Centro → Aeroporto' }],
+      ['11:30', 'receita', 'corrida', 4150, { forma: 'Cartão', origem: 'corrida', rota: 'Shopping Iguatemi → Hospital São Lucas' }],
+      ['12:20', 'despesa', 'alimentacao', 2400, { forma: 'Dinheiro' }],
+      ['14:05', 'receita', 'gorjeta', 1000, {}],
+      ['15:40', 'receita', 'corrida', 6490, { forma: 'Pix', origem: 'corrida', rota: 'Aeroporto → Hotel Ibis Paulista' }],
+      ['17:10', 'receita', 'aplicativo', 9200, { forma: 'Aplicativo', obs: 'Semana do app' }],
+    ].map(([hora, tipo, cat, centavos, extra], i) => lanc(`l-hoje${i}`, { tipo, categoria: cat, centavos, data: hoje, hora, ...extra }));
+    const comMesDeTrabalho = async () => {
+      const lista = [...hojeDaFoto];
+      for (let d = `${mesPassado}-01`; d < hoje; d = Caixa.somarDias(d, 1)) lista.push(...diaDeTrabalho(d));
+      await guardarVarios(lista);
+    };
+
+    try {
+      // Do zero: o banco tem o que as outras partes deixaram. A sessao entra
+      // so agora, e o app comeca como numa abertura.
+      await naLoja(['recibos', 'lancamentos'], (tx) => { tx.objectStore('recibos').clear(); tx.objectStore('lancamentos').clear(); });
+      localStorage.setItem('access_token', JSON.stringify('token-caixa'));
+      localStorage.setItem('refresh_token', JSON.stringify('refresh-caixa'));
+      window.__sessao = sessaoGratis;
+      await iniciar();
+
+      if (H.has('passo')) {
+        // Fotos: monta a tela e para ali.
+        const passo = Number(H.get('passo'));
+        if (passo === 0) { await abrirCaixa(); return; }
+        if (passo === 11) { irParaInicio(); return; }   // o cartao do inicio sem lancamento
+        await comMesDeTrabalho();
+        if (passo === 1) { guardarMetaDoDia(40000); await abrirCaixa(); return; }
+        if (passo === 2) {
+          abrirLancamento({ tipo: 'despesa' });
+          q('l-valor').value = '86,00'; categoria('combustivel').click(); q('l-litros').value = '30,5';
+          q('l-forma').value = 'Cartão'; q('l-mais').open = true;   // a forma da despesa mora aqui dentro
+          return;
+        }
+        if (passo === 3) {
+          Guardado.set('tarifa', tarifa);
+          corridaEncerrada({ valor_cobrado: '58,00', forma: 'Pix' });
+          await abrirCorrida();
+          return;
+        }
+        if (passo === 4) { await abrirMesDoCaixa(mesPassado); return; }
+        if (passo === 5) {
+          window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
+          await atualizarSessao();
+          await abrirMesDoCaixa(mesPassado);
+          return;
+        }
+        if (passo === 6) {
+          confirmacaoDoInicio = { texto: 'Corrida lançada: R$ 58,00', ate: Date.now() + 60000 };
+          irParaInicio();
+          return;
+        }
+        if (passo === 7) { await abrirCaixa(`${mesPassado}-14`); return; }
+        if (passo === 8) {
+          const recibo = { rid: 'F0000000000008', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista', motorista: retrato,
+            dados: { rid: 'F0000000000008', origem: 'Rodoviária', destino: 'Centro', valor: '45,00', valor_exibido: '45,00', moeda: 'BRL',
+                     data: hoje, hora: '18:42', forma_pagamento: 'Pix' } };
+          await salvarRecibo(recibo);
+          await lancarReciboNoCaixa(recibo);
+          await abrirLancamentoParaEditar('r-F0000000000008');
+          q('l-mais').open = true;
+          return;
+        }
+        if (passo === 9) { await abrirMesDoCaixa(mesAtual); return; }
+        if (passo === 10) { guardarMetaDoDia(40000); await abrirCaixa(); clicar('btn-mudar-meta'); return; }
+        return;
+      }
+
+      // ── Menu e cartao do inicio ──
+      ok('"Meu caixa" no menu, logo depois de "Meus dados"', q('btn-meus-dados').nextElementSibling === q('btn-caixa') && textoDe('btn-caixa') === 'Meu caixa');
+      const depois = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      ok('o inicio mostra o cartao "Caixa de hoje" depois dos dois caminhos e antes da vitrine e da indicacao',
+         !q('tela-inicio').hidden && visivel('caixa-inicio') && textoDe('caixa-inicio').includes('Caixa de hoje')
+         && depois(document.querySelector('.caminhos'), q('caixa-inicio')) && depois(q('caixa-inicio'), q('vitrine-inicio'))
+         && depois(q('caixa-inicio'), q('btn-ir-indicar'))
+         && document.querySelector('.caminhos').getBoundingClientRect().bottom <= q('caixa-inicio').getBoundingClientRect().top);
+      ok('sem lancamento: "Nenhum lançamento hoje" e o "+ Despesa"', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje'
+         && visivel('btn-inicio-despesa') && textoDe('btn-inicio-despesa') === '+ Despesa' && q('caixa-inicio-linha').hidden);
+
+      clicar('btn-perfil'); await espera(100);
+      clicar('btn-caixa'); await espera(400);
+      ok('"Meu caixa" abre o Caixa de hoje e fecha o menu', !q('tela-caixa').hidden && q('menu-perfil').hidden
+         && textoDe('caixa-dia-titulo') === `Hoje, ${Caixa.dataCurta(hoje).replace(', ', ' ')}`, textoDe('caixa-dia-titulo'));
+      ok('em hoje, a seta da direita fica desligada', q('btn-dia-seguinte').disabled && !q('btn-dia-anterior').disabled);
+      ok('caixa vazio: a frase de que os recibos entram sozinhos', visivel('caixa-vazio') && !q('caixa-lista').children.length
+         && textoDe('caixa-vazio') === 'Nenhum lançamento neste dia. Os recibos que você emitir entram aqui sozinhos.');
+      ok('vazio: liquido zero, "líquido de hoje" e "Definir meta do dia"', textoDe('caixa-liquido') === 'R$ 0,00'
+         && textoDe('caixa-liquido-rotulo') === 'líquido de hoje' && visivel('btn-definir-meta') && !visivel('meta-com'));
+      ok('vazio: os zeros vao sem sinal e sem cor (nao parecem dinheiro que entrou ou saiu)', textoDe('caixa-receitas') === 'R$ 0,00'
+         && !q('caixa-receitas').className && !q('caixa-despesas').className && !q('caixa-liquido').classList.contains('valor-receita'));
+
+      // ── Lancamento: despesa ──
+      clicar('btn-caixa-despesa'); await espera(100);
+      ok('"+ Despesa" abre a despesa com o foco no valor, no mesmo toque (o teclado do iPhone sobe)',
+         !q('tela-lancamento').hidden && document.activeElement === q('l-valor') && q('tipo-despesa').getAttribute('aria-checked') === 'true'
+         && textoDe('titulo-lancamento') === 'Nova despesa' && q('l-valor').inputMode === 'decimal', document.activeElement && document.activeElement.id);
+      ok('a despesa comeca sem categoria, e a forma fica em "Mais detalhes", fechado',
+         !q('l-categorias').querySelector('[aria-pressed="true"]') && q('l-mais').contains(q('l-forma')) && !q('l-mais').open && q('l-forma').value === '');
+      ok('as categorias de despesa, com "Aluguel do veículo", sao botoes com aria-pressed',
+         [...q('l-categorias').querySelectorAll('button.categoria[aria-pressed]')].map((b) => b.textContent).join('|') === Caixa.CATEGORIAS.despesa.map((c) => c.rotulo).join('|'));
+      ok('a data e o dia aberto no Caixa (hoje) e a hora e a de agora', q('l-data').value === hoje && /^\d{2}:\d{2}$/.test(q('l-hora').value));
+      q('l-valor').value = '86,00';
+      q('form-lancamento').requestSubmit(); await espera(200);
+      ok('sem categoria, pede para escolher e nao guarda', textoDe('erro-lancamento') === 'Escolha a categoria.'
+         && !q('tela-lancamento').hidden && (await listarLancamentos()).length === 0, textoDe('erro-lancamento'));
+      ok('a frase aparece logo abaixo das categorias, e o teclado desce', q('erro-lancamento').previousElementSibling === q('l-categorias')
+         && document.activeElement !== q('l-valor'));
+      categoria('combustivel').click();
+      ok('combustivel mostra "Litros (opcional)"', visivel('campo-l-litros') && categoria('combustivel').getAttribute('aria-pressed') === 'true'
+         && q('campo-l-litros').textContent.includes('Litros (opcional)'));
+      categoria('pedagio').click();
+      ok('outra categoria esconde os litros e so ela fica marcada', !visivel('campo-l-litros')
+         && q('l-categorias').querySelectorAll('[aria-pressed="true"]').length === 1);
+      categoria('combustivel').click();
+      for (const [valor, trecho] of [['', 'Informe o valor.'], ['0', 'maior que zero'], ['12abc34', 'só o número'], ['100000', 'Valor acima do limite.']]) {
+        q('l-valor').value = valor;
+        q('form-lancamento').requestSubmit(); await espera(150);
+        ok(`valor "${valor}" nao e guardado, e a frase fala de valor, nao de corrida`, textoDe('erro-lancamento').includes(trecho)
+           && !textoDe('erro-lancamento').includes('corrida') && (await listarLancamentos()).length === 0, textoDe('erro-lancamento'));
+      }
+      ok('o erro do valor fica logo abaixo do campo, com o foco nele (a vista com o teclado aberto)',
+         q('erro-lancamento').previousElementSibling === q('l-valor') && document.activeElement === q('l-valor'));
+      q('l-valor').value = '86,00'; q('l-litros').value = '30,5 l';
+      q('form-lancamento').requestSubmit(); await espera(150);
+      ok('litros que nao sao numero nao passam', textoDe('erro-lancamento').startsWith('Litros:') && (await listarLancamentos()).length === 0);
+      q('l-litros').value = '30,5';
+      q('form-lancamento').requestSubmit(); q('form-lancamento').requestSubmit(); await espera(500);
+      let meus = await listarLancamentos();
+      const despesa = meus[0] || {};
+      ok('salvar guarda uma despesa so (toque duplo nao duplica), com os litros', meus.length === 1 && despesa.tipo === 'despesa'
+         && despesa.categoria === 'combustivel' && despesa.centavos === 8600 && despesa.litros === '30.5' && despesa.versao === 1
+         && despesa.data === hoje && despesa.dono === 'web-motorista', JSON.stringify(meus));
+      const linhaDa = (id) => { const item = itemDa(id); return item ? item.textContent.replace(/\s+/g, ' ').trim() : ''; };
+      ok('e volta ao Caixa com a despesa na lista: "Combustível", "30,5 litros" embaixo e "− 86,00"', !q('tela-caixa').hidden
+         && itemDa(despesa.id).querySelector('.caixa-item-titulo').textContent === 'Combustível'
+         && itemDa(despesa.id).querySelector('.caixa-item-detalhe').textContent === '30,5 litros' && linhaDa(despesa.id).includes('− 86,00'),
+         linhaDa(despesa.id));
+      ok('liquido negativo em coral: "−R$ 86,00"', textoDe('caixa-liquido') === '−R$ 86,00' && q('caixa-liquido').classList.contains('valor-despesa')
+         && textoDe('caixa-despesas') === '− R$ 86,00' && textoDe('caixa-n-despesas') === '1 lançamento', textoDe('caixa-liquido'));
+
+      // ── Lancamento: receita ──
+      clicar('btn-caixa-receita'); await espera(100);
+      ok('"+ Receita" abre com "Corrida" marcada, o foco no valor e a forma a vista (Pix na primeira vez)',
+         q('tipo-receita').getAttribute('aria-checked') === 'true' && categoria('corrida').getAttribute('aria-pressed') === 'true'
+         && q('lugar-forma-receita').contains(q('l-forma')) && visivel('l-forma') && q('l-forma').value === 'Pix'
+         && document.activeElement === q('l-valor') && textoDe('titulo-lancamento') === 'Nova receita');
+      ok('as categorias de receita', [...q('l-categorias').querySelectorAll('.categoria')].map((b) => b.textContent).join('|') === 'Corrida|Aplicativo|Gorjeta|Outra');
+      categoria('aplicativo').click(); q('l-forma').value = 'Aplicativo'; q('l-valor').value = '9,00';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const doApp = (await listarLancamentos()).find((x) => x.categoria === 'aplicativo') || {};
+      ok('a forma igual a categoria nao se repete na lista ("Aplicativo", e nao "Aplicativo · Aplicativo")',
+         !!itemDa(doApp.id) && itemDa(doApp.id).querySelector('.caixa-item-titulo').textContent === 'Aplicativo');
+      await apagarLancamento(doApp.id); await abrirCaixa();
+      clicar('btn-caixa-receita'); await espera(100);
+      q('l-valor').value = '58'; q('l-forma').value = 'Dinheiro';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      ok('a receita entra com "+", em verde, e o liquido muda', textoDe('caixa-lista').includes('Corrida · Dinheiro') && textoDe('caixa-lista').includes('+ 58,00')
+         && textoDe('caixa-receitas') === '+ R$ 58,00' && textoDe('caixa-liquido') === '−R$ 28,00'
+         && q('caixa-lista').querySelector('.caixa-item-valor.valor-receita') !== null, textoDe('caixa-liquido'));
+      clicar('btn-caixa-receita'); await espera(100);
+      ok('a receita seguinte comeca com a ultima forma usada', q('l-forma').value === 'Dinheiro');
+      clicar('tipo-despesa'); await espera(50);
+      ok('trocar para despesa: categoria limpa e a forma vai para "Mais detalhes"', !q('l-categorias').querySelector('[aria-pressed="true"]')
+         && q('l-mais').contains(q('l-forma')) && textoDe('titulo-lancamento') === 'Nova despesa');
+      clicar('btn-fechar-lancamento'); await espera(300);
+      ok('Cancelar volta ao Caixa sem guardar nada', !q('tela-caixa').hidden && (await listarLancamentos()).filter((x) => !x.apagado).length === 2);
+
+      // ── Recibos entram sozinhos ──
+      await irParaEmitir(); await espera(100);
+      q('passageiro').value = ''; q('origem').value = 'Centro'; q('destino').value = 'Aeroporto'; q('valor').value = 'R$ 45,00';
+      q('form-recibo').requestSubmit(); await espera(1200);
+      const emitido = (await listarRecibos()).find((x) => x.dados.origem === 'Centro') || {};
+      await abrirCaixa();
+      ok('o recibo emitido entra no Caixa como receita, com a rota embaixo', !!(await buscarLancamento('r-' + emitido.rid))
+         && !!itemDa('r-' + emitido.rid) && textoDe('caixa-lista').includes('Centro → Aeroporto') && textoDe('caixa-lista').includes('+ 45,00'));
+      await salvarRecibo({ rid: 'C0000000000001', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista', motorista: retrato,
+        dados: { rid: 'C0000000000001', origem: 'Rodoviária', destino: 'Hotel', valor: '1 500,00', valor_exibido: '1.500,00', data: hoje, hora: '06:10', forma_pagamento: 'Pix' } });
+      await abrirCaixa();
+      ok('abrir o Caixa traz o recibo que ainda nao estava nele (sem moeda: a de agora)', !!itemDa('r-C0000000000001')
+         && textoDe('caixa-lista').includes('+ 1.500,00') && ((await buscarLancamento('r-C0000000000001')) || {}).centavos === 150000);
+      const ordem = [...q('caixa-lista').querySelectorAll('.caixa-item-hora')].map((x) => x.textContent).filter(Boolean);
+      ok('a lista do dia vai do mais recente para o mais antigo', ordem.join() === [...ordem].sort().reverse().join(), ordem.join());
+
+      // ── Editar e apagar ──
+      itemDa(despesa.id).click(); await espera(300);
+      ok('tocar na despesa abre para editar, preenchida, com "Apagar lançamento"', !q('tela-lancamento').hidden
+         && textoDe('titulo-lancamento') === 'Editar despesa' && q('l-valor').value === '86,00' && q('l-litros').value === '30,5'
+         && categoria('combustivel').getAttribute('aria-pressed') === 'true' && visivel('btn-apagar-lancamento') && q('l-recusado').hidden
+         && document.activeElement !== q('l-valor'));
+      q('l-valor').value = '90,00';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const editada = await buscarLancamento(despesa.id);
+      ok('editar sobe a versao e a lista mostra o valor novo', editada.versao === 2 && editada.centavos === 9000 && editada.litros === '30.5'
+         && textoDe('caixa-lista').includes('− 90,00') && !textoDe('caixa-lista').includes('− 86,00'), JSON.stringify(editada));
+
+      itemDa('r-' + emitido.rid).click(); await espera(400);
+      const diaMes = `${hoje.slice(8, 10)}/${hoje.slice(5, 7)}`;
+      ok('a receita do recibo diz de qual recibo veio, e que mudar o valor aqui nao muda o recibo',
+         visivel('btn-l-recibo') && textoDe('btn-l-recibo') === `Do recibo de ${diaMes} às ${emitido.dados.hora} ›` && visivel('l-dica-recibo')
+         && textoDe('l-dica-recibo') === 'Mudar o valor aqui não muda o recibo.', textoDe('btn-l-recibo'));
+      clicar('btn-l-recibo'); await espera(400);
+      ok('a linha abre o recibo, com "Voltar ao caixa"', !q('tela-recibo').hidden && q('btn-compartilhar').dataset.rid === emitido.rid
+         && visivel('btn-voltar-caixa') && q('btn-voltar-historico').hidden);
+      clicar('btn-voltar-caixa'); await espera(300);
+      ok('"Voltar ao caixa" volta ao Caixa', !q('tela-caixa').hidden);
+      itemDa('r-' + emitido.rid).click(); await espera(300);
+      clicar('btn-l-recibo'); await espera(300);
+      ok('o voltar do Android no recibo aberto pelo lancamento tambem volta ao Caixa', voltarUmNivel() === true && !q('tela-caixa').hidden);
+      await espera(300);
+      // O mesmo recibo, aberto pelo historico, nao ganha o "Voltar ao caixa".
+      abrirRecibo(emitido, { doHistorico: true });
+      ok('pelo historico, o recibo nao mostra "Voltar ao caixa"', q('btn-voltar-caixa').hidden && !q('btn-voltar-historico').hidden);
+      await abrirCaixa();
+
+      itemDa(despesa.id).click(); await espera(300);
+      clicar('btn-apagar-lancamento'); await espera(100);
+      ok('apagar: o primeiro toque so arma ("Toque de novo para apagar")', textoDe('btn-apagar-lancamento') === 'Toque de novo para apagar'
+         && !q('tela-lancamento').hidden && !(await buscarLancamento(despesa.id)).apagado);
+      await espera(4300);
+      ok('apagar: depois de 4 s, desarma sozinho', textoDe('btn-apagar-lancamento') === 'Apagar lançamento');
+      clicar('btn-apagar-lancamento'); await espera(100);
+      clicar('btn-apagar-lancamento'); await espera(400);
+      const tumulo = await buscarLancamento(despesa.id);
+      ok('apagar: o segundo toque vira tumulo (versao + 1, na fila) e volta ao Caixa', tumulo.apagado === true && tumulo.versao === 3
+         && !q('tela-caixa').hidden, JSON.stringify(tumulo));
+      ok('o apagado some da lista e dos totais', !itemDa(despesa.id) && textoDe('caixa-despesas') === 'R$ 0,00'
+         && textoDe('caixa-n-despesas') === '0 lançamentos', textoDe('caixa-despesas'));
+
+      // Recusado pelo servidor: uma linha discreta no detalhe.
+      await guardarVarios([lanc('l-recusado1', { tipo: 'receita', categoria: 'gorjeta', centavos: 700, data: hoje, hora: '13:00' }, { recusado: 'categoria_invalida' })]);
+      await abrirCaixa();
+      itemDa('l-recusado1').click(); await espera(300);
+      ok('lancamento recusado: "A cópia deste lançamento não foi guardada no servidor."', visivel('l-recusado')
+         && textoDe('l-recusado') === 'A cópia deste lançamento não foi guardada no servidor.');
+      clicar('btn-fechar-lancamento'); await espera(300);
+
+      // O que o motorista escreveu entra como texto.
+      await guardarVarios([lanc('l-xss', { tipo: 'despesa', categoria: 'outra_despesa', centavos: 100, data: hoje, hora: '13:30',
+        obs: '<img src=x onerror="window.__xss=1">', forma: '<b>Pix</b>' })]);
+      await abrirCaixa(); await espera(200);
+      ok('observacao e forma entram como texto, nunca como HTML', !q('caixa-lista').querySelector('img, b')
+         && textoDe('caixa-lista').includes('<img src=x') && !window.__xss);
+
+      // ── Meta do dia ──
+      clicar('btn-definir-meta'); await espera(100);
+      ok('"Definir meta do dia" abre o campo com o foco, sem "Remover"', visivel('form-meta') && document.activeElement === q('meta-valor')
+         && q('btn-remover-meta').hidden && !visivel('btn-definir-meta'));
+      q('meta-valor').value = 'abc'; q('form-meta').requestSubmit(); await espera(100);
+      ok('meta que nao e valor explica e nao guarda', visivel('erro-meta') && metaDoDia() === null);
+      const diaAgora = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'BRL');
+      const alvo = diaAgora.liquido + 25000;
+      q('meta-valor').value = Caixa.formatar(alvo, 2); q('form-meta').requestSubmit(); await espera(300);
+      const parteDaMeta = Math.round(Math.max(0, diaAgora.liquido) / alvo * 100);
+      ok('com meta: barra em ambar e "Faltam R$ 250,00"', visivel('meta-com') && !visivel('form-meta') && metaDoDia() === alvo
+         && textoDe('btn-mudar-meta') === `meta ${reais(alvo)}` && textoDe('meta-texto') === 'Faltam R$ 250,00'
+         && q('meta-barra').getAttribute('aria-valuenow') === String(parteDaMeta) && q('meta-preenchida').style.width === `${parteDaMeta}%`
+         && getComputedStyle(q('meta-preenchida')).backgroundColor === 'rgb(255, 197, 49)', textoDe('meta-texto'));
+      clicar('btn-mudar-meta'); await espera(100);
+      ok('tocar na meta abre o campo preenchido, agora com "Remover meta"', q('meta-valor').value === Caixa.formatar(alvo, 2) && visivel('btn-remover-meta'));
+      q('meta-valor').value = Caixa.formatar(diaAgora.liquido - 1000, 2); q('form-meta').requestSubmit(); await espera(300);
+      ok('meta batida: "Meta batida! + R$ 10,00", em verde', textoDe('meta-texto') === 'Meta batida! + R$ 10,00'
+         && getComputedStyle(q('meta-texto')).color === 'rgb(91, 214, 138)', textoDe('meta-texto'));
+      ok('a meta fica neste aparelho, por motorista, em centavos', Guardado.get('caixa_meta:web-motorista') === diaAgora.liquido - 1000);
+      clicar('btn-mudar-meta'); await espera(100);
+      clicar('btn-remover-meta'); await espera(300);
+      ok('remover a meta volta ao "Definir meta do dia"', visivel('btn-definir-meta') && !visivel('meta-com') && metaDoDia() === null);
+
+      // ── Dias ──
+      const ontemTravado = Caixa.mesDe(ontem) !== mesAtual;   // hoje e dia 1: ontem e do mes passado
+      await guardarVarios([lanc('l-ontem', { tipo: 'receita', categoria: 'corrida', centavos: 3000, data: ontem, hora: '10:00', forma: 'Pix' })]);
+      await abrirCaixa();
+      ok('o lancamento de ontem nao aparece hoje', !itemDa('l-ontem'));
+      clicar('btn-dia-anterior'); await espera(300);
+      ok('‹ vai para ontem e liga a seta da direita', textoDe('caixa-dia-titulo').startsWith('Ontem, ') && !q('btn-dia-seguinte').disabled);
+      if (!ontemTravado) {
+        ok('ontem: "líquido de ontem" e o lancamento de ontem', textoDe('caixa-liquido-rotulo') === 'líquido de ontem' && !!itemDa('l-ontem')
+           && textoDe('caixa-liquido') === 'R$ 30,00');
+        clicar('btn-caixa-despesa'); await espera(100);
+        ok('lancar a partir de ontem: a data e ontem e a hora fica vazia', q('l-data').value === ontem && q('l-hora').value === '');
+        clicar('btn-fechar-lancamento'); await espera(300);
+        ok('Cancelar volta para o mesmo dia', textoDe('caixa-dia-titulo').startsWith('Ontem, '));
+      }
+      clicar('btn-dia-seguinte'); await espera(300);
+      ok('› volta para hoje e desliga de novo', textoDe('caixa-dia-titulo').startsWith('Hoje, ') && q('btn-dia-seguinte').disabled);
+
+      // ── Mes ──
+      const doMes = Caixa.resumoDoMes(await listarLancamentos(), mesAtual, 'BRL');
+      ok('o cartao do mes: nome, liquido e dias trabalhados', textoDe('caixa-mes-nome') === nomeDoMesComMaiuscula(mesAtual)
+         && textoDe('caixa-mes-liquido') === `Líquido ${reais(doMes.liquido)}`
+         && textoDe('caixa-mes-dias') === `${doMes.diasTrabalhados} ${doMes.diasTrabalhados === 1 ? 'dia trabalhado' : 'dias trabalhados'} · ${reais(doMes.mediaPorDia)}/dia`,
+         `${textoDe('caixa-mes-liquido')} / ${textoDe('caixa-mes-dias')}`);
+      clicar('btn-abrir-mes'); await espera(400);
+      ok('o mes: liquido, receitas, despesas e media, com a seta da direita desligada', !q('tela-caixa-mes').hidden
+         && textoDe('mes-titulo') === nomeDoMesComMaiuscula(mesAtual) && textoDe('mes-liquido') === reais(doMes.liquido)
+         && textoDe('mes-receitas') === `+ ${reais(doMes.receitas)}` && textoDe('mes-media').includes(`média de ${reais(doMes.mediaPorDia)} por dia`)
+         && q('btn-mes-seguinte').disabled, `${textoDe('mes-liquido')} / ${textoDe('mes-media')}`);
+      const corrida = doMes.porCategoria.receita.find((c) => c.categoria === 'corrida');
+      ok('receitas e despesas por categoria, com o valor e a parte do total', textoDe('mes-cat-receitas').includes(`Corrida${reais(corrida.centavos)}${Math.round(corrida.parte * 100)}%`)
+         && textoDe('mes-cat-despesas').includes('Outra') && !visivel('mes-vazio'), textoDe('mes-cat-receitas'));
+      const diasNaTela = [...q('mes-dias').querySelectorAll('.caixa-dia-item')].map((b) => b.dataset.dia);
+      ok('a lista de dias, do mais recente para o mais antigo', diasNaTela.join() === doMes.porDia.map((d) => d.data).join() && diasNaTela[0] === hoje, diasNaTela.join());
+      ok('voltar do Android: mes -> dia que estava aberto', voltarUmNivel() === true && !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Hoje, '));
+      await espera(300);
+      if (!ontemTravado) {
+        clicar('btn-dia-anterior'); await espera(300);
+        clicar('btn-abrir-mes'); await espera(300);
+        clicar('btn-fechar-mes'); await espera(300);
+        ok('"Voltar" do mes volta ao dia que estava aberto (ontem), e nao a hoje', !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Ontem, '));
+        clicar('btn-abrir-mes'); await espera(300);
+        q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${hoje}"]`).click(); await espera(300);
+        ok('tocar num dia da lista abre o dia', !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Hoje, '));
+      }
+
+      // ── Gratis e Pro ──
+      const diaPassado = `${mesPassado}-15`;
+      await guardarVarios([lanc('l-passado1', { tipo: 'receita', categoria: 'corrida', centavos: 420000, data: diaPassado, hora: '09:00', forma: 'Pix' }),
+                           lanc('l-passado2', { tipo: 'despesa', categoria: 'aluguel_veiculo', centavos: 33000, data: diaPassado, hora: '08:00' })]);
+      await abrirCaixa(diaPassado);
+      const isca = `${nomeCurtoDoMes(mesPassado, mesAtual)} fechou com R$ 3.870,00 de líquido.`;
+      ok('Gratis: dia de mes anterior mostra o bloqueio com o total do mes, sem o dia nem os lancamentos',
+         visivel('caixa-bloqueio') && textoDe('caixa-bloqueio').includes('Os meses anteriores ficam no Pro.') && textoDe('caixa-bloqueio').includes(isca)
+         && !visivel('caixa-dia') && !visivel('btn-abrir-mes') && !q('tela-caixa').innerText.includes('4.200,00'), textoDe('caixa-bloqueio'));
+      ok('o mes da isca sem o ano quando e o mesmo ano', mesPassado.slice(0, 4) !== mesAtual.slice(0, 4) || !/ de \d{4} fechou/.test(isca));
+      clicar('btn-caixa-pro'); await espera(300);
+      ok('"Conhecer o Pro" abre a assinatura com o motivo do caixa', !q('tela-assinatura').hidden
+         && textoDe('motivo-pro') === 'O Pro mostra os meses anteriores do seu caixa.');
+      clicar('btn-fechar-pro'); await espera(400);
+      ok('"Agora não" volta ao Caixa, no mesmo dia', !q('tela-caixa').hidden && visivel('caixa-bloqueio'));
+      await abrirMesDoCaixa(mesPassado);
+      ok('Gratis: o mes anterior mostra o total como isca e o convite, sem dias nem categorias', visivel('mes-bloqueio') && !visivel('mes-conteudo')
+         && textoDe('mes-bloqueio').includes(isca) && !q('tela-caixa-mes').innerText.includes('Aluguel'));
+      clicar('btn-mes-seguinte'); await espera(300);
+      ok('› do mes volta ao mes atual, liberado', !visivel('mes-bloqueio') && visivel('mes-conteudo') && q('btn-mes-seguinte').disabled);
+      clicar('btn-mes-anterior'); await espera(300);
+      window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
+      await atualizarSessao(); await espera(400);
+      ok('virou Pro com o mes na tela: destrava sozinho, com categorias e dias', !visivel('mes-bloqueio') && visivel('mes-conteudo')
+         && textoDe('mes-liquido') === 'R$ 3.870,00' && textoDe('mes-cat-despesas').includes('Aluguel do veículo')
+         && !!q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${diaPassado}"]`), textoDe('mes-liquido'));
+      await abrirCaixa(diaPassado);
+      ok('Pro: o dia do mes anterior mostra os lancamentos', !visivel('caixa-bloqueio') && !!itemDa('l-passado1') && visivel('btn-abrir-mes'));
+      window.__sessao = sessaoGratis;
+      await atualizarSessao(); await espera(400);
+      ok('de volta ao Gratis, o dia do mes anterior trava de novo', visivel('caixa-bloqueio') && !visivel('caixa-dia'));
+
+      // ── Fim da corrida ──
+      Guardado.set('tarifa', tarifa);
+      corridaEncerrada();
+      await abrirCorrida(); await espera(200);
+      ok('fim da corrida: "Quanto cobrou?" vazio e sem foco; a estimativa so como dica', visivel('fim-valor') && q('fim-valor').value === ''
+         && document.activeElement !== q('fim-valor') && textoDe('fim-estimativa') === 'Estimativa desta corrida: R$ 55 a R$ 68'
+         && q('corrida-fim').textContent.includes('Quanto cobrou? (R$)') && q('fim-valor').inputMode === 'decimal', textoDe('fim-estimativa'));
+      const alturas = ['btn-sem-recibo', 'btn-retomar'].map((id) => Math.round(q(id).getBoundingClientRect().height));
+      ok('"Não lançar" e "Voltar para a corrida" com alvo de 44 px', alturas.every((h) => h >= 44), JSON.stringify(alturas));
+      const [bGerar, bLancar, bNao] = ['btn-gerar-recibo', 'btn-lancar-corrida', 'btn-sem-recibo'].map((id) => q(id).getBoundingClientRect());
+      ok('as tres acoes ficam afastadas umas das outras (12 px ou mais)', bLancar.top - bGerar.bottom >= 12 && bNao.top - bLancar.bottom >= 12,
+         `${Math.round(bLancar.top - bGerar.bottom)} ${Math.round(bNao.top - bLancar.bottom)}`);
+      ok('o antigo "Sem recibo" agora e "Não lançar", com o mesmo id', textoDe('btn-sem-recibo') === 'Não lançar' && textoDe('btn-lancar-corrida') === 'Só lançar no caixa');
+      const antesDeLancar = (await listarLancamentos()).length;
+      clicar('btn-lancar-corrida'); await espera(300);
+      ok('"Só lançar no caixa" sem valor explica, logo abaixo do campo, e nao lanca', textoDe('erro-fim') === 'Informe o valor.'
+         && q('erro-fim').previousElementSibling === q('fim-valor') && !!corridaAtual()
+         && (await listarLancamentos()).length === antesDeLancar, textoDe('erro-fim'));
+      digitar('fim-valor', '58,00');
+      q('fim-forma').value = 'Dinheiro'; q('fim-forma').dispatchEvent(new Event('change'));
+      ok('o valor e a forma ficam guardados na corrida (o app pode morrer no meio)', corridaAtual().valor_cobrado === '58,00'
+         && corridaAtual().forma === 'Dinheiro' && !visivel('erro-fim'));
+      irParaInicio(); await abrirCorrida(); await espera(150);
+      ok('reabrir a corrida traz o valor e a forma de volta', q('fim-valor').value === '58,00' && q('fim-forma').value === 'Dinheiro');
+      const saida = agoraLocal(new Date(corridaAtual().inicio));
+      clicar('btn-lancar-corrida'); clicar('btn-lancar-corrida'); await espera(600);
+      const daCorrida = (await listarLancamentos()).filter((x) => x.origem === 'corrida');
+      const lancada = daCorrida[0] || {};
+      ok('"Só lançar no caixa" cria uma receita so, da corrida, com a data e a hora da saida, o km e a rota',
+         daCorrida.length === 1 && lancada.centavos === 5800 && lancada.tipo === 'receita' && lancada.categoria === 'corrida' && lancada.forma === 'Dinheiro'
+         && lancada.data === saida.data && lancada.hora === saida.hora && lancada.km === '14.2'
+         && lancada.rota === 'Avenida Paulista, 1578 → Aeroporto de Congonhas', JSON.stringify(daCorrida));
+      ok('e apaga a corrida e volta ao inicio com "Corrida lançada: R$ 58,00"', !corridaAtual() && !q('tela-inicio').hidden
+         && visivel('caixa-inicio-confirmacao') && textoDe('caixa-inicio-confirmacao') === 'Corrida lançada: R$ 58,00');
+      await espera(300);
+      const diaComCorrida = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'BRL');
+      const linhaEsperada = [`Receitas ${reais(diaComCorrida.receitas)}`, `Despesas ${reais(diaComCorrida.despesas)}`,
+        ...(diaComCorrida.nCorridas ? [plural(diaComCorrida.nCorridas, 'corrida', 'corridas')] : [])].join(' · ');
+      ok('o cartao do inicio ja conta: liquido, receitas, despesas e corridas', textoDe('caixa-inicio-valor') === reais(diaComCorrida.liquido)
+         && textoDe('caixa-inicio-linha') === linhaEsperada, `${textoDe('caixa-inicio-linha')} x ${linhaEsperada}`);
+      await espera(5200);
+      ok('a confirmacao some sozinha depois de ~5 s', !visivel('caixa-inicio-confirmacao'));
+
+      corridaEncerrada();
+      await abrirCorrida(); await espera(150);
+      ok('a forma do fim da corrida comeca com a ultima usada', q('fim-forma').value === 'Dinheiro');
+      digitar('fim-valor', '61,40');
+      q('fim-forma').value = 'Cartão'; q('fim-forma').dispatchEvent(new Event('change'));
+      clicar('btn-gerar-recibo'); await espera(300);
+      ok('"Gerar recibo" leva o valor e a forma digitados ao formulario', !q('tela-emitir').hidden && q('valor').value === '61,40' && q('forma').value === 'Cartão'
+         && q('titulo-emitir').textContent === 'Recibo da corrida');
+      q('form-recibo').requestSubmit(); await espera(1200);
+      const doFim = (await listarRecibos()).find((x) => x.dados.valor === '61,40');
+      const receitaDoFim = doFim && await buscarLancamento('r-' + doFim.rid);
+      ok('o recibo da corrida sai com o valor e a forma, e a receita dele entra no caixa', !!doFim && doFim.dados.forma_pagamento === 'Cartão'
+         && !!receitaDoFim && receitaDoFim.centavos === 6140 && receitaDoFim.forma === 'Cartão' && !corridaAtual());
+      ok('o recibo da corrida nao vira duas receitas (a do recibo e a da corrida)', (await listarLancamentos()).filter((x) => x.centavos === 6140).length === 1);
+
+      corridaEncerrada();
+      await abrirCorrida(); await espera(150);
+      const antesDoNao = (await listarLancamentos()).length;
+      digitar('fim-valor', '30,00');
+      clicar('btn-sem-recibo'); await espera(300);
+      ok('"Não lançar" apaga a corrida e nao cria nada no caixa', !corridaAtual() && !q('tela-inicio').hidden
+         && (await listarLancamentos()).length === antesDoNao);
+
+      // ── Navegacao e voltar do Android ──
+      await abrirCaixa();
+      clicar('btn-caixa-despesa'); await espera(100);
+      ok('voltar do Android: lancamento -> Caixa', voltarUmNivel() === true && !q('tela-caixa').hidden);
+      await espera(300);
+      clicar('btn-abrir-mes'); await espera(300);
+      ok('voltar do Android: mes -> dia', voltarUmNivel() === true && !q('tela-caixa').hidden);
+      await espera(300);
+      clicar('btn-definir-meta'); await espera(100);
+      ok('voltar do Android com o campo da meta aberto: so fecha o campo', voltarUmNivel() === true && !q('tela-caixa').hidden && !visivel('form-meta'));
+      await espera(200);
+      ok('voltar do Android: Caixa -> inicio', voltarUmNivel() === true && !q('tela-inicio').hidden);
+      clicar('btn-inicio-despesa'); await espera(100);
+      ok('"+ Despesa" do cartao do inicio abre a despesa de hoje com o foco no valor', !q('tela-lancamento').hidden
+         && document.activeElement === q('l-valor') && q('tipo-despesa').getAttribute('aria-checked') === 'true' && q('l-data').value === hoje);
+      ok('voltar do Android: o lancamento aberto pelo inicio volta ao inicio', voltarUmNivel() === true && !q('tela-inicio').hidden);
+      clicar('btn-abrir-caixa'); await espera(400);
+      ok('tocar no cartao do inicio abre o Caixa', !q('tela-caixa').hidden);
+      clicar('btn-perfil'); await espera(100);
+      clicar('btn-meus-dados'); await espera(300);
+      clicar('btn-fechar-perfil'); await espera(400);
+      ok('o Caixa e tela de base: "Voltar" de Meus dados volta para ele', !q('tela-caixa').hidden);
+      clicar('btn-fechar-caixa'); await espera(300);
+      ok('"Voltar" do Caixa vai ao inicio', !q('tela-inicio').hidden);
+
+      // ── Envio do que foi lancado pela tela ──
+      __lotes.length = 0;
+      await abrirCaixa();
+      clicar('btn-caixa-receita'); await espera(100);
+      q('l-valor').value = '12,00'; q('l-obs').value = 'envio pela tela';
+      q('form-lancamento').requestSubmit(); await espera(2900);
+      const subiu = __lotes.flatMap((c) => c.lancamentos).find((x) => x.obs === 'envio pela tela');
+      ok('o lancamento da tela sobe ~2 s depois, sem a rota nem o dono', !!subiu && !('rota' in subiu) && !('dono' in subiu)
+         && ((await listarLancamentos()).find((x) => x.obs === 'envio pela tela') || {}).pendente === false, JSON.stringify(subiu));
+
+      // ── Aparelho dividido ──
+      localStorage.setItem('motorista_id', JSON.stringify('outro'));
+      Guardado.set('motorista', { full_name: 'Outro', email: 'outro@teste.invalid' });
+      await abrirCaixa();
+      ok('aparelho dividido: o outro motorista ve o Caixa vazio', visivel('caixa-vazio') && !q('caixa-lista').children.length
+         && textoDe('caixa-liquido') === 'R$ 0,00');
+      irParaInicio(); await espera(300);
+      ok('nem o cartao do inicio mostra o caixa do outro', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje');
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      Guardado.set('motorista', retrato);
+
+      // ── Visual: cores, numeros e alvos ──
+      guardarMetaDoDia(40000);
+      await abrirCaixa();
+      const cor = (alvoCor) => getComputedStyle(alvoCor).color;
+      ok('texto do caixa: receita em verde, despesa em coral claro, secundario a 62% (contraste de 4,5:1 ou mais)',
+         cor(q('caixa-receitas')) === 'rgb(91, 214, 138)' && cor(q('caixa-despesas')) === 'rgb(255, 107, 94)'
+         && cor(q('caixa-liquido-rotulo')) === 'rgba(247, 245, 242, 0.62)' && cor(q('caixa-lista').querySelector('.caixa-item-hora')) === 'rgba(247, 245, 242, 0.62)',
+         [cor(q('caixa-receitas')), cor(q('caixa-despesas')), cor(q('caixa-liquido-rotulo'))].join(' '));
+      ok('numeros com algarismos de largura fixa', ['caixa-liquido', 'caixa-receitas', 'caixa-despesas'].every((id) => getComputedStyle(q(id)).fontVariantNumeric.includes('tabular-nums'))
+         && getComputedStyle(q('caixa-lista').querySelector('.caixa-item-valor')).fontVariantNumeric.includes('tabular-nums'));
+      const pequenos = [];
+      const medir = (raiz) => raiz.querySelectorAll('button, summary, select, input').forEach((b) => {
+        const h = b.getBoundingClientRect().height;
+        if (h && h < 44) pequenos.push(`${b.id || b.className || b.tagName}:${Math.round(h)}`);
+      });
+      medir(q('tela-caixa'));
+      await abrirMesDoCaixa(mesAtual); medir(q('tela-caixa-mes'));
+      clicar('btn-fechar-mes'); await espera(300);
+      clicar('btn-caixa-despesa'); await espera(100);
+      categoria('combustivel').click(); q('l-mais').open = true; await espera(50);
+      medir(q('tela-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+      irParaInicio(); await espera(200); medir(q('caixa-inicio'));
+      ok('todo botao e campo das telas do caixa com alvo de 44 px ou mais', pequenos.length === 0, pequenos.join(' '));
+      ok('a pagina do Caixa nao rola de lado (390 px)', (await abrirCaixa(), document.documentElement.scrollWidth <= innerWidth), String(document.documentElement.scrollWidth));
+    } catch (e) {
+      r.push(`FALHA caixa: excecao: ${e && e.stack || e}`);
     }
     terminar(r);
     return;

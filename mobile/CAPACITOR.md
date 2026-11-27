@@ -157,6 +157,11 @@ antes do `config.js`, serve em localhost e controla o Chrome sem janela pelo
 protocolo de depuração. A sonda simula o GPS, o geocodificador e a resposta da
 estimativa; nada sai para a produção. O `www/` de verdade não é tocado.
 
+São três partes, nesta ordem: o fluxo (`c=asserts`, sem sessão), o envio com o
+servidor simulado (`c=rede`, que termina com os dados e o envio do caixa) e as
+telas do caixa da 1.8 (`c=caixa`: dia, mês, lançamento, cartão do início e o
+"Quanto cobrou?" do fim da corrida). As fotos do caixa são as `c=caixa&passo=N`.
+
 Por que não o simulador: em 2026-10-03 ele caiu duas vezes no meio da rodada
 ("server died", "Data Migration Failed") com a memória da máquina no limite.
 Por que não `--virtual-time-budget`: com IndexedDB o tempo virtual não anda e o

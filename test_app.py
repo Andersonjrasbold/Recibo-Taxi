@@ -5073,17 +5073,21 @@ check("painel: sem a tabela (migracao 0022 por aplicar), o bloco do Caixa sai in
       "Seção indisponível" in _bloco_sem_cx and "Motoristas que já lançaram" not in _bloco_sem_cx
       and "Fazer corrida (app 1.2)" in _html_sem_cx, _bloco_sem_cx[:300])
 
-# Limpeza: o tumulo sai de vez depois de LANCAMENTO_APAGADO_DIAS; o recente e o
-# lancamento antigo que nunca foi apagado ficam.
+# Limpeza: o tumulo sai de vez em ate LANCAMENTO_APAGADO_DIAS; o recente e o
+# lancamento antigo que nunca foi apagado ficam. A limpeza roda uma vez por dia,
+# entao corta um dia antes: o tumulo que passou de 29 dias sai hoje, porque
+# amanha ja teria passado dos 30 que a Politica promete.
 _cl_cx, _cabl_cx, _uidl_cx = _conta_app_cx("caixa-limpeza")
-_velho_cx, _velho2_cx, _recente_cx, _vivo_cx = _lanc(apagado=True), _lanc(apagado=True), _lanc(apagado=True), _lanc()
-_enviar_cx(_velho_cx, _velho2_cx, _recente_cx, _vivo_cx, cab=_cabl_cx, cli=_cl_cx)
+_velho_cx, _velho2_cx, _quase_cx, _recente_cx, _vivo_cx = (
+    _lanc(apagado=True), _lanc(apagado=True), _lanc(apagado=True), _lanc(apagado=True), _lanc())
+_enviar_cx(_velho_cx, _velho2_cx, _quase_cx, _recente_cx, _vivo_cx, cab=_cabl_cx, cli=_cl_cx)
 with A.get_store().pool.connection() as _conn:
-    _conn.execute("""update public.ledger_entries set deleted_at = now() - make_interval(days => %s)
-                      where driver_id = %s and id = any(%s)""",
-                  (A.LANCAMENTO_APAGADO_DIAS + 1, _uidl_cx, [_velho_cx["id"], _velho2_cx["id"]]))
-    _conn.execute("""update public.ledger_entries set deleted_at = now() - make_interval(days => %s)
-                      where driver_id = %s and id = %s""", (A.LANCAMENTO_APAGADO_DIAS - 1, _uidl_cx, _recente_cx["id"]))
+    for _id_cx, _idade_cx in ((_velho_cx["id"], f"{A.LANCAMENTO_APAGADO_DIAS + 1} days"),
+                              (_velho2_cx["id"], f"{A.LANCAMENTO_APAGADO_DIAS + 1} days"),
+                              (_quase_cx["id"], f"{A.LANCAMENTO_APAGADO_DIAS - 1} days 1 hour"),
+                              (_recente_cx["id"], f"{A.LANCAMENTO_APAGADO_DIAS - 2} days")):
+        _conn.execute("""update public.ledger_entries set deleted_at = now() - %s::interval
+                          where driver_id = %s and id = %s""", (_idade_cx, _uidl_cx, _id_cx))
     _conn.execute("""update public.ledger_entries set created_at = now() - interval '400 days'
                       where driver_id = %s and id = %s""", (_uidl_cx, _vivo_cx["id"]))
 _corte_cx = A.to_utc_iso(A.datetime.now(A.timezone.utc) - A.timedelta(days=A.LANCAMENTO_APAGADO_DIAS))
@@ -5100,8 +5104,72 @@ _ficou_cx = _linhas_cx(_uidl_cx)
 check("limpeza: apaga de vez o lancamento apagado ha mais de 30 dias e informa a contagem",
       _r.status_code == 200 and _velho_cx["id"] not in _ficou_cx and _velho2_cx["id"] not in _ficou_cx
       and _d_cx.get("lancamentos_removidos", 0) >= 1, str(_d_cx))
-check("limpeza: mantem o apagado ha menos de 30 dias e o antigo que nao foi apagado",
+check("limpeza: o tumulo que passou de 29 dias sai hoje (na limpeza de amanha passaria dos 30)",
+      _quase_cx["id"] not in _ficou_cx, str(list(_ficou_cx)))
+check("limpeza: mantem o apagado ha 28 dias e o antigo que nao foi apagado",
       _recente_cx["id"] in _ficou_cx and _vivo_cx["id"] in _ficou_cx, str(list(_ficou_cx)))
+
+# Com mais vencidos que o lote, o mais velho sai primeiro; senao o tumulo mais
+# antigo podia ficar para outro dia, alem do prazo. Sem o "order by", a ordem
+# seria a do plano: o indice parcial devolve por data, mas a varredura da
+# tabela (que o Postgres escolhe quando ha muitos vencidos) devolve na ordem do
+# disco. Aqui a varredura e forcada nesta conexao, e os tumulos (100 a 104 dias,
+# mais velhos que qualquer um de verdade) sao gravados do mais novo para o mais velho.
+import contextlib as _contextlib_cx
+from types import SimpleNamespace as _NsCx
+
+
+class _PoolVarreduraCx:
+    @_contextlib_cx.contextmanager
+    def connection(self):
+        with A.get_store().pool.connection() as _conn:
+            _conn.execute("set local enable_indexscan = off")
+            _conn.execute("set local enable_bitmapscan = off")
+            yield _conn
+
+
+_ordem_cx = [_lanc(apagado=True) for _ in range(5)]
+_enviar_cx(*_ordem_cx, cab=_cabl_cx, cli=_cl_cx)
+with A.get_store().pool.connection() as _conn:
+    for _i_cx, _l_cx in enumerate(_ordem_cx):
+        _conn.execute("""update public.ledger_entries set deleted_at = now() - make_interval(days => %s)
+                          where driver_id = %s and id = %s""", (100 + _i_cx, _uidl_cx, _l_cx["id"]))
+_corte_cx = A.to_utc_iso(A.datetime.now(A.timezone.utc) - A.timedelta(days=99))
+_saiu_cx = []
+for _ in _ordem_cx:
+    _antes_ids_cx = set(_linhas_cx(_uidl_cx))
+    A.PostgresStore.purge_deleted_ledger_before(_NsCx(pool=_PoolVarreduraCx()), _corte_cx, 1)
+    _saiu_cx += sorted(_antes_ids_cx - set(_linhas_cx(_uidl_cx)))
+check("limpeza do caixa: com mais vencidos que o lote, sai primeiro o mais velho (tambem varrendo a tabela)",
+      _saiu_cx == [_l["id"] for _l in reversed(_ordem_cx)], f"{_saiu_cx} {[_l['id'] for _l in _ordem_cx]}")
+
+# Sem a tabela do Caixa (0022 por aplicar; a Vercel publica no merge), a limpeza
+# segue: o Pro pre-pago vencido ainda expira e o aviso de renovacao ainda sai.
+_purga_real_cx, _expirar_real_cx = A.PostgresStore.purge_deleted_ledger_before, A.expirar_pro_prepago
+_expirou_cx = []
+
+
+def _purga_sem_tabela_cx(self, cutoff_iso, limit):
+    raise A.psycopg.errors.UndefinedTable('relation "public.ledger_entries" does not exist')
+
+
+def _expirar_espiao_cx():
+    _expirou_cx.append(1)
+    return 0
+
+
+A.PostgresStore.purge_deleted_ledger_before = _purga_sem_tabela_cx
+A.expirar_pro_prepago = _expirar_espiao_cx
+os.environ["CRON_SECRET"] = "segredo-de-teste"
+try:
+    _r = c0.get("/tarefas/limpeza", headers={"Authorization": "Bearer segredo-de-teste"})
+finally:
+    A.PostgresStore.purge_deleted_ledger_before = _purga_real_cx
+    A.expirar_pro_prepago = _expirar_real_cx
+    os.environ.pop("CRON_SECRET", None)
+check("limpeza: sem a tabela do Caixa (0022 por aplicar) segue e ainda expira o Pro pre-pago",
+      _r.status_code == 200 and (_r.get_json() or {}).get("lancamentos_removidos") == 0 and _expirou_cx == [1],
+      f"{_r.status_code} {_r.get_json()} {_expirou_cx}")
 A.CAIXA_A_PARTIR_DATA = _portao_cx
 
 print("\n-- Data API fechada --")

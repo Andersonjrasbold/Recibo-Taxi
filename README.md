@@ -429,9 +429,10 @@ sozinhos como receita; o resto é lançado à mão.
   maior troca a guardada; a mais velha não sobrescreve, mas volta em `aceitos` (o
   servidor já tem algo igual ou mais novo). O mesmo id duas vezes no lote: fica o
   de maior versão (empate: o último). `apagado: true` vira túmulo
-  (`deleted_at`), que a limpeza tira de vez em `LANCAMENTO_APAGADO_DIAS` = 30
-  dias; versão maior com `apagado: false` desapaga. O túmulo não guarda texto
-  livre: `obs` e `forma` são gravadas vazias, sem conferir o tamanho.
+  (`deleted_at`), que a limpeza tira de vez em até `LANCAMENTO_APAGADO_DIAS` =
+  30 dias depois de chegar; versão maior com `apagado: false` desapaga. O
+  túmulo não guarda texto livre: `obs` e `forma` são gravadas vazias, sem
+  conferir o tamanho.
 - Nunca chegam ao servidor: origem e destino (o trajeto fica no aparelho), o
   passageiro, nada além dos campos acima. O log leva só contagens e códigos de
   erro, nunca valor, categoria ou observação.
@@ -452,7 +453,9 @@ promete. Sem a migração, o bloco aparece como indisponível.
 
 `GET /tarefas/limpeza` apaga recibos sem conta (do antigo gerador público) com mais de 12 meses
 (o que a Política de Privacidade promete), contadores de rate limit antigos e os
-lançamentos do Caixa apagados no app há mais de 30 dias.
+túmulos do Caixa (lançamentos apagados no app) há mais de 29 dias: como a limpeza
+roda uma vez por dia, o corte um dia antes faz nenhum túmulo passar dos 30 dias
+que a Política promete. Com backlog, o túmulo mais velho sai primeiro.
 
 Protegida por `Authorization: Bearer $CRON_SECRET`. O `vercel.json` agenda a
 chamada diária às 04:00 UTC. Sem `CRON_SECRET` a rota fica fechada.

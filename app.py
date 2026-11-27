@@ -360,8 +360,10 @@ ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 LANCAMENTOS_DIARIOS = 500
 LANCAMENTOS_POR_LOTE = 100
 # Lançamento apagado no app fica no servidor como túmulo (é ele que impede o
-# recibo apagado de voltar ao caixa) e sai de vez depois disto. A Política de
-# Privacidade promete "em até 30 dias".
+# recibo apagado de voltar ao caixa) e sai de vez em até este prazo, contado de
+# quando o túmulo chega ao servidor. A Política de Privacidade promete "em até
+# 30 dias"; a limpeza corta um dia antes porque roda uma vez por dia (ver
+# tarefa_limpeza).
 LANCAMENTO_APAGADO_DIAS = 30
 
 # Painel /admin. Tentativas de login por dia: o painel mostra CPF e telefone de
@@ -1925,12 +1927,18 @@ class PostgresStore:
             ).fetchall()]
 
     def purge_deleted_ledger_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
-        """Apaga de vez os lançamentos apagados no app antes do corte, em lotes."""
+        """Apaga de vez os lançamentos apagados no app antes do corte, em lotes.
+
+        O mais velho sai primeiro: sem a ordem, com mais vencidos que o lote, o
+        lote pegava qualquer um, e o túmulo mais antigo podia ficar para outro
+        dia, além do prazo da Política. O índice parcial em deleted_at já dá a
+        ordem.
+        """
         with self.pool.connection() as conn:
             apagados = conn.execute(
                 """delete from public.ledger_entries where (driver_id, id) in (
                      select driver_id, id from public.ledger_entries
-                      where deleted_at < %s limit %s)
+                      where deleted_at < %s order by deleted_at limit %s)
                    returning id""",
                 (cutoff_iso, limit),
             ).fetchall()
@@ -6051,7 +6059,7 @@ def exigir_cron() -> None:
 @app.get("/tarefas/limpeza")
 def tarefa_limpeza():
     """Apaga recibos sem conta (do antigo gerador público) vencidos, contadores antigos
-    e lançamentos do Caixa apagados há mais de LANCAMENTO_APAGADO_DIAS.
+    e os túmulos do Caixa, que saem em até LANCAMENTO_APAGADO_DIAS.
 
     Chamada pelo Cron da Vercel, que envia 'Authorization: Bearer $CRON_SECRET'.
     """
@@ -6072,10 +6080,13 @@ def tarefa_limpeza():
         app.logger.warning("limpeza de access_logs pulada: %s", exc)
         acessos_removidos = 0
     # Caixa (migração 0022): o lançamento apagado no app fica como túmulo e sai
-    # de vez em 30 dias, como a Política de Privacidade promete.
+    # de vez em até LANCAMENTO_APAGADO_DIAS, como a Política de Privacidade
+    # promete. O corte é um dia antes porque a limpeza roda uma vez por dia: com
+    # ele nos 30 dias, o túmulo que passava do corte por minutos esperava a
+    # execução seguinte, e todos saíam com 30 a 31 dias.
     try:
         lancamentos_removidos, lancamentos_left = store.purge_deleted_ledger_before(
-            to_utc_iso(now - timedelta(days=LANCAMENTO_APAGADO_DIAS)), CLEANUP_BATCH_LIMIT)
+            to_utc_iso(now - timedelta(days=LANCAMENTO_APAGADO_DIAS - 1)), CLEANUP_BATCH_LIMIT)
     except Exception as exc:  # migração 0022 ainda não aplicada
         app.logger.warning("limpeza de lançamentos apagados pulada: %s", _codigo_do_erro(exc))
         lancamentos_removidos, lancamentos_left = 0, False

@@ -11,7 +11,7 @@
 -- lançamento de um recibo, "l-<16 hex>" para o resto), então dois motoristas
 -- com o mesmo id são linhas diferentes. `version` decide entre reenvios: só
 -- uma versão igual ou maior troca a guardada. Apagado no app vira túmulo
--- (`deleted_at`), que a limpeza diária tira de vez em 30 dias.
+-- (`deleted_at`), que a limpeza diária tira de vez em até 30 dias.
 --
 -- Rodar ANTES do deploy do código que grava. Sem a tabela, o envio do app
 -- responde 503 (o app guarda e tenta de novo) e o bloco do Caixa no painel
@@ -47,7 +47,7 @@ create table if not exists public.ledger_entries (
 -- O caixa do dia e do mês de um motorista (o GET da fase 2 lê por aqui).
 create index if not exists ledger_entries_driver_date_idx
   on public.ledger_entries (driver_id, entry_date);
--- Só os túmulos: a limpeza procura os apagados há mais de 30 dias.
+-- Só os túmulos: a limpeza procura os vencidos, do mais velho para o mais novo.
 create index if not exists ledger_entries_deleted_idx
   on public.ledger_entries (deleted_at)
   where deleted_at is not null;
@@ -76,4 +76,4 @@ comment on column public.ledger_entries.rid is
 comment on column public.ledger_entries.version is
   'Versão do aparelho: só uma igual ou maior substitui a guardada';
 comment on column public.ledger_entries.deleted_at is
-  'Apagado no app (túmulo); a limpeza diária tira de vez depois de 30 dias';
+  'Apagado no app (túmulo); a limpeza diária tira de vez em até 30 dias';

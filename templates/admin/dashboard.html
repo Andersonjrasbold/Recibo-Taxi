@@ -129,6 +129,29 @@
     {% else %}<tr><td colspan="6" class="adm-suave">Ninguém no teto este mês.</td></tr>{% endfor %}
     </tbody></table></div>
   {% endif %}
+  <h3 class="adm-h3 mt-4">Ofertas pelo WhatsApp oficial (30 dias)</h3>
+  <p class="adm-suave">A tarefa agendada manda o modelo aprovado pela Meta a quem bateu o teto e segue no Grátis: dias úteis, das 9h às 19h, uma oferta por motorista a cada 30 dias, pulando quem pediu para parar. "Parar ofertas" ou "SAIR" na resposta marca a conta na hora; outra resposta avisa a equipe por e-mail. <strong>{{ d.whatsapp_estado }}</strong></p>
+  {% if d.whatsapp_ofertas is none %}{{ ui.indisponivel() }}{% else %}
+  {% set w = d.whatsapp_ofertas %}
+  <div class="db-stats adm-kpis">
+    {{ ui.kpi(w.enviadas, 'Ofertas enviadas', 'whatsapp', 'green') }}
+    {{ ui.kpi(w.entregues, 'Entregues', 'check2', 'blue') }}
+    {{ ui.kpi(w.lidas, 'Lidas', 'check2-all', 'blue') }}
+    {{ ui.kpi(w.responderam, 'Responderam', 'chat-dots', 'orange') }}
+    {{ ui.kpi(w.pararam, 'Pediram para parar', 'slash-circle', 'coral') }}
+    {{ ui.kpi(w.pagaram, 'Pagaram pelo link', 'star', 'green') }}
+  </div>
+  {% if d.whatsapp_ultimas %}
+  <div class="table-responsive"><table class="adm-tabela">
+    <thead><tr><th>Quando</th><th>Motorista</th><th>Cidade</th><th>O que</th></tr></thead>
+    <tbody>
+    {% for u in d.whatsapp_ultimas %}
+    <tr><td>{{ u.created_at | data_br }}</td><td><a href="{{ url_for('admin_motorista', driver_id=u.id) }}" class="adm-link">{{ u.full_name or '(sem nome)' }}</a></td><td>{{ u.city }}</td>
+        <td>{% if u.direction == 'saida' %}oferta {{ {'enviado': 'enviada', 'entregue': 'entregue', 'lido': 'lida', 'falhou': 'falhou'}.get(u.status, u.status) }}{% elif u.kind == 'parar' %}<span class="adm-falha">pediu para parar</span>{% else %}respondeu{% endif %}</td></tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% endif %}
+  {% endif %}
 </section>
 
 {# ── 5. Uso ────────────────────────────────────────────────────────── #}

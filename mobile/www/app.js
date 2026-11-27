@@ -986,6 +986,7 @@ function valorExibido(texto, casas = moedaAtual().casas) {
 function aplicarMoedaNaTela() {
   const m = moedaAtual();
   document.querySelectorAll('.simbolo-moeda').forEach((el) => { el.textContent = m.simbolo; });
+  mostrarMoedaDoLancamento();   // o do lancamento e o da moeda dele, nao o da sessao
   $('valor').placeholder = (45).toLocaleString('pt-BR', { minimumFractionDigits: m.casas, maximumFractionDigits: m.casas });
   $('rotulo-documento').textContent = paisAtual() === 'BR'
     ? 'CPF ou CNPJ do passageiro (opcional)' : 'Documento do passageiro (opcional)';
@@ -3425,7 +3426,11 @@ async function desenharCaixaDoInicio() {
   $('caixa-inicio').hidden = false;
   const vazio = !r.nReceitas && !r.nDespesas;
   const valor = $('caixa-inicio-valor');
-  valor.textContent = vazio ? 'Nenhum lançamento hoje' : dinheiro(r.liquido, m);
+  // So lancamentos de outra moeda (os recibos de antes de ele trocar a moeda
+  // no site): ficam fora da conta, mas existem, e o Caixa aberto pelo cartao
+  // os lista. "Nenhum lançamento hoje" desmentia a tela seguinte.
+  valor.textContent = !vazio ? dinheiro(r.liquido, m)
+    : r.outrasMoedas ? `${plural(r.outrasMoedas, 'lançamento', 'lançamentos')} em outra moeda` : 'Nenhum lançamento hoje';
   valor.className = `caixa-cartao-valor ${vazio ? 'vazio' : corDoValor(r.liquido)}`;
   $('caixa-inicio-linha').hidden = vazio;
   $('caixa-inicio-linha').textContent = linhaSemQuebra([`Receitas ${dinheiro(r.receitas, m)}`,
@@ -3566,12 +3571,19 @@ function itemDoCaixa(l, m) {
   return item;
 }
 
-// O total do mes e a isca: os dias e os lancamentos ficam para o Pro.
+// O total do mes e a isca: os dias e os lancamentos ficam para o Pro. O mes
+// so com lancamentos de outra moeda tem o que mostrar ao assinar: dizer
+// "Nenhum lançamento" ali escondia justo o que o Pro mostra. A nota de que o
+// historico continua guardado so aparece quando ha historico, e diz onde:
+// neste aparelho (trazer do servidor para um aparelho novo e da fase 2).
 function desenharBloqueio(bloco, resumo, mes, mesAtual, m) {
   const nome = nomeCurtoDoMes(mes, mesAtual);
-  bloco.querySelector('.caixa-bloqueio-isca').textContent = resumo.nReceitas || resumo.nDespesas
+  const naMoeda = resumo.nReceitas + resumo.nDespesas;
+  bloco.querySelector('.caixa-bloqueio-isca').textContent = naMoeda
     ? `${nome} fechou com ${dinheiro(resumo.liquido, m)} de líquido.`
-    : `Nenhum lançamento em ${nome.charAt(0).toLowerCase()}${nome.slice(1)}.`;
+    : resumo.outrasMoedas ? `${nome} tem ${plural(resumo.outrasMoedas, 'lançamento', 'lançamentos')} em outra moeda.`
+      : `Nenhum lançamento em ${nome.charAt(0).toLowerCase()}${nome.slice(1)}.`;
+  bloco.querySelector('.caixa-bloqueio-guardados').hidden = !naMoeda && !resumo.outrasMoedas;
 }
 
 // Meta do dia, do liquido. Barra em ambar; "Faltam" hoje, "Faltaram" num dia
@@ -3733,7 +3745,9 @@ async function desenharMesDoCaixa() {
   $('mes-bloco-despesas').hidden = !r.porCategoria.despesa.length;
   $('mes-bloco-receitas').hidden = !r.porCategoria.receita.length;
   $('mes-bloco-dias').hidden = !r.porDia.length;
-  $('mes-vazio').hidden = r.porDia.length > 0;
+  // O mes so com lancamentos de outra moeda nao e vazio: a nota acima ja diz
+  // quantos sao e por que ficam fora da conta.
+  $('mes-vazio').hidden = r.porDia.length > 0 || r.outrasMoedas > 0;
 }
 
 // Categoria do mes: nome, valor, a parte do total e uma barra fina com ela.
@@ -3868,6 +3882,7 @@ function prepararLancamento() {
   $('l-mais').open = false;
   ['btn-l-recibo', 'l-dica-recibo', 'l-rota', 'l-recusado'].forEach((id) => { $(id).hidden = true; });
   travarTipo(lancamentoAberto);
+  mostrarMoedaDoLancamento();
   limitarDataDoLancamento();
 }
 
@@ -3886,6 +3901,17 @@ function limitarDataDoLancamento() {
   const adiante = l && l.origem === 'recibo' && Caixa.dataReal(l.data) && l.data > hoje ? l.data : '';
   $('l-data').max = adiante || hoje;
   $('l-data').min = ehPro() ? '2000-01-01' : `${Caixa.mesDe(hoje)}-01`;
+}
+
+// O valor e digitado na moeda do lancamento: o editado e o dele (o recibo de
+// antes de o motorista trocar a moeda no site continua em reais), e o novo, a
+// de agora. De outra moeda vai o codigo ("BRL", "CLP"), e nao o simbolo: o
+// "$" serve a cinco moedas, e o "R$ 58,00" aparecia como "$ 58,00", convidando
+// a "corrigir" para 58.000,00 — gravados em reais.
+function mostrarMoedaDoLancamento() {
+  const m = moedaDoCaixa();
+  const l = lancamentoAberto;
+  $('l-simbolo').textContent = l && l.moeda && l.moeda !== m.codigo ? l.moeda : m.simbolo;
 }
 
 // Novo lancamento, com o tipo do botao. O foco vai para o valor no mesmo

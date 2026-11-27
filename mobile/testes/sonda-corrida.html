@@ -2100,6 +2100,14 @@ window.addEventListener('load', async () => {
       ok('Gratis: dia de mes anterior mostra o bloqueio com o total do mes, sem o dia nem os lancamentos',
          visivel('caixa-bloqueio') && textoDe('caixa-bloqueio').includes('Os meses anteriores ficam no Pro.') && textoDe('caixa-bloqueio').includes(isca)
          && !visivel('caixa-dia') && !visivel('btn-abrir-mes') && !q('tela-caixa').innerText.includes('4.200,00'), textoDe('caixa-bloqueio'));
+      // A nota promete so o que a fase 1 cumpre: o historico volta ao assinar
+      // NESTE aparelho (trazer do servidor para outro e da fase 2), e so
+      // aparece quando o mes travado tem lancamento.
+      const notaGuardados = (bloco) => q(bloco).querySelector('.caixa-bloqueio-guardados');
+      const notaAVista = (bloco) => !notaGuardados(bloco).hidden && !notaGuardados(bloco).closest('[hidden]');
+      const textoDaNota = 'Seus lançamentos continuam guardados neste aparelho: ao assinar, o histórico aparece inteiro.';
+      ok('Gratis: com lancamento no mes travado, a nota diz que ele continua guardado neste aparelho', notaAVista('caixa-bloqueio')
+         && notaGuardados('caixa-bloqueio').textContent === textoDaNota, notaGuardados('caixa-bloqueio').textContent);
       ok('o mes da isca sem o ano quando e o mesmo ano', mesPassado.slice(0, 4) !== mesAtual.slice(0, 4) || !/ de \d{4} fechou/.test(isca));
       clicar('btn-caixa-pro'); await espera(300);
       ok('"Conhecer o Pro" abre a assinatura com o motivo do caixa', !q('tela-assinatura').hidden
@@ -2121,6 +2129,15 @@ window.addEventListener('load', async () => {
       await abrirMesDoCaixa(mesPassado);
       ok('Gratis: o mes anterior mostra o total como isca e o convite, sem dias nem categorias', visivel('mes-bloqueio') && !visivel('mes-conteudo')
          && textoDe('mes-bloqueio').includes(isca) && !q('tela-caixa-mes').innerText.includes('Aluguel'));
+      ok('Gratis: no mes travado com lancamento, a nota de que continua guardado neste aparelho', notaAVista('mes-bloqueio')
+         && notaGuardados('mes-bloqueio').textContent === textoDaNota);
+      const mesSemNada = Caixa.mesAnterior(mesPassado);
+      await abrirMesDoCaixa(mesSemNada);
+      const nomeSemNada = nomeCurtoDoMes(mesSemNada, mesAtual);
+      ok('Gratis: mes travado sem lancamento nenhum diz so que nao ha, sem prometer historico', visivel('mes-bloqueio')
+         && textoDe('mes-bloqueio').includes(`Nenhum lançamento em ${nomeSemNada.charAt(0).toLowerCase()}${nomeSemNada.slice(1)}.`)
+         && !notaAVista('mes-bloqueio'), textoDe('mes-bloqueio'));
+      await abrirMesDoCaixa(mesPassado);
       clicar('btn-mes-seguinte'); await espera(300);
       ok('› do mes volta ao mes atual, liberado', !visivel('mes-bloqueio') && visivel('mes-conteudo') && q('btn-mes-seguinte').disabled);
       clicar('btn-mes-anterior'); await espera(300);
@@ -2238,6 +2255,47 @@ window.addEventListener('load', async () => {
         window.Date = DataDeVerdade;
       }
       irParaInicio(); await espera(300);
+
+      // ── Lancamentos em outra moeda ──
+      // Ele corrigiu o pais no site (Argentina): a sessao traz o peso, e o que
+      // ja estava no caixa continua em reais, fora das contas (a nota diz
+      // quantos). Nenhum texto pode dizer que nao ha lancamento, e o lancamento
+      // em reais e editado em reais, com a moeda dele no rotulo.
+      const rotuloDoValor = () => document.querySelector('label[for="l-valor"]').textContent;
+      window.__sessao = { ...sessaoGratis, moeda: 'ARS', moeda_simbolo: '$', moeda_casas: 2, pais: 'AR', ddi: '54' };
+      try {
+        await atualizarSessao();
+        irParaInicio(); await espera(300);
+        const emReaisHoje = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'ARS').outrasMoedas;
+        ok('outra moeda: o cartao do inicio diz quantos lancamentos de hoje estao em outra moeda, e nao "Nenhum lançamento hoje"',
+           emReaisHoje > 0 && textoDe('caixa-inicio-valor') === `${plural(emReaisHoje, 'lançamento', 'lançamentos')} em outra moeda`
+           && q('caixa-inicio-linha').hidden, `${emReaisHoje} ${textoDe('caixa-inicio-valor')}`);
+        await abrirMesDoCaixa(mesAtual);
+        ok('outra moeda: o mes so com eles mostra a nota, sem "Nenhum lançamento neste mês."', visivel('mes-outras-moedas') && !visivel('mes-vazio'),
+           `${textoDe('mes-outras-moedas')} | vazio a vista: ${visivel('mes-vazio')}`);
+        await abrirMesDoCaixa(mesPassado);
+        const emReaisNoPassado = Caixa.resumoDoMes(await listarLancamentos(), mesPassado, 'ARS').outrasMoedas;
+        ok('outra moeda, Gratis: o mes travado diz quantos lancamentos ele tem, e que continuam guardados', emReaisNoPassado > 0
+           && textoDe('mes-bloqueio').includes(`${nomeCurtoDoMes(mesPassado, mesAtual)} tem ${plural(emReaisNoPassado, 'lançamento', 'lançamentos')} em outra moeda.`)
+           && !textoDe('mes-bloqueio').includes('Nenhum lançamento') && notaAVista('mes-bloqueio'), textoDe('mes-bloqueio'));
+        await abrirCaixa();
+        itemDa('l-gorjeta').click(); await espera(300);
+        const naEdicao = rotuloDoValor();
+        aplicarMoedaNaTela();   // a sessao relida com o formulario aberto (o menu, a volta ao app)
+        ok('outra moeda: o lancamento em reais e editado em reais, com o codigo da moeda no rotulo (o "$" serve a cinco moedas)',
+           naEdicao === 'Valor (BRL)' && rotuloDoValor() === 'Valor (BRL)' && q('l-valor').value === '10,00', `${naEdicao} | ${rotuloDoValor()}`);
+        clicar('btn-fechar-lancamento'); await espera(300);
+        clicar('btn-caixa-despesa'); await espera(100);
+        ok('outra moeda: o lancamento novo e na moeda de agora', rotuloDoValor() === 'Valor ($)', rotuloDoValor());
+        clicar('btn-fechar-lancamento'); await espera(300);
+      } finally {
+        window.__sessao = { ...sessaoGratis, moeda: 'BRL', moeda_simbolo: 'R$', moeda_casas: 2, pais: 'BR', ddi: '55' };
+        await atualizarSessao();
+        window.__sessao = sessaoGratis;
+      }
+      clicar('btn-caixa-despesa'); await espera(100);
+      ok('de volta ao real, o lancamento novo e em reais de novo', moedaAtual().codigo === 'BRL' && rotuloDoValor() === 'Valor (R$)', rotuloDoValor());
+      clicar('btn-fechar-lancamento'); await espera(300);
 
       // ── Fim da corrida ──
       Guardado.set('tarifa', tarifa);

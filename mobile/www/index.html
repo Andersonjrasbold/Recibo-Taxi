@@ -855,7 +855,7 @@
     <strong class="caixa-bloqueio-titulo">Os meses anteriores ficam no Pro.</strong>
     <p class="caixa-bloqueio-isca"></p>
     <button type="button" id="btn-caixa-pro" class="primario caixa-conhecer-pro">Conhecer o Pro</button>
-    <p class="caixa-nota">Seus lançamentos continuam guardados: ao assinar, o histórico aparece inteiro.</p>
+    <p class="caixa-nota caixa-bloqueio-guardados" hidden>Seus lançamentos continuam guardados neste aparelho: ao assinar, o histórico aparece inteiro.</p>
   </div>
 
   <button type="button" id="btn-abrir-mes" class="caixa-mes-cartao">
@@ -916,7 +916,7 @@
     <strong class="caixa-bloqueio-titulo">Os meses anteriores ficam no Pro.</strong>
     <p class="caixa-bloqueio-isca"></p>
     <button type="button" id="btn-mes-pro" class="primario caixa-conhecer-pro">Conhecer o Pro</button>
-    <p class="caixa-nota">Seus lançamentos continuam guardados: ao assinar, o histórico aparece inteiro.</p>
+    <p class="caixa-nota caixa-bloqueio-guardados" hidden>Seus lançamentos continuam guardados neste aparelho: ao assinar, o histórico aparece inteiro.</p>
   </div>
 </section>
 
@@ -936,7 +936,9 @@
       <button type="button" id="tipo-despesa" class="segmento" role="radio" aria-checked="true">Despesa</button>
     </div>
 
-    <label for="l-valor">Valor (<span class="simbolo-moeda">R$</span>)</label>
+    <!-- O simbolo e o da moeda do lancamento (ver mostrarMoedaDoLancamento),
+         e nao o .simbolo-moeda da sessao: o de antes da troca de moeda e editado na dele. -->
+    <label for="l-valor">Valor (<span id="l-simbolo">R$</span>)</label>
     <input type="text" id="l-valor" class="campo-valor" inputmode="decimal" autocomplete="off" placeholder="0,00">
     <!-- Veio de um recibo: abre o recibo. O valor daqui e so o do caixa. -->
     <button type="button" id="btn-l-recibo" class="linha-recibo" hidden></button>

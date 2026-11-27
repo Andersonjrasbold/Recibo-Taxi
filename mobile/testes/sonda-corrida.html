@@ -2059,6 +2059,22 @@ window.addEventListener('load', async () => {
       irParaInicio(); await espera(300);
       ok('e a meta salva ali aparece no cartao do inicio', metaDoDia() === 40000 && visivel('caixa-inicio-meta')
          && textoDe('inicio-meta-texto') === 'Faltam R$ ••••' && !visivel('btn-inicio-definir-meta'));
+      // O Caixa deixado num dia bloqueado (o mes passado, no Gratis: no dia 1o,
+      // um toque em "‹") escondia o dia, e o campo da meta mora nele: o focus()
+      // do toque seguinte, no cartao, nao pegava, e o teclado nao subia.
+      removerMetaDoDia();
+      await abrirCaixa(`${mesPassado}-14`);
+      const ficouNoBloqueio = visivel('caixa-bloqueio') && !visivel('caixa-dia');
+      clicar('btn-fechar-caixa'); await espera(300);
+      const conviteDepoisDoBloqueio = visivel('btn-inicio-definir-meta');
+      clicar('btn-inicio-definir-meta');
+      const depoisDoBloqueio = { foco: document.activeElement === q('meta-valor'), campo: visivel('meta-valor'), bloqueio: visivel('caixa-bloqueio') };
+      await espera(400);
+      ok('depois de um dia bloqueado do Gratis, "Definir meta do dia" do cartao abre hoje com o campo e o foco no valor, no mesmo toque',
+         ficouNoBloqueio && conviteDepoisDoBloqueio && depoisDoBloqueio.foco && depoisDoBloqueio.campo && !depoisDoBloqueio.bloqueio
+         && textoDe('caixa-dia-titulo').startsWith('Hoje, ') && visivel('form-meta') && document.activeElement === q('meta-valor'),
+         `${JSON.stringify(depoisDoBloqueio)} ${textoDe('caixa-dia-titulo')}`);
+      clicar('btn-cancelar-meta'); await espera(300);
 
       // De volta ao Caixa vazio do resto da parte, e com os numeros a vista:
       // as verificacoes daqui em diante leem valores.
@@ -2901,6 +2917,31 @@ window.addEventListener('load', async () => {
          && diaDaVolta.nReceitas + diaDaVolta.nDespesas > 0, textoDe('caixa-inicio-valor'));
       mostrarValores();
       ok('e, com o olho aberto, o caixa dele continua no aparelho', textoDe('caixa-inicio-valor') === reais(diaDaVolta.liquido), textoDe('caixa-inicio-valor'));
+
+      // O mesmo pelo Sair, no Pro: com o Caixa num dia do mes passado (liberado
+      // para ele), o Sair o redesenha bloqueado (o plano ja saiu), e, entrando
+      // de novo, ainda Pro, o "Definir meta do dia" abria o campo sem o foco.
+      removerMetaDoDia();
+      window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
+      try {
+        await atualizarSessao();
+        await abrirCaixa(`${mesPassado}-14`);
+        const diaNoPro = ehPro() && visivel('caixa-dia');
+        clicar('btn-perfil'); await espera(100);
+        clicar('btn-sair'); await espera(300);
+        entrarNaSessao({ access_token: 'token-caixa4', refresh_token: 'refresh-caixa4' }, 'web@teste.invalid');
+        await iniciar(); await espera(300);
+        const conviteNoPro = ehPro() && !q('tela-inicio').hidden && visivel('btn-inicio-definir-meta');
+        clicar('btn-inicio-definir-meta');
+        const focoNoToque = document.activeElement === q('meta-valor');
+        await espera(400);
+        ok('no Pro, depois do Sair com o Caixa num dia do mes passado, "Definir meta do dia" tambem abre hoje com o foco no valor, no mesmo toque',
+           diaNoPro && conviteNoPro && focoNoToque && textoDe('caixa-dia-titulo').startsWith('Hoje, ') && document.activeElement === q('meta-valor'),
+           JSON.stringify({ diaNoPro, conviteNoPro, focoNoToque, titulo: textoDe('caixa-dia-titulo') }));
+        clicar('btn-cancelar-meta');
+      } finally {
+        window.__sessao = sessaoGratis;
+      }
     } catch (e) {
       r.push(`FALHA caixa: excecao: ${e && e.stack || e}`);
     }

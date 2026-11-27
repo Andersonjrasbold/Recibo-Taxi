@@ -3585,6 +3585,13 @@ $('btn-inicio-lancamento').addEventListener('click', () => { vibrar('LIGHT'); ab
 $('btn-inicio-definir-meta').addEventListener('click', () => {
   vibrar('LIGHT');
   abrirCaixa();
+  // O campo da meta mora no dia, e o ultimo desenho do Caixa pode te-lo
+  // deixado escondido: um dia do mes passado no Gratis, ou o do Pro que saiu
+  // (o Sair o redesenha sem o plano). O desenho de hoje so vem depois da
+  // leitura do banco, e o focus() num campo escondido nao pega: o teclado nao
+  // subia. Hoje nunca fica bloqueado: o dia volta a vista ja aqui, como o
+  // desenho dele vai deixar (o do bloqueio ja esvaziou os valores).
+  $('caixa-dia').hidden = false; $('btn-abrir-mes').hidden = false; $('caixa-bloqueio').hidden = true;
   abrirFormularioDaMeta();
 });
 $('btn-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); });

@@ -4323,8 +4323,13 @@ check("politica: o que o Caixa guarda, de onde vem e a versao do app",
       "a observação que você escrever" in _pol_cx and "os litros de combustível quando houver" in _pol_cx
       and "o código do recibo quando o lançamento veio de um recibo" in _pol_cx
       and '"Só lançar no caixa" entram sozinhos' in _pol_cx and "versão 1.8 do app" in _pol_cx)
-check("politica: o trajeto e o passageiro ficam fora do servidor",
-      "a origem e o destino da corrida lançada no Caixa não vão para o nosso servidor" in _pol_cx
+# Na corrida com "Estimar valor" (o fluxo normal), a origem e o destino vao ao
+# servidor e ao Google (2.3): a 2.4 fala do que o lancamento leva, sem negar
+# isso, como o aviso do topo.
+check("politica: o lancamento nao leva o trajeto ao servidor, sem negar o Estimar valor, e nada do passageiro",
+      "o lançamento não leva a origem nem o destino da corrida ao nosso servidor" in _pol_cx
+      and '(o "Estimar valor" manda os dois só para calcular a rota, sem guardar; seção 2.3)' in _pol_cx
+      and "não vão para o nosso servidor" not in _pol_cx
       and "o Caixa não guarda dados do passageiro" in _pol_cx)
 check("politica: finalidade do Caixa, sem publicidade nem repasse, e no dia a dia a equipe so ve contagens",
       "Mostrar o caixa do dia e do mês e guardar uma cópia" in _pol_cx

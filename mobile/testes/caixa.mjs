@@ -308,6 +308,15 @@ try {
     [[['aplicativo', 'Aplicativo', 12000, 1], ['corrida', 'Corrida', 10300, 2], ['gorjeta', 'Gorjeta', 500, 1]],
       [['aluguel_veiculo', 30000], ['combustivel', 8600]]]);
   ok('por categoria: as partes somam 1', Math.abs(mes.porCategoria.receita.reduce((t, c) => t + c.parte, 0) - 1) < 1e-9);
+  // A parte em texto, como a tela do mes mostra, a partir do resumo de verdade.
+  const partes = (valores) => C.resumoDoMes(valores.map((v, i) => L(`p${i}`, 'receita', ['corrida', 'gorjeta', 'aplicativo'][i], v, '2026-11-02')),
+    '2026-11', 'BRL').porCategoria.receita.map((c) => C.textoDaParte(c.parte));
+  igual('parte em texto: 99,67% ao lado de outra categoria e ">99%" (nunca "100%"), e a pequena "<1%"',
+    [partes([600000, 2000]), partes([200000, 1000]), partes([200000, 1100])], [['>99%', '<1%'], ['>99%', '<1%'], ['99%', '1%']]);
+  igual('parte em texto: cada linha arredonda sozinha (51% + 50% e 33% x 3 estao certos), e so uma categoria e 100%',
+    [partes([50500, 49500]), partes([1, 1, 1]), partes([4500]), partes([995, 5])], [['51%', '50%'], ['33%', '33%', '33%'], ['100%'], ['>99%', '1%']]);
+  igual('parte em texto: zero e entrada estranha', [C.textoDaParte(0), C.textoDaParte(1), C.textoDaParte(0.004), C.textoDaParte(0.995), C.textoDaParte(undefined)],
+    ['0%', '100%', '<1%', '>99%', '0%']);
   igual('por categoria: empate de valor segue a ordem da tela',
     C.resumoDoMes([L('a', 'despesa', 'seguro', 100, '2026-11-02'), L('b', 'despesa', 'combustivel', 100, '2026-11-02')], '2026-11', 'BRL')
       .porCategoria.despesa.map((c) => c.categoria), ['combustivel', 'seguro']);

@@ -3722,16 +3722,17 @@ async function desenharMesDoCaixa() {
 }
 
 // Categoria do mes: nome, valor, a parte do total e uma barra fina com ela.
+// O texto da parte e o do caixa.js ("<1%", ">99%"); a barra vai pela fracao de
+// verdade, e nao pelo numero arredondado, com 1% de minimo para a pequena aparecer.
 function linhaDeCategoria(c, tipo, m) {
   const linha = el('div', 'caixa-categoria');
   const topo = el('div', 'caixa-categoria-linha');
-  const parte = Math.round(c.parte * 100);
   topo.appendChild(el('span', 'caixa-categoria-nome', c.rotulo));
   topo.appendChild(el('span', 'caixa-categoria-valor', dinheiro(c.centavos, m)));
-  topo.appendChild(el('span', 'caixa-categoria-parte', c.parte > 0 && parte === 0 ? '<1%' : `${parte}%`));
+  topo.appendChild(el('span', 'caixa-categoria-parte', Caixa.textoDaParte(c.parte)));
   const barra = el('div', `caixa-categoria-barra ${tipo}`);
   const cheia = el('span');
-  cheia.style.width = `${Math.max(1, parte)}%`;
+  cheia.style.width = `${Math.max(1, Math.round((Number(c.parte) || 0) * 1000) / 10)}%`;
   barra.appendChild(cheia);
   linha.appendChild(topo);
   linha.appendChild(barra);

@@ -1991,6 +1991,16 @@ window.addEventListener('load', async () => {
       const corrida = doMes.porCategoria.receita.find((c) => c.categoria === 'corrida');
       ok('receitas e despesas por categoria, com o valor e a parte do total', textoDe('mes-cat-receitas').includes(`Corrida${reais(corrida.centavos)}${Math.round(corrida.parte * 100)}%`)
          && textoDe('mes-cat-despesas').includes('Outra') && !visivel('mes-vazio'), textoDe('mes-cat-receitas'));
+      // O mes do taxista e quase so corrida: R$ 6.000,00 de corrida e R$ 20,00
+      // de gorjeta. A corrida (99,7%) nao pode dizer "100%" com a gorjeta logo
+      // abaixo, nem a barra dela ficar igual a de quem e o total inteiro.
+      const linhaDaParte = (centavos, total) => {
+        const linha = linhaDeCategoria({ rotulo: 'X', centavos, parte: centavos / total }, 'receita', moedaDoCaixa());
+        return [linha.querySelector('.caixa-categoria-parte').textContent, linha.querySelector('.caixa-categoria-barra span').style.width];
+      };
+      const partesNaTela = [linhaDaParte(600000, 602000), linhaDaParte(2000, 602000), linhaDaParte(4500, 4500), linhaDaParte(50500, 100000)];
+      ok('a parte de 99,7% ao lado de outra categoria e ">99%" (barra pela fracao), a de 0,3% e "<1%", e so a unica categoria e "100%"',
+         JSON.stringify(partesNaTela) === JSON.stringify([['>99%', '99.7%'], ['<1%', '1%'], ['100%', '100%'], ['51%', '50.5%']]), JSON.stringify(partesNaTela));
       const diasNaTela = [...q('mes-dias').querySelectorAll('.caixa-dia-item')].map((b) => b.dataset.dia);
       ok('a lista de dias, do mais recente para o mais antigo', diasNaTela.join() === doMes.porDia.map((d) => d.data).join() && diasNaTela[0] === hoje, diasNaTela.join());
       ok('voltar do Android: mes -> dia que estava aberto', voltarUmNivel() === true && !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Hoje, '));

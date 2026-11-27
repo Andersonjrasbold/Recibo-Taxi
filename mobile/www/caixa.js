@@ -453,6 +453,20 @@
         || String(a.categoria).localeCompare(String(b.categoria)));
   }
 
+  // A parte de uma categoria no total, em texto ("38%"). Os dois extremos nao
+  // arredondam para o que nao e: 0,4% vira "<1%" (o "0%" parecia nada) e
+  // 99,7% vira ">99%" (o "100%" dizia que a corrida era o total inteiro, com a
+  // gorjeta de R$ 20 logo abaixo). Cada linha arredonda sozinha, e a soma da
+  // tela pode dar 99% ou 101% (33% + 33% + 33%): cada numero esta certo, e
+  // repartir a sobra (maior resto) poria 34% numa das tres partes iguais.
+  function textoDaParte(fracao) {
+    const f = Number(fracao) || 0;
+    const p = Math.round(f * 100);
+    if (f > 0 && p === 0) return '<1%';
+    if (f < 1 && p >= 100) return '>99%';
+    return `${p}%`;
+  }
+
   // Dia trabalhado e dia com ao menos uma receita: o dia so de despesa (o
   // aluguel pago no domingo de folga) nao entra na media por dia.
   function resumoDoMes(lista, mes, moeda) {
@@ -511,6 +525,6 @@
     diaLocal, horaLocal, dataReal, somarDias, mesDe, mesAnterior, mesSeguinte, nomeDoMes,
     dataCurta, rotuloDoDia, mesLiberado,
     novoLancamento, editado, apagado, tipoFixo, lancamentoDoRecibo, camposDaCorrida, erroDoLancamento, paraEnvio,
-    resumoDoDia, resumoDoMes, doDia, progressoDaMeta,
+    resumoDoDia, resumoDoMes, textoDaParte, doDia, progressoDaMeta,
   });
 })(typeof window !== 'undefined' ? window : globalThis);

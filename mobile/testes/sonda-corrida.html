@@ -3,7 +3,8 @@
 // em pasta temporaria — nunca no www/ nem no public/ do iOS, que vao para as
 // lojas. Plugins nativos e rede simulados: nada sai para a producao.
 //   #c=asserts             fluxo inteiro conferido, resultado em #resultado-teste
-//   #c=rede                envio de recibos com servidor simulado (lento, antigo, sem cota)
+//   #c=rede                envio de recibos com servidor simulado (lento, antigo, sem cota),
+//                          e no fim os dados e o envio do caixa (1.8)
 //   #passo=N               para no passo N (fotos)
 //   #c=negado&passo=1      localizacao negada
 localStorage.clear();
@@ -24,6 +25,8 @@ window.__perfis = [];                   // corpos que o app mandou para /api/per
 window.__ordem = [];                    // 'recibo' e 'perfil', na ordem em que chegaram
 window.__sessaoAtraso = 0;              // ms ate o GET /api/sessao responder
 window.__pedidos = [];
+window.__regraCaixa = () => ({});       // como responder a cada POST /api/lancamentos (caixa, 1.8)
+window.__lotes = [];                    // corpos que o app mandou para /api/lancamentos
 window.__avaliacoes = 0;                // quantas vezes o app pediu avaliacao a loja
 window.__ouvintes = {};                 // eventos do plugin App ('resume', 'backButton')
 window.Capacitor = {
@@ -89,6 +92,20 @@ window.fetch = async (url, op) => {
   if (REDE && /\/api\/recibos\/[A-Z0-9]+\/email$/.test(String(url))) {
     return json({}, window.__email_status || 200);
   }
+  // O caixa sobe no fim de cada passada da fila. Sem esta resposta, cada
+  // passada do modo rede acabaria em "rede caida" e reagendaria a seguinte.
+  // __regraCaixa(corpo) pode atrasar, derrubar a conexao, mudar o status ou
+  // recusar alguns ids ({recusados: [{id, erro}]}); o resto volta aceito.
+  if (REDE && String(url).endsWith('/api/lancamentos') && op && op.method === 'POST') {
+    const corpo = JSON.parse(op.body);
+    window.__lotes.push(corpo);
+    const regra = window.__regraCaixa(corpo) || {};
+    await new Promise((ok) => setTimeout(ok, regra.atraso || 0));
+    if (regra.falhar) throw new TypeError('sonda: a conexao caiu');
+    const recusados = regra.recusados || [];
+    const aceitos = (corpo.lancamentos || []).map((l) => l.id).filter((id) => !recusados.some((x) => x.id === id));
+    return json(regra.corpo || { aceitos, recusados }, regra.status || 200);
+  }
   throw new TypeError('sonda: sem rede');
 };
 // O <a> do Waze e do Maps navegaria a pagina para fora. O ouvinte do app roda
@@ -133,7 +150,8 @@ window.addEventListener('load', async () => {
       q('form-recibo').requestSubmit();
     };
     try {
-      await espera(500); await limparRecibosLocais();
+      // O caixa dos recibos do modo asserts tambem sai: subiria aqui, no meio dos testes.
+      await espera(500); await limparRecibosLocais(); await limparLancamentosLocais();
 
       // Sinal fraco: o envio do 1o recibo demora; o motorista emite o 2o nesse
       // meio-tempo, e o 2o sobe antes. Quando o envio lento termina, a tela
@@ -1191,6 +1209,195 @@ window.addEventListener('load', async () => {
       ok('vitrine: sair da conta esconde as faixas e esquece a loja, mesmo com a resposta da loja chegando depois',
          vIni.hidden && vRec.hidden && proPelaLoja === false && lojaConferidaParaVitrine === false && buscouVitrineEm === 0);
       delete window.Capacitor.Plugins.Purchases;
+
+      // ── Caixa (1.8): dados no aparelho e envio ──────────────────────────
+      // Por ultimo de proposito: apaga o banco para recria-lo na versao 1.
+      // A sessao acabou no teste anterior; nada agendado mexe mais no banco.
+      if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      if (passadaDoCaixa) await passadaDoCaixa;
+      await espera(500);
+      // O banco da versao 1 (app ate a 1.7), com recibos, sobe para a 2 sem perder nada.
+      const apagouBanco = await new Promise((ok2) => {
+        const req = indexedDB.deleteDatabase('recibo-taxi');
+        req.onsuccess = () => ok2(true); req.onerror = () => ok2(false);
+        setTimeout(() => ok2(false), 5000);
+      });
+      ok('caixa: as conexoes abertas fecham sozinhas para o banco mudar de versao', apagouBanco);
+      const bancoV1 = await new Promise((ok2, falha) => {
+        const req = indexedDB.open('recibo-taxi', 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore('recibos', { keyPath: 'rid' }).createIndex('pendente', 'pendente'); };
+        req.onsuccess = () => ok2(req.result); req.onerror = () => falha(req.error);
+      });
+      const reciboV1 = (rid, valor, extra = {}, fora = {}) => ({ rid, criado_em: '2026-11-20T15:00:00.000Z', pendente: false, url: 'x',
+        dono: 'web-motorista', motorista: retratoV, ...fora,
+        dados: { rid, origem: 'Rodoviária', destino: 'Centro', valor, valor_exibido: valor, moeda: 'BRL', data: '2026-11-20', hora: '12:00',
+                 forma_pagamento: 'Pix', ...extra } });
+      await new Promise((ok2) => {
+        const tx = bancoV1.transaction('recibos', 'readwrite');
+        [reciboV1('A0000000000001', 'R$ 45'), reciboV1('A0000000000002', '1 500,00'), reciboV1('A0000000000003', '15 000', { moeda: 'CRC' }),
+         reciboV1('A0000000000004', '12,50', { moeda: undefined }), reciboV1('A0000000000005', 'abc'),
+         reciboV1('A0000000000006', '30', {}, { dono: 'outro' }), reciboV1('A0000000000007', '40', {}, { recusado: 'limite_mensal' })]
+          .forEach((x) => tx.objectStore('recibos').put(x));
+        tx.oncomplete = ok2;
+      });
+      bancoV1.close();
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      Guardado.set('motorista', retratoV);
+      const recibosV1 = await todosOsRecibos();
+      const bancoV2 = await abrirBanco();
+      ok('caixa: o banco da versao 1 sobe para a 2 sem perder recibo', recibosV1.length === 7 && bancoV2.version === 2
+         && bancoV2.objectStoreNames.contains('lancamentos'), `${recibosV1.length} recibos, versao ${bancoV2.version}`);
+      // Os recibos antigos viram receitas, com o decimalDoValor de verdade.
+      const criadosV1 = await completarCaixaComRecibos();
+      let doCaixa = await listarLancamentos();
+      const doRecibo = (rid) => doCaixa.find((x) => x.id === 'r-' + rid) || {};
+      ok('caixa: recibo antigo com "R$ 45", "1 500,00" e "15 000" (colones) vira receita de 4500, 150000 e 1500000',
+         doRecibo('A0000000000001').centavos === 4500 && doRecibo('A0000000000002').centavos === 150000
+         && doRecibo('A0000000000003').centavos === 1500000 && doRecibo('A0000000000003').moeda === 'CRC',
+         JSON.stringify(doCaixa.map((x) => [x.id, x.centavos, x.moeda])));
+      ok('caixa: recibo sem moeda usa a moeda de agora', doRecibo('A0000000000004').moeda === 'BRL' && doRecibo('A0000000000004').centavos === 1250);
+      ok('caixa: o recusado por cota tambem entra (a corrida aconteceu)', doRecibo('A0000000000007').centavos === 4000);
+      ok('caixa: valor que nao e numero fica fora, e o recibo de outro motorista tambem', criadosV1 === 5 && !doRecibo('A0000000000005').id
+         && !(await todosOsLancamentos()).some((x) => x.rid === 'A0000000000006'), String(criadosV1));
+      ok('caixa: a receita do recibo e corrida, de origem recibo, com a rota so no aparelho, versao 1 e pendente',
+         doRecibo('A0000000000001').categoria === 'corrida' && doRecibo('A0000000000001').origem === 'recibo'
+         && doRecibo('A0000000000001').rota === 'Rodoviária → Centro' && doRecibo('A0000000000001').versao === 1
+         && doRecibo('A0000000000001').pendente === true && doRecibo('A0000000000001').dono === 'web-motorista');
+      await apagarLancamento('r-A0000000000001');
+      ok('caixa: completar de novo nao cria nada e nao ressuscita o apagado', (await completarCaixaComRecibos()) === 0
+         && (await buscarLancamento('r-A0000000000001') || {}).apagado === true && (await listarLancamentos()).length === 5);
+      // Emitir o recibo cria a receita dele.
+      await emitir('Caixa: recibo novo', 'R$ 58,00'); await espera(500);
+      const reciboNovo = await achar('Caixa: recibo novo');
+      const receitaNova = reciboNovo && await buscarLancamento('r-' + reciboNovo.rid);
+      ok('caixa: emitir o recibo cria a receita r-<rid>', !!receitaNova && receitaNova.centavos === 5800 && receitaNova.origem === 'recibo'
+         && receitaNova.pendente === true, JSON.stringify(receitaNova));
+      // Lancamento a mao, editar, a conferencia antes de guardar e os totais.
+      const hojeC = Caixa.diaLocal();
+      const despesa = await criarLancamento({ tipo: 'despesa', categoria: 'combustivel', centavos: 8600, data: hojeC, hora: '15:10', litros: '30,5' });
+      ok('caixa: despesa a mao guardada com dono, id novo e litros', despesa.dono === 'web-motorista' && /^l-[0-9a-f]{16}$/.test(despesa.id)
+         && despesa.litros === '30.5' && despesa.origem === 'manual' && despesa.pendente === true, JSON.stringify(despesa));
+      let codigoRecusa = '';
+      try { await criarLancamento({ tipo: 'despesa', categoria: 'combustivel', centavos: 0, data: hojeC }); } catch (e) { codigoRecusa = e.codigo; }
+      ok('caixa: o que o servidor recusaria nem e guardado, e a tela recebe o codigo', codigoRecusa === 'valor_invalido', codigoRecusa);
+      const despesaEditada = await editarLancamento(despesa.id, { centavos: 9000 });
+      ok('caixa: editar sobe a versao e volta a fila', despesaEditada && despesaEditada.versao === 2 && despesaEditada.centavos === 9000 && despesaEditada.pendente);
+      const diaC = Caixa.resumoDoDia(await listarLancamentos(), hojeC, 'BRL');
+      ok('caixa: totais do dia com a receita do recibo e a despesa editada', diaC.receitas === 5800 && diaC.despesas === 9000 && diaC.liquido === -3200,
+         JSON.stringify(diaC));
+      ok('caixa: meta do dia guardada por motorista, em centavos', guardarMetaDoDia(40000) && metaDoDia() === 40000
+         && Guardado.get('caixa_meta:web-motorista') === 40000);
+      // Envio: so os meus, em lotes de 100, do mais antigo para o mais novo, sem rota nem dono.
+      await salvarLancamento(Caixa.novoLancamento({ tipo: 'receita', categoria: 'corrida', centavos: 100, data: hojeC },
+        { id: 'l-deoutromotorista', dono: 'outro' }));
+      for (let i = 0; i < 150; i++) {
+        await salvarLancamento(Caixa.novoLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 100 + i, data: hojeC },
+          { id: `l-lote${String(i).padStart(3, '0')}`, dono: 'web-motorista', agora: new Date(Date.UTC(2026, 10, 1, 0, 0, i)).toISOString() }));
+      }
+      localStorage.setItem('access_token', JSON.stringify('token-caixa'));
+      localStorage.setItem('refresh_token', JSON.stringify('refresh-caixa'));
+      window.__refresh = null; window.__regra = () => ({}); window.__regraCaixa = () => ({});
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      if (passadaDoCaixa) await passadaDoCaixa;
+      __lotes.length = 0;
+      const envio1 = await enviarCaixa();
+      const itensEnviados = __lotes.flatMap((c) => c.lancamentos);
+      ok('caixa: envio em lotes de 100, do mais antigo para o mais novo', __lotes.length === 2 && __lotes[0].lancamentos.length === 100
+         && __lotes[1].lancamentos.length === 57 && __lotes[0].lancamentos[0].id === 'l-lote000', JSON.stringify(__lotes.map((c) => c.lancamentos.length)));
+      ok('caixa: envio manda so os meus, sem rota, dono nem o estado do aparelho', !itensEnviados.some((x) => x.id === 'l-deoutromotorista')
+         && itensEnviados.every((x) => !('rota' in x) && !('dono' in x) && !('pendente' in x) && !('criado_em' in x))
+         && !JSON.stringify(__lotes).includes('Rodoviária'));
+      ok('caixa: o apagado sobe como apagado, com a versao nova', (itensEnviados.find((x) => x.id === 'r-A0000000000001') || {}).apagado === true
+         && (itensEnviados.find((x) => x.id === 'r-A0000000000001') || {}).versao === 2);
+      ok('caixa: aceito sai de pendente', envio1.enviados === 157 && (await listarLancamentos()).every((x) => !x.pendente), JSON.stringify(envio1));
+      ok('caixa: o do outro motorista fica pendente e dele', ((await todosOsLancamentos()).find((x) => x.id === 'l-deoutromotorista') || {}).pendente === true);
+      // Editado enquanto o lote viajava: continua pendente, com a versao nova.
+      const lento = await criarLancamento({ tipo: 'despesa', categoria: 'pedagio', centavos: 1250, data: hojeC });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      window.__regraCaixa = () => ({ atraso: 600 });
+      const passadaLenta = enviarCaixa();
+      await espera(200);
+      await editarLancamento(lento.id, { centavos: 1300 });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      await passadaLenta;
+      const lentoDepois = await buscarLancamento(lento.id);
+      ok('caixa: editado durante o envio continua pendente', lentoDepois.pendente === true && lentoDepois.versao === 2 && lentoDepois.centavos === 1300,
+         JSON.stringify(lentoDepois));
+      window.__regraCaixa = () => ({});
+      await enviarCaixa();
+      ok('caixa: e sobe na passada seguinte', (await buscarLancamento(lento.id)).pendente === false);
+      // Recusado: sai da fila e guarda o motivo.
+      const ruim = await criarLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 700, data: hojeC });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      window.__regraCaixa = () => ({ recusados: [{ id: ruim.id, erro: 'categoria_invalida' }] });
+      const envioRuim = await enviarCaixa();
+      const ruimDepois = await buscarLancamento(ruim.id);
+      ok('caixa: recusado sai da fila e fica marcado com o motivo', ruimDepois.pendente === false && ruimDepois.recusado === 'categoria_invalida'
+         && envioRuim.recusados === 1, JSON.stringify(ruimDepois));
+      // 429, 503, 405 (servidor sem o caixa) e rede caida: fica pendente e tenta de novo depois.
+      for (const [nome, regra] of [['429', { status: 429, corpo: { erro: 'muitos_lancamentos' } }], ['503', { status: 503, corpo: { erro: 'indisponivel' } }],
+                                   ['405 (servidor sem o caixa)', { status: 405, corpo: {} }], ['rede caida', { falhar: true }]]) {
+        const fica = await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 3000, data: hojeC });
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+        window.__regraCaixa = () => regra;
+        const envioAdiado = await enviarCaixa();
+        const ficou = await buscarLancamento(fica.id);
+        ok(`caixa: ${nome} deixa pendente, sem marcar recusado, e agenda outra tentativa`,
+           envioAdiado.adiada && ficou.pendente === true && !ficou.recusado && !!sincronizacaoAgendada, JSON.stringify(envioAdiado));
+      }
+      if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      // O sincronizar leva o caixa junto, sem mudar o que devolve (o Salvar do perfil conta recibos).
+      window.__regraCaixa = () => ({});
+      __lotes.length = 0;
+      const sincronia = await sincronizar();
+      await enviarCaixa();
+      ok('caixa: o sincronizar sobe o caixa e devolve o mesmo de antes', Object.keys(sincronia).join() === 'enviados,restantes,semCota'
+         && __lotes.length === 1 && (await listarLancamentos()).every((x) => !x.pendente || x.recusado), JSON.stringify(sincronia));
+      // Guardar agenda a passada para ~2 s depois.
+      __lotes.length = 0;
+      const sozinho = await criarLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 300, data: hojeC });
+      ok('caixa: guardar agenda o envio, sem subir na hora', !!envioDoCaixaAgendado && __lotes.length === 0);
+      await espera(2700);
+      ok('caixa: ~2 s depois, sobe sozinho', __lotes.length === 1 && (await buscarLancamento(sozinho.id)).pendente === false, String(__lotes.length));
+      // Pro: o servidor ou a loja.
+      ok('caixa: no Gratis, os meses anteriores ficam travados', ehPro() === false && !Caixa.mesLiberado('2026-10', '2026-11', ehPro()));
+      proPelaLoja = true;
+      ok('caixa: quem acabou de assinar na loja ja ve', ehPro() === true);
+      proPelaLoja = false;
+      // Antes da sessao, o dono e o e-mail; com a sessao, o id (e a meta continua dele).
+      encerrarSessao();
+      entrarNaSessao({ access_token: 'token-caixa2', refresh_token: 'refresh-caixa2' }, 'web@teste.invalid');
+      const antesDaSessao = await criarLancamento({ tipo: 'despesa', categoria: 'alimentacao', centavos: 2500, data: hojeC });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      ok('caixa: sair nao apaga o caixa, e antes da sessao o lancamento leva o e-mail como dono',
+         antesDaSessao.dono === 'web@teste.invalid' && (await listarLancamentos()).length > 150, String((await listarLancamentos()).length));
+      window.__sessao = { id: 'web-motorista', plano: 'pro', limite_mensal: null, usados_no_mes: 0, passageiro_opcional: true, motorista: retratoV };
+      await atualizarSessao();
+      ok('caixa: com a sessao, o dono vira o id, e o Pro do servidor ve os meses anteriores',
+         (await buscarLancamento(antesDaSessao.id) || {}).dono === 'web-motorista' && ehPro() === true && metaDoDia() === 40000);
+      // 401 com a sessao morta: login, e o caixa fica no aparelho.
+      if (passadaDoCaixa) await passadaDoCaixa;
+      window.__regraCaixa = () => ({ status: 401, corpo: { erro: 'nao_autenticado' } });
+      window.__refresh = { status: 401, corpo: { erro: 'refresh_invalido' } };
+      await enviarCaixa();
+      ok('caixa: 401 com a sessao morta leva ao login, e o caixa fica no aparelho', !q('tela-login').hidden && !localStorage.getItem('access_token')
+         && (await todosOsLancamentos()).some((x) => x.id === antesDaSessao.id && x.pendente));
+      // Aparelho dividido: o outro motorista ve e sobe so o dele.
+      localStorage.setItem('access_token', JSON.stringify('token-outro'));
+      localStorage.setItem('motorista_id', JSON.stringify('outro'));
+      Guardado.set('motorista', { full_name: 'Outro', email: 'outro@teste.invalid' });
+      window.__refresh = null; window.__regraCaixa = () => ({});
+      __lotes.length = 0;
+      await enviarCaixa();
+      const doOutro = await listarLancamentos();
+      ok('caixa: aparelho dividido: o outro motorista ve e sobe so o dele', doOutro.length === 1 && doOutro[0].id === 'l-deoutromotorista'
+         && __lotes.length === 1 && __lotes[0].lancamentos.map((x) => x.id).join() === 'l-deoutromotorista', JSON.stringify(doOutro.map((x) => x.id)));
+      ok('caixa: a meta de um nao aparece para o outro', metaDoDia() === null);
+      await limparLancamentosLocais();
+      ok('caixa: excluir a conta apaga so o caixa de quem excluiu', !(await todosOsLancamentos()).some((x) => x.dono === 'outro')
+         && (await todosOsLancamentos()).some((x) => x.dono === 'web-motorista') && Guardado.get('caixa_meta:web-motorista') === 40000);
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
     }

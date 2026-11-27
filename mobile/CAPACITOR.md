@@ -149,6 +149,7 @@ instalada e eu passar vinte minutos investigando o app limpo.
 ```bash
 node mobile/testes/rodar.mjs                     # confere o fluxo; sai com 1 se falhar
 node mobile/testes/rodar.mjs fotos <pasta>       # uma foto de cada tela, em 390 px
+node mobile/testes/caixa.mjs                     # as contas do caixa (caixa.js), no Node, em 1 s
 ```
 
 Copia o `www/` para uma pasta temporária, injeta `testes/sonda-corrida.html`

@@ -48,17 +48,31 @@ const Guardado = {
   del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 
+// Versao 2 (app 1.8): a loja dos lancamentos do caixa. Quem vem da 1 ganha a
+// loja nova e fica com os recibos como estavam.
 function abrirBanco() {
   return new Promise((ok, falha) => {
-    const req = indexedDB.open('recibo-taxi', 1);
+    const req = indexedDB.open('recibo-taxi', 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('recibos')) {
         const loja = db.createObjectStore('recibos', { keyPath: 'rid' });
         loja.createIndex('pendente', 'pendente');
       }
+      // Sem indice: booleano nao e chave valida no IndexedDB (um indice de
+      // "pendente" nao acharia nada). Le tudo e filtra; o volume e pequeno.
+      if (!db.objectStoreNames.contains('lancamentos')) {
+        db.createObjectStore('lancamentos', { keyPath: 'id' });
+      }
     };
-    req.onsuccess = () => ok(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Cada chamada abre uma conexao, e ninguem a fecha. Sem isto, qualquer
+      // conexao aberta trava para sempre a proxima subida de versao (e o
+      // deleteDatabase dos testes), esperando por ela.
+      db.onversionchange = () => db.close();
+      ok(db);
+    };
     req.onerror = () => falha(req.error);
   });
 }
@@ -179,6 +193,224 @@ async function limparRecibosLocais() {
   });
 }
 
+// ── Caixa: lançamentos no aparelho ─────────────────────────────────────────
+//
+// Receitas e despesas do motorista (app 1.8). As contas sao do caixa.js; aqui
+// fica o que e guardado, de quem e e como sobe. A regra e a dos recibos: o
+// lancamento nasce e vive no aparelho, e a copia no servidor vem depois
+// (POST /api/lancamentos), sem duplicar: o servidor guarda por id e so troca
+// a copia pela versao maior. As telas usam:
+//   listarLancamentos, buscarLancamento, criarLancamento, editarLancamento,
+//   apagarLancamento, lancarCorridaNoCaixa, completarCaixaComRecibos,
+//   metaDoDia / guardarMetaDoDia / removerMetaDoDia e ehPro.
+
+async function todosOsLancamentos() {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const req = db.transaction('lancamentos', 'readonly').objectStore('lancamentos').getAll();
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => falha(req.error);
+  });
+}
+
+// Mesmo criterio dos recibos (identidades): em aparelho dividido, o segundo
+// motorista nao ve nem envia o caixa do primeiro. Todo lancamento nasce com
+// dono; sem dono, nao e de ninguem.
+const ehMeuLancamento = (l) => !!(l && l.dono) && identidades().includes(String(l.dono));
+
+// Os meus, inclusive os apagados (o envio precisa deles; os resumos e o
+// Caixa.doDia os ignoram). As identidades sao lidas uma vez: o mes de um
+// motorista tem centenas de lancamentos.
+async function listarLancamentos() {
+  const eu = identidades();
+  return (await todosOsLancamentos()).filter((l) => !!(l && l.dono) && eu.includes(String(l.dono)));
+}
+
+async function buscarLancamento(id) {
+  const db = await abrirBanco();
+  const l = await new Promise((ok, falha) => {
+    const req = db.transaction('lancamentos', 'readonly').objectStore('lancamentos').get(String(id));
+    req.onsuccess = () => ok(req.result || null);
+    req.onerror = () => falha(req.error);
+  });
+  return ehMeuLancamento(l) ? l : null;
+}
+
+async function salvarLancamento(l) {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const tx = db.transaction('lancamentos', 'readwrite');
+    tx.objectStore('lancamentos').put(l);
+    tx.oncomplete = () => ok(l);
+    tx.onerror = () => falha(tx.error);
+  });
+}
+
+// Le e grava na mesma transacao: o que o envio ou uma edicao gravou no meio
+// nao se perde, porque nada entra entre a leitura e a escrita (o envio que
+// termina enquanto o motorista edita nao marca a versao nova como enviada).
+// `muda(atual, id)` devolve o lancamento novo, ou null para deixar como esta.
+// Sem await la dentro: a transacao do IndexedDB fecha sozinha quando fica sem
+// pedido pendente, e uma promessa no meio a encontraria fechada.
+async function mudarLancamentos(ids, muda) {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const tx = db.transaction('lancamentos', 'readwrite');
+    const loja = tx.objectStore('lancamentos');
+    const gravados = [];
+    for (const id of ids) {
+      const req = loja.get(id);
+      req.onsuccess = () => {
+        const novo = muda(req.result || null, id);
+        if (novo) { loja.put(novo); gravados.push(novo); }
+      };
+    }
+    tx.oncomplete = () => ok(gravados);
+    tx.onerror = () => falha(tx.error);
+    tx.onabort = () => falha(tx.error);
+  });
+}
+
+// A tela recebe o codigo do servidor (valor_invalido, data_invalida...) para
+// dizer o que corrigir: o lancamento que ele recusaria nem e guardado.
+const erroDoCaixa = (codigo) => Object.assign(new Error(codigo), { codigo });
+
+// Lancamento a mao ("+ Receita", "+ Despesa") ou da corrida sem recibo.
+// Campos: tipo, categoria, centavos, data, hora, forma, obs, litros (e, da
+// corrida, origem, km e rota). Devolve o que foi guardado.
+async function criarLancamento(campos = {}) {
+  const dono = donoAtual();
+  if (!dono) throw erroDoCaixa('sem_sessao');
+  // O lancamento de recibo so nasce do recibo (lancarReciboNoCaixa): e la que
+  // o id r-<rid> amarra os dois.
+  const origem = campos.origem === 'corrida' ? 'corrida' : 'manual';
+  const l = Caixa.novoLancamento({ ...campos, origem, rid: null },
+    { id: novoIdDeLancamento(), dono, moeda: moedaAtual().codigo });
+  const erro = Caixa.erroDoLancamento(l);
+  if (erro) throw erroDoCaixa(erro);
+  await salvarLancamento(l);
+  agendarEnvioDoCaixa();
+  return l;
+}
+
+// Editar sobe a versao e devolve o lancamento a fila: o servidor troca a
+// copia pela versao maior. Null se nao existe, e de outro ou ja foi apagado.
+async function editarLancamento(id, mudancas = {}) {
+  let erro = '';
+  const [salvo] = await mudarLancamentos([String(id)], (atual) => {
+    if (!ehMeuLancamento(atual) || atual.apagado) return null;
+    const novo = Caixa.editado(atual, mudancas);
+    erro = Caixa.erroDoLancamento(novo);
+    return erro ? null : novo;
+  });
+  if (erro) throw erroDoCaixa(erro);
+  if (salvo) agendarEnvioDoCaixa();
+  return salvo || null;
+}
+
+// Fica guardado como apagado (o tumulo): e ele que avisa o servidor e que
+// impede o recibo de voltar ao caixa na proxima abertura.
+async function apagarLancamento(id) {
+  const [salvo] = await mudarLancamentos([String(id)], (atual) => (
+    ehMeuLancamento(atual) && !atual.apagado ? Caixa.apagado(atual) : null));
+  if (salvo) agendarEnvioDoCaixa();
+  return salvo || null;
+}
+
+// O recibo emitido entra sozinho como receita (r-<rid>). Nao recria o que ja
+// existe, nem o apagado: o motorista tirou do caixa, e o recibo continua valendo.
+async function lancarReciboNoCaixa(recibo) {
+  const l = Caixa.lancamentoDoRecibo(recibo, { decimalDe: decimalDoValor, moedaPadrao: moedaAtual().codigo });
+  if (!l || !l.dono) return null;
+  const [criado] = await mudarLancamentos([l.id], (atual) => (atual ? null : l));
+  if (criado) agendarEnvioDoCaixa();
+  return criado || null;
+}
+
+// Os recibos que o caixa ainda nao tem viram receitas: os de antes da 1.8 e
+// os recusados por cota (a corrida aconteceu e o dinheiro entrou). Roda a cada
+// abertura do app e ao abrir o Caixa; o que ja existe, apagado ou nao, fica.
+// Recibo sem dono fica de fora: e o antigo com um e-mail que este aparelho nao
+// conhece (ver marcarDonoDosRecibos), que pode ser de outro motorista, e a
+// receita teria de escolher um dono para sempre. Quando o dono de verdade
+// entrar, o recibo ganha a marca e a receita vem para ele.
+async function completarCaixaComRecibos() {
+  const moeda = moedaAtual().codigo;
+  const faltam = new Map();
+  for (const r of await listarRecibos()) {
+    if (!r.dono) continue;
+    const l = Caixa.lancamentoDoRecibo(r, { decimalDe: decimalDoValor, moedaPadrao: moeda });
+    if (l) faltam.set(l.id, l);
+  }
+  if (!faltam.size) return 0;
+  const criados = await mudarLancamentos([...faltam.keys()], (atual, id) => (atual ? null : faltam.get(id)));
+  if (criados.length) agendarEnvioDoCaixa();
+  return criados.length;
+}
+
+// "Só lançar no caixa", no fim da corrida: a receita sem recibo, com a data e
+// a hora da saida. Quem chama confere o valor (motivoValorInvalido) e apaga a
+// corrida depois.
+async function lancarCorridaNoCaixa(c, { centavos, forma = '' } = {}) {
+  const campos = Caixa.camposDaCorrida(c, { centavos, forma });
+  if (!campos) throw erroDoCaixa('corrida_invalida');
+  return criarLancamento(campos);
+}
+
+// Lancamento feito antes da primeira /api/sessao leva o e-mail como dono;
+// quando o id chega, passa a levar o id (o e-mail muda, o id nao). Mesma
+// regra dos recibos. O dono nao vai ao servidor: a versao nao muda.
+async function marcarDonoDosLancamentos() {
+  const id = Guardado.get('motorista_id');
+  if (!id) return;
+  const trocar = (await listarLancamentos()).filter((l) => l.dono !== String(id)).map((l) => l.id);
+  if (!trocar.length) return;
+  const eu = identidades();
+  await mudarLancamentos(trocar, (atual) => (
+    atual && eu.includes(String(atual.dono)) && atual.dono !== String(id) ? { ...atual, dono: String(id) } : null));
+}
+
+// So na exclusao da conta, e so os de quem esta excluindo (o outro motorista
+// do aparelho fica com os dele). "Sair" nao apaga nada, pelo mesmo motivo dos
+// recibos: o logout tambem acontece sozinho, e o caixa por subir se perderia.
+async function limparLancamentosLocais() {
+  const meus = await listarLancamentos();
+  const db = await abrirBanco();
+  await new Promise((ok, falha) => {
+    const tx = db.transaction('lancamentos', 'readwrite');
+    const loja = tx.objectStore('lancamentos');
+    meus.forEach((l) => loja.delete(l.id));
+    tx.oncomplete = () => ok();
+    tx.onerror = () => falha(tx.error);
+  });
+  removerMetaDoDia();
+}
+
+// Meta do dia (do liquido), em centavos: so neste aparelho e por motorista.
+// Procura em todas as identidades dele: a meta posta antes de a sessao chegar
+// ficou com o e-mail como dono.
+const chaveDaMeta = (dono) => `caixa_meta:${dono}`;
+
+function metaDoDia() {
+  for (const quem of [donoAtual(), ...identidades()]) {
+    const meta = quem ? Guardado.get(chaveDaMeta(quem)) : null;
+    if (Number.isInteger(meta) && meta > 0) return meta;
+  }
+  return null;
+}
+
+function guardarMetaDoDia(centavos) {
+  const dono = donoAtual();
+  if (!dono || !Number.isInteger(centavos) || centavos < 1) return false;
+  removerMetaDoDia();
+  Guardado.set(chaveDaMeta(dono), centavos);
+  return true;
+}
+
+function removerMetaDoDia() {
+  new Set([donoAtual(), ...identidades()].filter(Boolean)).forEach((quem) => Guardado.del(chaveDaMeta(quem)));
+}
+
 // ── Identificador ──────────────────────────────────────────────────────────
 function novoRid() {
   // 14 dígitos hex = 2^56. Gerado aqui, não no servidor: é o que permite
@@ -186,6 +418,15 @@ function novoRid() {
   const bytes = new Uint8Array(7);
   crypto.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+// Lancamento do caixa: "l-" e 16 hex, nascido aqui pelo mesmo motivo do rid
+// (lancar sem sinal e reenviar sem duplicar). O de um recibo e "r-" e o rid:
+// um recibo, uma receita, por mais que o caixa seja completado de novo.
+function novoIdDeLancamento() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return 'l-' + [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ── Rede ───────────────────────────────────────────────────────────────────
@@ -408,8 +649,101 @@ async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
   }
   const restantes = (await pendentes()).length;
   if (adiada && restantes && geracao === geracaoDaSessao) reagendarSincronizacao();
-  else if (!adiada) tentativasAdiadas = 0;
+  else if (!adiada && !caixaAdiado) tentativasAdiadas = 0;
+  // O caixa sobe depois dos recibos, e o sincronizar nao espera por ele: quem
+  // espera esta passada (o botao do WhatsApp, que fica travado ate ela acabar,
+  // e o Salvar de Meus dados) espera o recibo, nao a copia do caixa. A passada
+  // do caixa reagenda sozinha se o servidor nao respondeu.
+  if (geracao === geracaoDaSessao) enviarCaixa();
   return { enviados, restantes, semCota };
+}
+
+// ── Envio do caixa ─────────────────────────────────────────────────────────
+// Os lancamentos pendentes DESTE motorista, do mais antigo para o mais novo,
+// em lotes de 100 (o teto do servidor por pedido). Entra no fim de cada
+// sincronizar, e cada lancamento guardado agenda uma passada ~2 s depois.
+const LANCAMENTOS_POR_LOTE = 100;
+let passadaDoCaixa = null;       // uma passada por vez; quem chama no meio recebe a mesma
+let envioDoCaixaAgendado = null;
+let caixaAdiado = false;         // a ultima passada parou por servidor fora, 429 ou rede
+
+// Devolve { enviados, recusados, restantes, adiada } e nunca falha: chamada
+// sem esperar (no fim do sincronizar), um erro viraria rejeicao solta.
+function enviarCaixa() {
+  if (!passadaDoCaixa) passadaDoCaixa = passarCaixa().finally(() => { passadaDoCaixa = null; });
+  return passadaDoCaixa;
+}
+
+async function passarCaixa() {
+  const resultado = { enviados: 0, recusados: 0, restantes: 0, adiada: false };
+  if (!token() || !(await temRede())) return resultado;
+  const geracao = geracaoDaSessao;   // a passada e desta sessao, como a da fila dos recibos
+  try {
+    const fila = (await listarLancamentos()).filter((l) => l.pendente).sort((a, b) =>
+      String(a.criado_em).localeCompare(String(b.criado_em)) || String(a.id).localeCompare(String(b.id)));
+    for (let i = 0; i < fila.length && geracao === geracaoDaSessao; i += LANCAMENTOS_POR_LOTE) {
+      const lote = fila.slice(i, i + LANCAMENTOS_POR_LOTE);
+      const versoes = new Map(lote.map((l) => [l.id, l.versao]));
+      let resp, corpo = {};
+      try {
+        resp = await api('/api/lancamentos', {
+          method: 'POST',
+          body: JSON.stringify({ lancamentos: lote.map(Caixa.paraEnvio) }),
+        });
+        // Um 200 que nao e do servidor (o portal do wi-fi do hotel devolve a
+        // pagina dele) nao e JSON: vale como rede caida.
+        if (geracao === geracaoDaSessao && resp.status === 200) corpo = (await resp.json()) || {};
+      } catch {
+        resultado.adiada = true;   // sem rede de verdade: tenta na proxima
+        break;
+      }
+      if (geracao !== geracaoDaSessao) break;
+      if (resp.status === 200) {
+        const aceitos = new Set(Array.isArray(corpo.aceitos) ? corpo.aceitos : []);
+        const erros = new Map((Array.isArray(corpo.recusados) ? corpo.recusados : [])
+          .filter((x) => x && x.id).map((x) => [x.id, String(x.erro || 'recusado')]));
+        // Sai da fila so a versao que subiu: se ele editou enquanto o lote
+        // viajava, o lancamento continua pendente, com a versao nova.
+        const marcados = await mudarLancamentos([...versoes.keys()], (atual, id) => {
+          if (!atual || !atual.pendente || atual.versao !== versoes.get(id)) return null;
+          if (aceitos.has(id)) return { ...atual, pendente: false, recusado: '' };
+          if (erros.has(id)) return { ...atual, pendente: false, recusado: erros.get(id) };
+          return null;
+        });
+        marcados.forEach((l) => { if (l.recusado) resultado.recusados++; else resultado.enviados++; });
+      } else if (resp.status === 401) {
+        // O api() ja tentou renovar: sessao morta de verdade, como na fila dos recibos.
+        encerrarSessao();
+        break;
+      } else if (resp.status === 429 || resp.status === 404 || resp.status === 405 || resp.status >= 500) {
+        // Fora do ar, pedindo calma, ou sem a rota: o servidor anterior ao caixa
+        // responde 405 (e nao 404) ao POST, por causa da rota de OPTIONS. Os
+        // outros lotes levariam a mesma resposta; fica tudo para a proxima.
+        resultado.adiada = true;
+        break;
+      } else {
+        break;   // inesperado: fica pendente, sem marcar recusado nem insistir agora
+      }
+    }
+    if (geracao !== geracaoDaSessao) return resultado;
+    caixaAdiado = resultado.adiada;
+    resultado.restantes = (await listarLancamentos()).filter((l) => l.pendente).length;
+    if (resultado.adiada && resultado.restantes) reagendarSincronizacao();
+  } catch { /* banco local com defeito: o caixa fica para a proxima passada */ }
+  return resultado;
+}
+
+// Varios lancamentos seguidos (a carga dos recibos antigos, uma despesa atras
+// da outra) sobem juntos, numa passada ~2 s depois do ultimo.
+function agendarEnvioDoCaixa() {
+  clearTimeout(envioDoCaixaAgendado);
+  envioDoCaixaAgendado = setTimeout(async () => {
+    envioDoCaixaAgendado = null;
+    // A passada em curso pode ter lido a fila antes deste lancamento: espera
+    // ela acabar e faz outra.
+    if (passadaDoCaixa) await passadaDoCaixa;
+    enviarCaixa();
+  }, 2000);
 }
 
 // ── Telas ──────────────────────────────────────────────────────────────────
@@ -577,9 +911,23 @@ function separadoresDoValor(bruto) {
   return bruto;
 }
 
+// O valor digitado sem o que nao e numero: espaco de qualquer tipo ("1 500,00",
+// "15 000", que o teclado poe sozinho) e o simbolo nas pontas ("R$ 45"). Uma
+// limpeza so para validar, mostrar e converter: o recibo aceitava "R$ 45", e
+// converter sem ela (separadoresDoValor no texto cru) dava NaN no mesmo valor.
+function valorLimpo(texto) {
+  return String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
+}
+
+// Texto digitado -> decimal com ponto ("R$ 1.500,50" -> "1500.50"), pela regra
+// que aceitou o recibo (motivoValorInvalido). E o que vai para o Caixa.centavosDe.
+function decimalDoValor(texto) {
+  return separadoresDoValor(valorLimpo(texto));
+}
+
 // "1500" ou "1.500" → "1.500,00"; "15000" em guarani (0 casas) → "15.000".
 function valorExibido(texto, casas = moedaAtual().casas) {
-  const bruto = String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
+  const bruto = valorLimpo(texto);
   const n = Number(separadoresDoValor(bruto));
   if (!Number.isFinite(n)) return String(texto || '').replace('.', ',');
   return n.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
@@ -1208,10 +1556,11 @@ const tetoDoValor = (moeda) => (MOEDAS_GRANDES.includes(moeda) ? 99999999.99 : 9
 // O recibo nasce no aparelho, com QR, e ia para a fila como estava: um valor
 // que o servidor recusa ficava recusado para sempre, sem como editar, com o
 // passageiro ja de posse de um link que nunca abriria. Devolve o motivo em
-// palavras, ou '' quando o valor serve.
-function motivoValorInvalido(texto, moeda = moedaAtual().codigo, casas = moedaAtual().casas) {
-  const bruto = String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
-  if (!bruto) return 'Informe o valor da corrida.';
+// palavras, ou '' quando o valor serve. `doCaixa`: o lancamento do caixa pode
+// ser despesa, e a frase fala de valor, nao de corrida.
+function motivoValorInvalido(texto, moeda = moedaAtual().codigo, casas = moedaAtual().casas, { doCaixa = false } = {}) {
+  const bruto = valorLimpo(texto);
+  if (!bruto) return doCaixa ? 'Informe o valor.' : 'Informe o valor da corrida.';
   const limpo = separadoresDoValor(bruto);
   if (!/^\d+(\.\d+)?$/.test(limpo)) return 'Valor: só o número, ex.: 45,00.';
   // Mais casas do que a moeda tem: o servidor arredonda antes de conferir
@@ -1224,7 +1573,7 @@ function motivoValorInvalido(texto, moeda = moedaAtual().codigo, casas = moedaAt
   }
   const n = Number(limpo);
   if (!(n > 0)) return 'O valor precisa ser maior que zero.';
-  if (n > tetoDoValor(moeda)) return 'Valor acima do limite para um recibo de corrida.';
+  if (n > tetoDoValor(moeda)) return doCaixa ? 'Valor acima do limite.' : 'Valor acima do limite para um recibo de corrida.';
   return '';
 }
 
@@ -1306,6 +1655,9 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       erroRecibo.hidden = false;
       return;
     }
+    // A receita do recibo entra no caixa, sem esperar e sem deixar uma falha
+    // chegar aqui: o recibo e o que importa, com o passageiro esperando.
+    lancarReciboNoCaixa(recibo).catch(() => {});
     vibrar('HEAVY');
     $('form-recibo').reset();
     atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
@@ -1607,6 +1959,11 @@ function usadosDoMes() {
 // nao disse que ele assina. Antes da primeira sessao (sem rede na primeira
 // abertura) nao ha limite guardado, e a vitrine nao aparece.
 const noGratis = () => !!token() && !assinaPeloServidor() && !proPelaLoja && limiteDoGratis() > 0;
+
+// Pro para o caixa (os meses anteriores): o mesmo criterio da vitrine e da
+// tela de assinatura. O servidor diz Pro (loja, site, pre-pago, cortesia, mes
+// de indicacao), ou a loja ja disse que ele assina e o servidor ainda nao soube.
+const ehPro = () => assinaPeloServidor() || proPelaLoja;
 
 async function desenharVitrine(caixa) {
   const limite = limiteDoGratis();
@@ -2259,6 +2616,7 @@ function encerrarSessao() {
   tentativasAdiadas = 0;
   limparPerfil();
   if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+  clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null; caixaAdiado = false;
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
@@ -2356,6 +2714,7 @@ async function atualizarSessao() {
     // motorista, inclusive os de antes desta versao, passam a levar o dono.
     // Banco local com defeito nao pode derrubar o resto da sessao.
     try { await marcarDonoDosRecibos(); } catch { /* fica para a proxima */ }
+    try { await marcarDonoDosLancamentos(); } catch { /* fica para a proxima */ }
     if (s.moeda) {
       Guardado.set('moeda', s.moeda);
       Guardado.set('moeda_simbolo', s.moeda_simbolo || 'R$');
@@ -2734,6 +3093,9 @@ $('form-excluir').addEventListener('submit', async (ev) => {
     });
     if (resp.ok) {
       await limparRecibosLocais();
+      // A conta ja saiu do servidor (com a copia do caixa). O caixa local sai
+      // junto, e um defeito no banco local nao prende ninguem na conta apagada.
+      try { await limparLancamentosLocais(); } catch { /* fica no aparelho, sem conta */ }
       vibrar('HEAVY');
       encerrarSessao();
       return;
@@ -3475,9 +3837,13 @@ async function iniciar() {
   // ou sem sinal, para a fila deste motorista nao se misturar com a de outro.
   // Se o banco local falhar, o app segue (a corrida ja vive sem ele).
   try { await marcarDonoDosRecibos(); } catch { /* fica para a proxima */ }
+  try { await marcarDonoDosLancamentos(); } catch { /* fica para a proxima */ }
   await atualizarSessao();
   // O nome da saudacao e o dono da corrida aberta chegam com a sessao.
   if (!$('tela-inicio').hidden) irParaInicio();
+  // Os recibos que o caixa ainda nao tem (na primeira abertura da 1.8, todos)
+  // viram receitas, ja com o dono que a sessao confirmou.
+  try { await completarCaixaComRecibos(); } catch { /* fica para a proxima abertura */ }
   await iniciarCompras();
   carregarLojaParaVitrine();   // precos da vitrine e "ja assina?", sem esperar
   abrirVitrineAoAbrir(inicioDesde);   // no Gratis, os planos cobrem a tela uma vez por abertura

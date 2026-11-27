@@ -752,6 +752,9 @@
      nao de CDN, porque o QR do recibo tem de sair sem sinal. -->
 <script src="qrcode.js"></script>
 <script src="pdf.js"></script>
+<!-- As contas do caixa (receitas e despesas), sem tela: o app.js usa o
+     window.Caixa, e o teste mobile/testes/caixa.mjs roda o mesmo arquivo no Node. -->
+<script src="caixa.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

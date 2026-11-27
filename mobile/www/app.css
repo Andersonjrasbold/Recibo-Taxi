@@ -456,6 +456,18 @@ button:disabled { opacity:.5; }
   background:var(--coal); border:1px solid rgba(255,197,49,.45); border-radius:12px;
 }
 .caixa-cartao-lancar:active { background:rgba(255,197,49,.14); }
+/* A meta no cartao: a mesma barra do Caixa e, ao lado, o que falta. O
+   "Definir meta do dia" e texto discreto com alvo de 44 px, que sobra para
+   cima e para baixo sem afastar a linha de cima nem engordar o cartao. */
+.caixa-cartao-meta { display:flex; align-items:center; gap:.6rem; margin-top:.35rem; }
+.caixa-cartao-meta .caixa-meta-barra { flex:1; min-width:3rem; }
+.caixa-cartao-meta-texto {
+  font-size:.8rem; font-weight:800; line-height:1.4; color:var(--ambar); white-space:nowrap; font-variant-numeric:tabular-nums;
+}
+.caixa-cartao-meta-texto.batida { color:var(--verde); }
+.caixa-cartao > .caixa-cartao-definir {
+  justify-self:start; min-height:44px; margin:-.45rem 0 -.6rem; padding:0; font-size:.86rem; pointer-events:auto;
+}
 /* Sem lancamento ("Nenhum lançamento hoje"), a frase vai de ponta a ponta e
    o "+ Lançamento" fica so na linha de cima: ao lado dele, a frase quebrava
    em duas linhas (tres, em 320 px). */

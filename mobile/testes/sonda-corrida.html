@@ -1796,6 +1796,14 @@ window.addEventListener('load', async () => {
       ok('sem lancamento: "Nenhum lançamento hoje" e o "+ Lançamento"', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje'
          && visivel('btn-inicio-lancamento') && textoDe('btn-inicio-lancamento') === '+ Lançamento' && q('caixa-inicio-linha').hidden);
       ok('sem nada a cobrir no cartao, sem o olho', !visivel('btn-olho-inicio'));
+      ok('sem meta, o cartao convida com "Definir meta do dia", sem a barra', visivel('btn-inicio-definir-meta')
+         && textoDe('btn-inicio-definir-meta') === 'Definir meta do dia' && !visivel('caixa-inicio-meta'));
+      guardarMetaDoDia(40000);
+      irParaInicio(); await espera(300);
+      ok('sem lancamento e com meta: a barra vazia e "Faltam R$ ••••", e o olho aparece (ha o que cobrir)', visivel('caixa-inicio-meta')
+         && q('inicio-meta-preenchida').style.width === '0%' && textoDe('inicio-meta-texto') === 'Faltam R$ ••••' && !visivel('btn-inicio-definir-meta')
+         && visivel('btn-olho-inicio') && textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje', textoDe('inicio-meta-texto'));
+      removerMetaDoDia();
 
       // ── Olho: os valores cobertos ──
       // Um mes de trabalho, com a meta, e o olho fechado, como em toda abertura
@@ -1832,6 +1840,11 @@ window.addEventListener('load', async () => {
          && textoDe('caixa-inicio-linha') === `Receitas R$ •••• · Despesas R$ •••• · ${plural(diaO.nCorridas, 'corrida', 'corridas')}`
          && visivel('btn-olho-inicio') && ariaDo('btn-olho-inicio') === 'Mostrar valores' && !temAlgarismo(['caixa-inicio-valor']),
          `${textoDe('caixa-inicio-valor')} | ${textoDe('caixa-inicio-linha')}`);
+      ok('olho fechado: a meta no cartao, com a barra a vista na parte certa e "Faltam R$ ••••"', visivel('caixa-inicio-meta')
+         && q('inicio-meta-preenchida').style.width === `${parteO}%` && q('inicio-meta-barra').getAttribute('aria-valuenow') === String(parteO)
+         && textoDe('inicio-meta-texto') === 'Faltam R$ ••••' && !temAlgarismo(['inicio-meta-texto']) && !visivel('btn-inicio-definir-meta')
+         && getComputedStyle(q('inicio-meta-preenchida')).backgroundColor === 'rgb(255, 197, 49)',
+         `${q('inicio-meta-preenchida').style.width} | ${textoDe('inicio-meta-texto')}`);
       await abrirCaixa();
       const valoresDaLista = [...q('caixa-lista').querySelectorAll('.caixa-item-valor')];
       ok('olho fechado, no Caixa do dia: o liquido "R$ ••••" na cor neutra, "+ R$ ••••" e "− R$ ••••" nas cores dos tipos, e as contagens a vista',
@@ -1880,6 +1893,8 @@ window.addEventListener('load', async () => {
          valoresVisiveis && textoDe('caixa-inicio-valor') === reais(diaO.liquido) && q('caixa-inicio-valor').classList.contains('valor-receita')
          && textoDe('caixa-inicio-linha') === linhaAberta && ariaDo('btn-olho-inicio') === 'Esconder valores'
          && q('btn-olho-inicio').innerHTML.includes('m2 2 20 20'), `${textoDe('caixa-inicio-valor')} | ${textoDe('caixa-inicio-linha')}`);
+      ok('com o olho aberto, a meta do cartao diz quanto falta, com a barra igual', textoDe('inicio-meta-texto') === `Faltam ${reais(40000 - diaO.liquido)}`
+         && q('inicio-meta-preenchida').style.width === `${parteO}%`, textoDe('inicio-meta-texto'));
       await abrirCaixa();
       ok('um estado so: o Caixa aberto depois ja vem com os valores, e o olho dele em "Esconder valores"',
          textoDe('caixa-liquido') === reais(diaO.liquido) && textoDe('caixa-receitas') === `+ ${reais(diaO.receitas)}`
@@ -1933,6 +1948,34 @@ window.addEventListener('load', async () => {
       (__ouvintes.pause || []).forEach((f) => f());
       ok('o "pause" do app tambem cobre na hora o cartao do inicio aberto', abertoNoInicio && !valoresVisiveis
          && textoDe('caixa-inicio-valor') === 'R$ ••••' && semDinheiro() && ariaDo('btn-olho-inicio') === 'Mostrar valores', dinheiroNaPagina().join(' | '));
+
+      // A meta batida no cartao: a barra cheia, em verde, e o que passou.
+      guardarMetaDoDia(diaO.liquido - 1000);
+      irParaInicio(); await espera(300);
+      const batidaCoberta = { texto: textoDe('inicio-meta-texto'), barra: q('inicio-meta-preenchida').style.width,
+                              cor: getComputedStyle(q('inicio-meta-texto')).color };
+      clicar('btn-olho-inicio');
+      ok('meta batida no cartao: a barra cheia e "Meta batida! + R$ ••••" em verde; com o olho aberto, "Meta batida! + R$ 10,00"',
+         batidaCoberta.texto === 'Meta batida! + R$ ••••' && batidaCoberta.barra === '100%' && batidaCoberta.cor === 'rgb(91, 214, 138)'
+         && textoDe('inicio-meta-texto') === 'Meta batida! + R$ 10,00', `${JSON.stringify(batidaCoberta)} ${textoDe('inicio-meta-texto')}`);
+      clicar('btn-olho-inicio');
+
+      // Sem meta, o "Definir meta do dia" do cartao leva ao campo da meta.
+      removerMetaDoDia();
+      irParaInicio(); await espera(300);
+      ok('sem meta, o cartao com lancamentos tambem mostra "Definir meta do dia" no lugar da barra', visivel('btn-inicio-definir-meta')
+         && !visivel('caixa-inicio-meta') && visivel('btn-olho-inicio'));
+      clicar('btn-inicio-definir-meta');
+      const noToque = { caixa: !q('tela-caixa').hidden, campo: visivel('form-meta'), foco: document.activeElement === q('meta-valor') };
+      await espera(400);
+      ok('"Definir meta do dia" do cartao abre o Caixa de hoje com o campo da meta aberto e o foco no valor, no mesmo toque',
+         noToque.caixa && noToque.campo && noToque.foco && textoDe('caixa-dia-titulo').startsWith('Hoje, ') && visivel('form-meta')
+         && !visivel('meta-com') && !visivel('btn-definir-meta') && document.activeElement === q('meta-valor') && q('meta-valor').value === '',
+         `${JSON.stringify(noToque)} ${textoDe('caixa-dia-titulo')}`);
+      q('meta-valor').value = '400,00'; q('form-meta').requestSubmit(); await espera(300);
+      irParaInicio(); await espera(300);
+      ok('e a meta salva ali aparece no cartao do inicio', metaDoDia() === 40000 && visivel('caixa-inicio-meta')
+         && textoDe('inicio-meta-texto') === 'Faltam R$ ••••' && !visivel('btn-inicio-definir-meta'));
 
       // De volta ao Caixa vazio do resto da parte, e com os numeros a vista:
       // as verificacoes daqui em diante leem valores.

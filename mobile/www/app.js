@@ -3497,8 +3497,7 @@ async function desenharCaixaDoInicio() {
     if (vez === desenhosDoInicio) {
       cartaoDoInicio = null;
       $('caixa-inicio').hidden = true;
-      $('caixa-inicio-valor').textContent = '';
-      $('caixa-inicio-linha').textContent = '';
+      ['caixa-inicio-valor', 'caixa-inicio-linha', 'inicio-meta-texto'].forEach((id) => { $(id).textContent = ''; });
     }
     return;
   }
@@ -3524,8 +3523,22 @@ function pintarCaixaDoInicio() {
   $('caixa-inicio-linha').hidden = vazio;
   $('caixa-inicio-linha').textContent = vazio ? '' : linhaSemQuebra([`Receitas ${valorNaTela(r.receitas, m)}`,
     `Despesas ${valorNaTela(r.despesas, m)}`, ...(r.nCorridas ? [plural(r.nCorridas, 'corrida', 'corridas')] : [])]);
-  // Sem nada a cobrir (nenhum lancamento, ou so de outra moeda), sem olho.
-  $('btn-olho-inicio').hidden = vazio;
+  // A meta do dia, a mesma do Caixa: ele ve de relance quanto falta, e a
+  // barra nao diz quanto ele ganhou. Sem meta, o convite.
+  const meta = metaDoDia();
+  $('caixa-inicio-meta').hidden = !meta;
+  $('btn-inicio-definir-meta').hidden = !!meta;
+  $('inicio-meta-texto').textContent = '';
+  if (meta) {
+    const p = Caixa.progressoDaMeta(r.liquido, meta);
+    const parte = Math.round(p.fracao * 100);
+    $('inicio-meta-preenchida').style.width = `${parte}%`;
+    $('inicio-meta-barra').setAttribute('aria-valuenow', String(parte));
+    $('inicio-meta-texto').classList.toggle('batida', p.batida);
+    $('inicio-meta-texto').textContent = textoDaMeta(p, true, m);
+  }
+  // Sem nada a cobrir (nenhum lancamento, ou so de outra moeda, e sem meta), sem olho.
+  $('btn-olho-inicio').hidden = vazio && !meta;
 }
 
 // "Receitas R$ 298,40 · Despesas R$ 110,00 · 4 corridas" nao cabe numa linha
@@ -3556,6 +3569,15 @@ $('btn-abrir-caixa').addEventListener('click', () => {
   abrirCaixa(confirmacaoDoInicio && confirmacaoDoInicio.ate > Date.now() ? confirmacaoDoInicio.dia : undefined);
 });
 $('btn-inicio-lancamento').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento(); });
+// "Definir meta do dia" do cartao: o Caixa de hoje com o campo da meta ja
+// aberto e o foco no valor, tudo no mesmo toque (no iPhone, o teclado so sobe
+// se o focus() vier dele). O desenho do Caixa, que chega depois, deixa o
+// campo aberto (ver desenharMeta).
+$('btn-inicio-definir-meta').addEventListener('click', () => {
+  vibrar('LIGHT');
+  abrirCaixa();
+  abrirFormularioDaMeta();
+});
 $('btn-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); });
 
 // ── Caixa do dia ───────────────────────────────────────────────────────────

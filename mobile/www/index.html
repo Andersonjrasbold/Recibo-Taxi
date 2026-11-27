@@ -189,8 +189,9 @@
        app.js). Tocar no cartao abre o Caixa; "+ Lançamento" lanca direto (a
        corrida feita sem o app, o abastecimento), e Receita ou Despesa se
        escolhe no formulario. O botao de abrir e o cartao inteiro, por baixo
-       do texto, e o olho e o "+ Lançamento" sao botoes irmaos dele, por cima:
-       botao dentro de botao nao vale no HTML, e o toque iria para os dois. -->
+       do texto, e o olho, o "+ Lançamento" e o "Definir meta do dia" sao
+       botoes irmaos dele, por cima: botao dentro de botao nao vale no HTML,
+       e o toque iria para os dois. -->
   <div id="caixa-inicio" class="caixa-cartao vazio">
     <button type="button" id="btn-abrir-caixa" class="caixa-cartao-abrir" aria-label="Abrir o Caixa"></button>
     <div class="caixa-cartao-topo">
@@ -200,6 +201,16 @@
     <button type="button" id="btn-inicio-lancamento" class="caixa-cartao-lancar">+ Lançamento</button>
     <strong id="caixa-inicio-valor" class="caixa-cartao-valor vazio">Nenhum lançamento hoje</strong>
     <small id="caixa-inicio-linha" class="caixa-cartao-linha" hidden></small>
+    <!-- A meta do dia, como no Caixa: a barra sempre a vista (diz quanto da
+         meta ja foi, e nao quanto ele ganhou) e o que falta, que segue o
+         olho. Sem meta, o convite discreto, que abre o Caixa de hoje com o
+         campo da meta. -->
+    <div id="caixa-inicio-meta" class="caixa-cartao-meta" hidden>
+      <div id="inicio-meta-barra" class="caixa-meta-barra" role="progressbar" aria-label="Meta do dia"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="inicio-meta-preenchida"></span></div>
+      <span id="inicio-meta-texto" class="caixa-cartao-meta-texto"></span>
+    </div>
+    <button type="button" id="btn-inicio-definir-meta" class="texto caixa-cartao-definir" hidden>Definir meta do dia</button>
     <small id="caixa-inicio-confirmacao" class="caixa-cartao-confirmacao" hidden></small>
   </div>
 

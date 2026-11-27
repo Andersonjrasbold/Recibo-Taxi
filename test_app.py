@@ -2310,11 +2310,23 @@ _r_t = _post_wa(_evento_wa({"messages": [{"from": "551188887777", "id": f"wamid.
 check("resposta livre (numero sem o nono digito) fica registrada como texto e casa com o motorista",
       _r_t.get_json()["respostas"] == 1 and [r["kind"] for r in _wa_linhas(_wa_a, "entrada")] == ["parar", "texto"],
       str(_r_t.get_json()))
+_crm_chamadas_wa = []
+_sinc_real_wa = A.sincronizar_crm_agora
+A.sincronizar_crm_agora = lambda did: _crm_chamadas_wa.append(str(did))
 check("'SAIR' em texto tambem para as ofertas",
       _optout_wa(_wa_f) is None
       and _post_wa(_evento_wa({"messages": [{"from": "5511977776666", "id": f"wamid.s-{_suf_em}", "type": "text",
                                              "text": {"body": "Sair."}}]})).get_json()["pararam"] == 1
       and _optout_wa(_wa_f) is not None)
+A.sincronizar_crm_agora = _sinc_real_wa
+try:
+    with _st_em.pool.connection() as _conn:
+        _ev_wa_crm = [r["event"] for r in _conn.execute(
+            "select event from public.crm_sync where driver_id = %s order by id", (_wa_f,)).fetchall()]
+except A.psycopg.errors.UndefinedTable:
+    _ev_wa_crm = ["opted_out"]  # migracao 0021 nao aplicada: nada a conferir na fila
+check("'Parar ofertas' pelo WhatsApp entra na fila do CRM e avisa o PilotPostAi na hora",
+      _crm_chamadas_wa == [str(_wa_f)] and "opted_out" in _ev_wa_crm, f"{_crm_chamadas_wa} {_ev_wa_crm}")
 check("numeros equivalentes: com e sem o nono digito",
       A._numeros_equivalentes_br("5511988887777") == ["551188887777", "5511988887777"]
       and A._numeros_equivalentes_br("551188887777") == ["551188887777", "5511988887777"]
@@ -2336,6 +2348,128 @@ for _k in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", 
     os.environ.pop(_k, None)
 check("cadastro do site diz que a conta aceita mensagens pelo WhatsApp (opt-in que a Meta exige)",
       "aceita receber mensagens do Recibo Táxi pelo WhatsApp" in _cw.get("/cadastro").get_data(as_text=True))
+
+print("\n-- Fila do CRM (PilotPostAi, migracao 0021) --")
+os.environ.pop("CRM_URL", None)
+os.environ.pop("CRM_SECRET", None)
+_c_crm = A.app.test_client()
+check("sem CRM_URL/CRM_SECRET a fila nao manda nada", A.processar_fila_crm()["motivo"] == "nao_configurado")
+_em_crm = f"crm-{_suf_em}@teste.invalid"
+novo_cliente(_em_crm)
+_did_crm = _st_em.get_user_by_email(_em_crm)["_id"]
+
+
+def _fila_crm(did, so_pendentes=False):
+    with _st_em.pool.connection() as conn:
+        return [dict(r) for r in conn.execute(
+            "select event, sent_at, attempts, last_error from public.crm_sync where driver_id = %s"
+            + (" and sent_at is null" if so_pendentes else "") + " order by id", (did,)).fetchall()]
+
+
+# O cadastro e um INSERT (created) seguido do UPDATE que grava canal e UF
+# (updated): dois eventos, um envio so (a fila junta por motorista).
+_ev_crm0 = [l["event"] for l in _fila_crm(_did_crm)]
+check("trigger: cadastro novo entra na fila como 'created' (canal e UF gravados logo depois viram 'updated')",
+      _ev_crm0[0] == "created" and set(_ev_crm0) <= {"created", "updated"}, str(_ev_crm0))
+_st_em.update_user(_did_crm, {"city": "Toledo", "state": "PR"})
+_ev_crm1 = [l["event"] for l in _fila_crm(_did_crm)]
+_st_em.update_user(_did_crm, {"password_changed_at": "2026-01-01T00:00:00+00:00"})  # campo que o CRM nao recebe
+_ev_crm2 = [l["event"] for l in _fila_crm(_did_crm)]
+check("trigger: cidade muda -> 'updated'; senha nao enfileira",
+      _ev_crm1 == _ev_crm0 + ["updated"] and _ev_crm2 == _ev_crm1, f"{_ev_crm0} {_ev_crm1} {_ev_crm2}")
+with _st_em.pool.connection() as _conn:
+    _conn.execute("update public.drivers set marketing_optout_at = now() where id = %s", (_did_crm,))
+check("trigger: parar ofertas -> 'opted_out'", [l["event"] for l in _fila_crm(_did_crm)][-1] == "opted_out")
+
+os.environ["CRM_URL"] = "https://crm.exemplo.invalid/internal/integracoes/recibo-taxi/clientes"
+os.environ["CRM_SECRET"] = "segredo-crm"
+_envios_crm = []
+_resposta_crm = {"status": 200, "corpo": '{"ok": true}'}
+
+
+def _fake_crm(cfg, payload, timeout=10):
+    _envios_crm.append({"cfg": cfg, "payload": payload, "timeout": timeout})
+    return _resposta_crm["status"], _resposta_crm["corpo"]
+
+
+_crm_real = A.enviar_crm_http
+A.enviar_crm_http = _fake_crm
+_r_crm = A.processar_fila_crm(driver_id=_did_crm)
+_p_crm = _envios_crm[-1]["payload"] if _envios_crm else {}
+check("fila: os eventos pendentes do mesmo motorista viram UM envio, 'created', com o estado atual",
+      _r_crm["enviados"] == 1 and len(_envios_crm) == 1 and _p_crm.get("event") == "driver.created"
+      and _p_crm.get("external_id") == _did_crm and _p_crm.get("name") == "Ana Souza"
+      and _p_crm.get("phone") == "5511999998888" and _p_crm.get("email") == _em_crm
+      and _p_crm.get("city") == "Toledo" and _p_crm.get("state") == "PR" and _p_crm.get("plan") == "free"
+      and _p_crm.get("whatsapp_opt_out") is True and _p_crm.get("marketing_consent") is True
+      and _p_crm.get("signup_at") and "cpf" not in _p_crm and "plate" not in _p_crm
+      and all(l["sent_at"] for l in _fila_crm(_did_crm)), str(_p_crm)[:300])
+_req_crm = A.montar_pedido_crm(A.crm_config(), {"event": "driver.updated", "external_id": "x"})
+check("pedido ao CRM leva Bearer e X-Recibo-Signature (HMAC do corpo cru)",
+      _req_crm.get_method() == "POST" and _req_crm.get_header("Authorization") == "Bearer segredo-crm"
+      and _req_crm.get_header("X-recibo-signature")
+      == "sha256=" + A.hmac.new(b"segredo-crm", _req_crm.data, A.hashlib.sha256).hexdigest()
+      and A.json.loads(_req_crm.data)["external_id"] == "x" and _req_crm.full_url == os.environ["CRM_URL"])
+_st_em.update_user(_did_crm, {"city": "Cascavel"})
+_resposta_crm.update(status=503, corpo="indisponivel")
+_r_crm2 = A.processar_fila_crm(driver_id=_did_crm)
+_pend_crm = _fila_crm(_did_crm, so_pendentes=True)
+check("fila: 503 fica pendente com tentativa e erro anotados, e a proxima rodada respeita a espera",
+      _r_crm2["falhas"] == 1 and len(_pend_crm) == 1 and _pend_crm[0]["attempts"] == 1
+      and "503" in _pend_crm[0]["last_error"] and A.processar_fila_crm(driver_id=_did_crm)["enviados"] == 0,
+      str(_pend_crm))
+with _st_em.pool.connection() as _conn:
+    _conn.execute("update public.crm_sync set next_try_at = now() where driver_id = %s and sent_at is null", (_did_crm,))
+_resposta_crm.update(status=400, corpo='{"ok": false, "erro": "sem phone nem email"}')
+_r_crm3 = A.processar_fila_crm(driver_id=_did_crm)
+check("fila: 400 e descartado (marcado como enviado, com o erro), sem repetir",
+      _r_crm3["descartados"] == 1 and not _fila_crm(_did_crm, so_pendentes=True)
+      and "400" in _fila_crm(_did_crm)[-1]["last_error"])
+_resposta_crm.update(status=200, corpo='{"ok": true}')
+with _st_em.pool.connection() as _conn:
+    _conn.execute("delete from public.drivers where id = %s", (_did_crm,))
+check("trigger: exclusao entra como 'deleted'", [l["event"] for l in _fila_crm(_did_crm, so_pendentes=True)] == ["deleted"])
+_r_crm4 = A.processar_fila_crm(driver_id=_did_crm)
+check("fila: exclusao manda driver.deleted so com o id",
+      _r_crm4["enviados"] == 1 and _envios_crm[-1]["payload"]["event"] == "driver.deleted"
+      and set(_envios_crm[-1]["payload"]) == {"event", "event_id", "occurred_at", "external_id"}
+      and _envios_crm[-1]["payload"]["external_id"] == _did_crm, str(_envios_crm[-1]["payload"]))
+_em_crm2 = f"crm2-{_suf_em}@teste.invalid"
+_n_crm_antes = len(_envios_crm)
+novo_cliente(_em_crm2)
+_did_crm2 = _st_em.get_user_by_email(_em_crm2)["_id"]
+check("cadastro no site manda ao CRM na hora, com prazo curto, sem esperar o cron",
+      len(_envios_crm) == _n_crm_antes + 1 and _envios_crm[-1]["payload"]["external_id"] == _did_crm2
+      and _envios_crm[-1]["payload"]["event"] == "driver.created" and _envios_crm[-1]["timeout"] == 4
+      and not _fila_crm(_did_crm2, so_pendentes=True), str(_envios_crm[-1])[:200])
+os.environ["CRON_SECRET"] = "segredo-de-teste"
+check("/tarefas/crm exige o segredo do cron e roda a fila",
+      _c_crm.get("/tarefas/crm").status_code == 401
+      and _c_crm.get("/tarefas/crm", headers={"Authorization": "Bearer segredo-de-teste"}).get_json()["ok"] is True)
+_email_adm_crm = f"admin-crm-{_suf_em}@teste.invalid"
+_st_em.upsert_admin(_email_adm_crm, _gph("senha-da-suite-123"))
+_cadm_crm = A.app.test_client()
+_cadm_crm.post("/admin/login", data={"email": _email_adm_crm, "senha": "senha-da-suite-123"},
+               environ_base={"REMOTE_ADDR": "203.0.113.249"})
+check("painel: enfileirar todos sem csrf da 400", _cadm_crm.post("/admin/crm/enfileirar-todos", data={}).status_code == 400)
+with _cadm_crm.session_transaction() as _s_crm:
+    _csrf_crm = _s_crm.get("admin_csrf", "")
+with _st_em.pool.connection() as _conn:
+    _total_drivers_crm = _conn.execute("select count(*) as n from public.drivers").fetchone()["n"]
+_r_todos_crm = _cadm_crm.post("/admin/crm/enfileirar-todos", data={"csrf": _csrf_crm})
+with _st_em.pool.connection() as _conn:
+    _pend_total_crm = _conn.execute(
+        "select count(*) as n from public.crm_sync where sent_at is null and event = 'created'").fetchone()["n"]
+check("painel: enfileirar todos poe cada motorista na fila (carga inicial)",
+      _r_todos_crm.status_code in (302, 303) and _pend_total_crm >= _total_drivers_crm,
+      f"{_r_todos_crm.status_code} {_pend_total_crm} {_total_drivers_crm}")
+_h_saude_crm = _cadm_crm.get("/admin?atualizar=1").get_data(as_text=True)
+check("painel: saude mostra a fila do CRM, o botao e a configuracao",
+      "CRM (PilotPostAi)" in _h_saude_crm and "Enfileirar todos os motoristas" in _h_saude_crm
+      and "Na fila" in _h_saude_crm and "CRM PilotPostAi (CRM_URL + CRM_SECRET)" in _h_saude_crm)
+A.enviar_crm_http = _crm_real
+os.environ.pop("CRM_URL", None)
+os.environ.pop("CRM_SECRET", None)
 
 # Painel: so leitura e um modelo criado e apagado (desligado).
 _adm_em = _st_em.upsert_admin(f"admin-em-{_suf_em}@teste.invalid", _gph("senha-da-suite-123"))

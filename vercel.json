@@ -32,6 +32,10 @@
     {
       "path": "/tarefas/whatsapp",
       "schedule": "30 13,17 * * 1-5"
+    },
+    {
+      "path": "/tarefas/crm",
+      "schedule": "*/15 * * * *"
     }
   ],
   "regions": [

@@ -341,6 +341,22 @@
         <tr><td>{% if ok %}<i class="bi bi-check-circle-fill adm-ok"></i>{% else %}<i class="bi bi-x-circle-fill adm-falha"></i>{% endif %} {{ nome }}</td><td class="adm-suave">{{ nota }}</td></tr>
         {% endfor %}
       </table>
+      <h3 class="adm-h3 mt-3">CRM (PilotPostAi)</h3>
+      {% if d.crm_fila is none %}{{ ui.indisponivel() }}{% else %}
+      <table class="adm-tabela adm-tabela-mini">
+        <tr><td>Na fila</td><td class="adm-num">{{ d.crm_fila.pendentes }}</td></tr>
+        <tr><td>Com falha, aguardando nova tentativa</td><td class="adm-num">{{ d.crm_fila.com_falha }}</td></tr>
+        <tr><td>Enviados nas últimas 24 h</td><td class="adm-num">{{ d.crm_fila.enviados_24h }}</td></tr>
+        <tr><td>Recusados pelo PilotPostAi</td><td class="adm-num">{{ d.crm_fila.descartados }}</td></tr>
+        <tr><td>Último envio</td><td>{{ d.crm_fila.ultimo_envio | data_br }}</td></tr>
+        {% if d.crm_fila.ultimo_erro %}<tr><td>Último erro</td><td class="adm-falha">{{ d.crm_fila.ultimo_erro }}</td></tr>{% endif %}
+      </table>
+      <p class="adm-suave">Cada cadastro, alteração, "parar ofertas" e exclusão entra na fila sozinho e vai ao PilotPostAi na hora ou no próximo cron. O botão põe todos os motoristas de hoje na fila: é a carga inicial, e também o jeito de reenviar tudo.</p>
+      <form action="{{ url_for('admin_crm_enfileirar_todos') }}" method="post" class="mb-3">
+        <input type="hidden" name="csrf" value="{{ admin_csrf }}">
+        <button type="submit" class="adm-botao">Enfileirar todos os motoristas</button>
+      </form>
+      {% endif %}
       <h3 class="adm-h3 mt-3">Deploy</h3>
       <table class="adm-tabela adm-tabela-mini">
         <tr><td>Ambiente</td><td>{{ d.saude.deploy.ambiente }} {{ d.saude.deploy.regiao }}</td></tr>

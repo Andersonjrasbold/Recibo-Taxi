@@ -4351,6 +4351,25 @@ _ter_cx = " ".join(_ter.split())
 check("termos: o Caixa nao e contabilidade e o motorista responde pelos valores",
       "4.2 Caixa: receitas e despesas" in _ter_cx and "Não é contabilidade nem declaração de imposto" in _ter_cx
       and "você responde por eles" in _ter_cx and A.CAIXA_A_PARTIR in _ter_cx)
+# CAIXA_A_PARTIR e a data do portao do POST, e o 1.8 pode chegar as lojas
+# antes dela: o Caixa (e a trava do Gratis nos meses anteriores) ja funciona no
+# aparelho. Os Termos diziam que o Caixa e a regra do plano so comecavam na data,
+# e a Politica, que so a copia no servidor comeca nela.
+check("termos: o Caixa vale na versao 1.8, e a data so marca a copia no servidor, como na Politica",
+      f"A cópia dos lançamentos no nosso servidor começa em {A.CAIXA_A_PARTIR}; antes disso, eles ficam só no aparelho"
+      in _ter_cx
+      and f"A partir de {A.CAIXA_A_PARTIR}, na versão 1.8 do app, o Caixa soma" not in _ter_cx
+      and f"(a partir de {A.CAIXA_A_PARTIR}, versão 1.8)" not in _ter_cx
+      and "Caixa do app (versão 1.8): o plano Grátis mostra o mês corrente" in _ter_cx)
+check("termos: no Gratis os meses anteriores ficam no aparelho, e no servidor so a partir da data",
+      f"os meses anteriores continuam guardados no aparelho (e, a partir de {A.CAIXA_A_PARTIR}, também no nosso servidor)"
+      in _ter_cx)
+# A mesma regra nos dois textos, frase por frase: um item novo que cite a data
+# tem de falar da copia no servidor, e nao do comeco do Caixa ou do plano.
+_frases_data_cx = [f for t in (_pol_cx, _ter_cx) for f in _re.split(r"[.;:]\s", t) if A.CAIXA_A_PARTIR in f]
+check("politica e termos: toda frase com a data do Caixa fala da copia no servidor",
+      bool(_frases_data_cx) and all("servidor" in f for f in _frases_data_cx),
+      [f[-120:] for f in _frases_data_cx if "servidor" not in f])
 check("termos: Gratis ve o mes corrente e Pro os anteriores, que continuam guardados",
       "o Caixa mostra o mês corrente; no Pro, também os meses anteriores" in _ter_cx
       and "os meses anteriores continuam guardados" in _ter_cx

@@ -102,9 +102,10 @@
 
           <h3 class="legal-h3">4.2 Caixa: receitas e despesas</h3>
           <p>
-            A partir de {{ caixa_a_partir }}, na versão 1.8 do app, o Caixa soma as receitas e as
-            despesas que você lança e mostra o resultado do dia e do mês. Os recibos que você emite e as
-            corridas que você encerra com "Só lançar no caixa" entram nele sozinhos.
+            Na versão 1.8 do app, o Caixa soma as receitas e as despesas que você lança e mostra o
+            resultado do dia e do mês. Os recibos que você emite e as corridas que você encerra com
+            "Só lançar no caixa" entram nele sozinhos. A cópia dos lançamentos no nosso servidor
+            começa em {{ caixa_a_partir }}; antes disso, eles ficam só no aparelho.
           </p>
           <ul class="legal-list">
             <li>É uma ferramenta de controle pessoal. <strong>Não é contabilidade nem declaração de
@@ -112,10 +113,11 @@
             <li>Os valores são os que você lançou, ou os dos recibos que você emitiu, e você responde por
                 eles. Não conferimos nem corrigimos os lançamentos.</li>
             <li>No plano Grátis, o Caixa mostra o mês corrente; no Pro, também os meses anteriores
-                (item 6.1). No Grátis, os meses anteriores continuam guardados no aparelho e no nosso
-                servidor e, no aparelho onde foram lançados, aparecem inteiros quando você assina. Por
-                enquanto, o app não traz a cópia do servidor para um aparelho novo nem para o app
-                reinstalado: nesse caso, peça a cópia como diz o item abaixo.</li>
+                (item 6.1). No Grátis, os meses anteriores continuam guardados no aparelho (e, a partir
+                de {{ caixa_a_partir }}, também no nosso servidor) e, no aparelho onde foram lançados,
+                aparecem inteiros quando você assina. Por enquanto, o app não traz a cópia do servidor
+                para um aparelho novo nem para o app reinstalado: nesse caso, peça a cópia como diz o
+                item abaixo.</li>
             <li>A trava do Grátis é só de exibição, nunca de acesso ao seu próprio dado: a qualquer
                 momento você pode pedir, sem custo, uma cópia de todos os seus lançamentos pelo canal da
                 seção "Seus direitos" da <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>
@@ -154,9 +156,8 @@
             no primeiro dia de cada mês.
           </p>
           <p class="legal-note">
-            Caixa do app (a partir de {{ caixa_a_partir }}, versão 1.8): o plano Grátis mostra o mês
-            corrente, e o Pro também os meses anteriores. Os lançamentos dos meses anteriores continuam
-            guardados no Grátis (item 4.2).
+            Caixa do app (versão 1.8): o plano Grátis mostra o mês corrente, e o Pro também os meses
+            anteriores. Os lançamentos dos meses anteriores continuam guardados no Grátis (item 4.2).
           </p>
 
           <div class="legal-callout">

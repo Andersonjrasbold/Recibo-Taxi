@@ -3727,6 +3727,10 @@ $('mes-dias').addEventListener('click', (ev) => {
 let lancamentoAberto = null;     // o que esta sendo editado; null = novo
 let tipoNaTela = 'despesa';
 let categoriaNaTela = '';
+// A categoria de cada tipo enquanto a tela esta aberta: o toque sem querer em
+// "Despesa" e a volta a "Receita" devolvem a "Gorjeta" que estava marcada. Sem
+// isto a volta marcava "Corrida" sozinha, e o Salvar gravava a troca calado.
+let categoriaDoTipo = {};
 let horaAutomatica = true;       // a hora e a que o app pos: acompanha a data
 // Toque duplo no Salvar (o aparelho engasga, o motorista insiste) gravava dois
 // lancamentos iguais com ids diferentes. Mesma trava do emitindo do recibo.
@@ -3771,7 +3775,8 @@ function trocarTipo(tipo) {
   // desligado (travarTipo), e isto segura qualquer outro caminho.
   if (Caixa.tipoFixo(lancamentoAberto)) return;
   vibrar('LIGHT');
-  escolherTipo(tipo);
+  categoriaDoTipo[tipoNaTela] = categoriaNaTela;
+  escolherTipo(tipo, categoriaDoTipo[tipo]);
   if (!lancamentoAberto) $('l-forma').value = tipo === 'receita' ? ultimaForma() : '';
   $('erro-lancamento').hidden = true;
 }
@@ -3806,6 +3811,7 @@ function prepararLancamento() {
 // teclado. Por isso nada aqui espera o banco.
 function abrirLancamento({ tipo = 'despesa', dia } = {}) {
   lancamentoAberto = null;
+  categoriaDoTipo = {};
   prepararLancamento();
   const hoje = Caixa.diaLocal();
   const data = dia && dia <= hoje ? dia : hoje;
@@ -3830,6 +3836,7 @@ async function abrirLancamentoParaEditar(id) {
   try { l = await buscarLancamento(id); } catch { /* banco local com defeito */ }
   if (!l || l.apagado) return;
   lancamentoAberto = l;
+  categoriaDoTipo = { [l.tipo]: l.categoria };
   prepararLancamento();
   $('l-valor').value = Caixa.formatar(l.centavos, Caixa.casasDaMoeda(l.moeda));
   $('l-valor').placeholder = exemploDoValor(Caixa.casasDaMoeda(l.moeda));

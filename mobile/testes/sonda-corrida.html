@@ -1808,6 +1808,29 @@ window.addEventListener('load', async () => {
       ok('observacao e forma entram como texto, nunca como HTML', !q('caixa-lista').querySelector('img, b')
          && textoDe('caixa-lista').includes('<img src=x') && !window.__xss);
 
+      // Tocar em "Despesa" sem querer e voltar a "Receita" devolve a categoria
+      // que estava marcada (antes voltava "Corrida", e o Salvar gravava a troca).
+      await guardarVarios([lanc('l-gorjeta', { tipo: 'receita', categoria: 'gorjeta', centavos: 1000, data: hoje, hora: '14:05' })]);
+      await abrirCaixa();
+      itemDa('l-gorjeta').click(); await espera(300);
+      ok('lancamento a mao: os dois segmentos ficam ligados (o tipo pode mudar)', !q('tipo-receita').disabled && !q('tipo-despesa').disabled);
+      clicar('tipo-despesa'); await espera(50);
+      clicar('tipo-receita'); await espera(50);
+      ok('editar: ida e volta entre os tipos devolve a categoria (Gorjeta), e nao "Corrida"', categoria('gorjeta').getAttribute('aria-pressed') === 'true'
+         && q('l-categorias').querySelectorAll('[aria-pressed="true"]').length === 1);
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const gorjetaSalva = await buscarLancamento('l-gorjeta');
+      ok('e o Salvar guarda a gorjeta como gorjeta', gorjetaSalva.categoria === 'gorjeta' && gorjetaSalva.tipo === 'receita' && gorjetaSalva.versao === 2,
+         JSON.stringify(gorjetaSalva));
+      clicar('btn-caixa-receita'); await espera(100);
+      categoria('gorjeta').click(); clicar('tipo-despesa'); await espera(50);
+      categoria('combustivel').click(); clicar('tipo-receita'); await espera(50);
+      const naReceita = categoria('gorjeta').getAttribute('aria-pressed') === 'true';
+      clicar('tipo-despesa'); await espera(50);
+      ok('lancamento novo: cada tipo guarda a categoria escolhida nele enquanto a tela esta aberta', naReceita
+         && categoria('combustivel').getAttribute('aria-pressed') === 'true' && visivel('campo-l-litros'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+
       // ── Meta do dia ──
       clicar('btn-definir-meta'); await espera(100);
       ok('"Definir meta do dia" abre o campo com o foco, sem "Remover"', visivel('form-meta') && document.activeElement === q('meta-valor')

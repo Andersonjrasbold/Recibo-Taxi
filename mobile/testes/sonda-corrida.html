@@ -2130,7 +2130,9 @@ window.addEventListener('load', async () => {
       q('form-lancamento').requestSubmit(); await espera(300);
       ok('Gratis: lancar com data do mes anterior explica, sob a data, e nao guarda',
          textoDe('erro-lancamento') === `No plano Grátis, o caixa mostra só este mês: escolha um dia de ${Caixa.nomeDoMes(mesAtual).replace(/ de \d{4}$/, '')}.`
-         && q('l-mais').open && !q('tela-lancamento').hidden && !(await listarLancamentos()).some((x) => x.data === `${mesPassado}-28`), textoDe('erro-lancamento'));
+         && q('l-mais').open && !q('tela-lancamento').hidden
+         // So o pedagio recusado: em 1o de marco de ano comum, o l-ontem tambem e do dia 28.
+         && !(await listarLancamentos()).some((x) => x.data === `${mesPassado}-28` && x.categoria === 'pedagio' && x.centavos === 1200), textoDe('erro-lancamento'));
       clicar('btn-fechar-lancamento'); await espera(300);
       await abrirMesDoCaixa(mesPassado);
       ok('Gratis: o mes anterior mostra o total como isca e o convite, sem dias nem categorias', visivel('mes-bloqueio') && !visivel('mes-conteudo')

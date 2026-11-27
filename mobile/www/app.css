@@ -4,6 +4,12 @@
   --coal:#0E1013; --coal-soft:#171A1F; --ambar:#FFC531;
   --coral:#E0392C; --orange:#F7A83E;
   --paper:#F7F5F2; --ink:#17191D; --muted:#6E675E; --linha:rgba(247,245,242,.12);
+  /* Cores de TEXTO do caixa (1.8), medidas contra o --coal em 2026-11-26: o
+     --coral da 4,35:1 e o --muted 3,4:1, abaixo dos 4,5:1 que texto pequeno
+     pede. Receita e valor positivo em --verde (10,4:1), despesa e liquido
+     negativo em --coral-texto (6,8:1), texto secundario no papel a 62%
+     (7,1:1). O --coral continua nos botoes e superficies. */
+  --verde:#5BD68A; --coral-texto:#FF6B5E; --texto-suave:rgba(247,245,242,.62);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
@@ -367,3 +373,196 @@ button:disabled { opacity:.5; }
 /* A dica da estimativa no recibo informa, nao alerta: fica na cor da marca,
    e nao no laranja dos avisos de campo. */
 .dica.dica-neutra { color:var(--ambar); font-weight:600; }
+
+/* ── Caixa (app 1.8) ───────────────────────────────────────────────────── */
+/* Numero de dinheiro sempre com algarismos da mesma largura: na lista, os
+   valores de cima e de baixo ficam alinhados e o olho compara de relance. */
+.valor-receita { color:var(--verde); }
+.valor-despesa { color:var(--coral-texto); }
+.caixa-nota { margin:.6rem 0 0; font-size:.82rem; color:var(--texto-suave); }
+.caixa-vazio { margin:1.2rem 0 .4rem; font-size:.92rem; line-height:1.45; color:var(--texto-suave); }
+/* Botao de texto com alvo do tamanho de um dedo: o .texto sozinho mede ~37 px. */
+.texto-alvo { min-height:44px; }
+.texto-perigo { color:var(--coral-texto); }
+.rotulo { display:block; font-size:.78rem; font-weight:800; margin:.9rem 0 .35rem; }
+/* Erro logo abaixo do campo a corrigir: colado nele, e nao solto entre dois. */
+.erro-campo { margin:.45rem 0 0; }
+
+/* Cartao do inicio: secundario, no tom do cartao de indicacao. O "+ Despesa"
+   fica por cima, no canto, e as duas primeiras linhas deixam espaco para ele. */
+.caixa-cartao { position:relative; margin-top:1rem; }
+.caixa-cartao-abrir {
+  display:grid; gap:.1rem; width:100%; min-height:84px; text-align:left;
+  padding:.85rem 1.1rem .9rem; border-radius:16px; color:var(--paper);
+  background:rgba(247,245,242,.06); border:1px solid rgba(247,245,242,.14);
+}
+.caixa-cartao-abrir:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
+.caixa-cartao-rotulo, .caixa-cartao-valor { padding-right:7.4rem; }
+.caixa-cartao-rotulo {
+  font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--texto-suave);
+}
+.caixa-cartao-valor { font-size:1.3rem; font-weight:800; line-height:1.3; font-variant-numeric:tabular-nums; }
+.caixa-cartao-valor.vazio { font-size:1rem; font-weight:700; line-height:1.5; }
+.caixa-cartao-linha { font-size:.8rem; line-height:1.4; color:var(--texto-suave); font-variant-numeric:tabular-nums; }
+.caixa-cartao-confirmacao { margin-top:.2rem; font-size:.86rem; font-weight:800; color:var(--verde); font-variant-numeric:tabular-nums; }
+.caixa-cartao-despesa {
+  position:absolute; top:.75rem; right:.75rem; min-height:44px; padding:0 .95rem;
+  font-size:.92rem; font-weight:800; color:var(--ambar);
+  background:var(--coal); border:1px solid rgba(255,197,49,.45); border-radius:12px;
+}
+.caixa-cartao-despesa:active { background:rgba(255,197,49,.14); }
+
+/* ‹ dia › e ‹ mes ›: as setas do tamanho do polegar, o titulo no meio. */
+.caixa-navegar {
+  display:grid; grid-template-columns:48px 1fr 48px; align-items:center; gap:.25rem;
+  margin:0 0 1.1rem; padding:.15rem; border-radius:14px;
+  background:var(--coal-soft); border:1px solid var(--linha);
+}
+.caixa-navegar-titulo { text-align:center; font-size:1rem; font-variant-numeric:tabular-nums; }
+.caixa-seta {
+  width:48px; height:48px; border-radius:12px; padding:0 0 .2rem;
+  font-size:1.9rem; line-height:1; color:var(--ambar); background:none;
+}
+.caixa-seta:active { background:rgba(255,197,49,.12); }
+.caixa-seta:disabled { opacity:.22; }
+
+/* Heroi: o liquido, o numero que ele procura ao abrir a tela. */
+.caixa-heroi { display:grid; gap:.1rem; margin:.2rem 0 .9rem; }
+.caixa-heroi-valor {
+  font-size:2.5rem; font-weight:800; line-height:1.1; letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums; overflow-wrap:anywhere;
+}
+.caixa-heroi-rotulo { font-size:.86rem; color:var(--texto-suave); }
+.caixa-media { margin:-.5rem 0 1rem; font-size:.88rem; color:var(--texto-suave); font-variant-numeric:tabular-nums; }
+
+/* Meta do dia: a barra em ambar e quanto falta, logo abaixo do liquido. */
+.caixa-meta { margin:0 0 1rem; }
+.caixa-meta-topo { display:flex; align-items:center; gap:.75rem; }
+.caixa-meta-barra {
+  flex:1; height:10px; border-radius:999px; overflow:hidden; background:rgba(247,245,242,.1);
+}
+.caixa-meta-barra > span { display:block; width:0; height:100%; border-radius:inherit; background:var(--ambar); }
+.caixa-meta-valor { min-height:44px; padding:0 .1rem; font-size:.84rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.caixa-meta-texto { margin:0; font-size:.92rem; font-weight:800; color:var(--ambar); font-variant-numeric:tabular-nums; }
+.caixa-meta-texto.batida { color:var(--verde); }
+.caixa-meta-definir { min-height:44px; padding:0; font-size:.92rem; }
+.caixa-meta-form label { margin-top:0; }
+.caixa-meta-campos { display:flex; gap:.5rem; }
+.caixa-meta-campos input { flex:1; font-variant-numeric:tabular-nums; }
+.caixa-meta-salvar {
+  min-height:52px; padding:0 1.2rem; font-weight:800; color:var(--ink); background:var(--ambar);
+}
+.caixa-meta-rodape { display:flex; justify-content:space-between; gap:.5rem; margin-top:.2rem; }
+.caixa-meta-rodape .texto { padding:.5rem 0; }
+
+/* Receitas e despesas do dia (e do mes): nome e quantos a esquerda, valor a direita. */
+.caixa-totais { padding:0 1rem; border-radius:16px; background:var(--coal-soft); border:1px solid var(--linha); }
+.caixa-total { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.7rem 0; }
+.caixa-total + .caixa-total { border-top:1px solid var(--linha); }
+.caixa-total-nome { display:grid; font-weight:700; line-height:1.3; }
+.caixa-total-nome small { font-size:.78rem; font-weight:600; color:var(--texto-suave); }
+.caixa-total strong { font-size:1.12rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+.caixa-acoes { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; margin:1rem 0 .3rem; }
+.caixa-acoes .secundario { margin-top:0; font-weight:800; }
+.caixa-mais:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
+
+/* Lista do dia: hora, o que foi e o valor com o sinal. A linha inteira e o alvo. */
+.caixa-lista { margin-top:.6rem; }
+.caixa-item {
+  display:grid; grid-template-columns:3.1rem minmax(0, 1fr) auto; align-items:start; gap:.55rem;
+  width:100%; min-height:56px; padding:.8rem 0; text-align:left;
+  color:var(--paper); background:none; border-radius:0; border-bottom:1px solid var(--linha);
+}
+.caixa-item:active { background:rgba(247,245,242,.05); }
+.caixa-item-hora { padding-top:.08rem; font-size:.86rem; font-weight:700; color:var(--texto-suave); font-variant-numeric:tabular-nums; }
+.caixa-item-meio { display:grid; gap:.1rem; min-width:0; }
+.caixa-item-titulo { font-weight:700; line-height:1.35; overflow-wrap:anywhere; }
+.caixa-item-detalhe { font-size:.82rem; line-height:1.35; color:var(--texto-suave); overflow-wrap:anywhere; }
+.caixa-item-valor { font-weight:800; font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+/* O mes do dia aberto, no pe da tela. */
+.caixa-mes-cartao {
+  display:grid; gap:.1rem; width:100%; margin-top:1.4rem; text-align:left;
+  padding:.95rem 1.1rem; border-radius:16px; color:var(--paper);
+  background:rgba(247,245,242,.06); border:1px solid rgba(247,245,242,.14);
+}
+.caixa-mes-cartao:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
+.caixa-mes-topo { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.caixa-seta-fim { font-size:1.5rem; line-height:1; color:var(--texto-suave); }
+.caixa-mes-liquido { font-weight:800; font-variant-numeric:tabular-nums; }
+.caixa-mes-dias { font-size:.82rem; color:var(--texto-suave); font-variant-numeric:tabular-nums; }
+
+/* Mes anterior no Gratis: o total como isca, e o convite. */
+.caixa-bloqueio {
+  display:grid; gap:.45rem; margin-bottom:1rem; padding:1.3rem 1.2rem; border-radius:18px;
+  background:rgba(255,197,49,.08); border:1px solid rgba(255,197,49,.32);
+}
+.caixa-bloqueio-titulo { font-size:1.12rem; }
+.caixa-bloqueio-isca { margin:0; font-size:1rem; font-weight:700; line-height:1.45; font-variant-numeric:tabular-nums; }
+.caixa-bloqueio .primario { margin-top:.6rem; }
+.caixa-bloqueio .caixa-nota { margin-top:.2rem; }
+
+/* Mes: categorias com a parte do total numa barra fina, e a lista de dias. */
+.caixa-secao {
+  margin:1.5rem 0 .25rem; font-size:.72rem; font-weight:800;
+  text-transform:uppercase; letter-spacing:.05em; color:var(--texto-suave);
+}
+.caixa-categoria { padding:.55rem 0; }
+.caixa-categoria-linha { display:flex; align-items:baseline; gap:.6rem; }
+.caixa-categoria-nome { flex:1; min-width:0; font-weight:700; overflow-wrap:anywhere; }
+.caixa-categoria-valor { font-weight:800; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.caixa-categoria-parte {
+  min-width:2.7rem; text-align:right; font-size:.8rem; font-weight:700;
+  color:var(--texto-suave); font-variant-numeric:tabular-nums;
+}
+.caixa-categoria-barra { height:5px; margin-top:.35rem; border-radius:999px; overflow:hidden; background:rgba(247,245,242,.08); }
+.caixa-categoria-barra > span { display:block; height:100%; border-radius:inherit; }
+.caixa-categoria-barra.despesa > span { background:var(--coral-texto); }
+.caixa-categoria-barra.receita > span { background:var(--verde); }
+.caixa-dia-item {
+  display:flex; align-items:center; gap:.8rem; width:100%; min-height:52px; padding:.6rem 0;
+  text-align:left; color:var(--paper); background:none; border-radius:0; border-bottom:1px solid var(--linha);
+}
+.caixa-dia-item:active { background:rgba(247,245,242,.05); }
+.caixa-dia-item-nome { flex:1; font-weight:700; font-variant-numeric:tabular-nums; }
+.caixa-dia-item-valor { font-weight:800; font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+/* Lancamento: tipo em dois segmentos, valor grande, categorias em botoes. */
+.segmentos { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
+.segmento {
+  min-height:48px; font-weight:800; font-size:.95rem;
+  color:var(--paper); background:var(--coal-soft); border:2px solid var(--linha);
+}
+#tipo-receita[aria-checked="true"] { color:var(--verde); border-color:var(--verde); background:rgba(91,214,138,.1); }
+#tipo-despesa[aria-checked="true"] { color:var(--coral-texto); border-color:var(--coral-texto); background:rgba(255,107,94,.1); }
+.campo-valor { min-height:66px; font-size:1.9rem; font-weight:800; font-variant-numeric:tabular-nums; }
+.campo-valor-fim { min-height:58px; font-size:1.45rem; }
+.campo-valor::placeholder { color:rgba(247,245,242,.3); }
+.categorias { display:flex; flex-wrap:wrap; gap:.5rem; }
+.categoria {
+  min-height:44px; padding:.45rem .95rem; font-size:.92rem; font-weight:700; border-radius:999px;
+  color:var(--paper); background:var(--coal-soft); border:1px solid var(--linha);
+}
+.categoria[aria-pressed="true"] { color:var(--ink); background:var(--ambar); border-color:var(--ambar); }
+.linha-recibo {
+  display:block; width:100%; min-height:44px; margin-top:.4rem; padding:.55rem 0; text-align:left;
+  font-size:.92rem; font-weight:800; color:var(--ambar); background:none; border-radius:0;
+}
+.mais-detalhes { margin-top:1.1rem; border-top:1px solid var(--linha); }
+.mais-detalhes > summary {
+  display:flex; align-items:center; min-height:50px; list-style:none; cursor:pointer;
+  font-size:.95rem; font-weight:800; color:var(--ambar);
+}
+.mais-detalhes > summary::-webkit-details-marker { display:none; }
+.mais-detalhes > summary::after { content:'▾'; margin-left:.45rem; }
+.mais-detalhes[open] > summary::after { content:'▴'; }
+/* O primeiro rotulo de dentro encosta no titulo: a forma, na despesa; a data, na receita. */
+#lugar-forma-despesa label, #lugar-forma-despesa:empty + .linha label { margin-top:0; }
+#btn-apagar-lancamento { margin-top:1rem; font-size:.92rem; }
+
+/* Fim da corrida: as tres acoes afastadas umas das outras (toque com o carro
+   andando), e os dois botoes de texto com alvo de dedo. */
+#corrida-fim .fim-lancar { margin-top:1rem; }
+.fim-texto { display:block; width:100%; margin-top:.9rem; font-size:.92rem; }
+#btn-retomar.fim-texto { margin-top:.35rem; }

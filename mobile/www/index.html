@@ -33,6 +33,7 @@
           <small id="menu-plano" class="menu-plano"></small>
         </div>
         <button id="btn-meus-dados" class="menu-item">Meus dados</button>
+        <button id="btn-caixa" class="menu-item">Meu caixa</button>
         <button id="btn-pro" class="menu-item">Recibo Táxi Pro</button>
         <button id="btn-indicar" class="menu-item">Indicar um colega</button>
         <button id="btn-historico" class="menu-item">Ver histórico</button>
@@ -208,6 +209,22 @@
     </button>
   </div>
 
+  <!-- Caixa de hoje (app 1.8): depois dos dois caminhos e antes da vitrine.
+       Discreto de proposito: o trabalho do dia continua sendo emitir e fazer
+       corrida, e o cartao e para conferir de relance. Tocar abre o Caixa;
+       "+ Despesa" lanca direto (o abastecimento no meio do dia). Sao dois
+       botoes lado a lado, e nao um dentro do outro (botao dentro de botao nao
+       vale no HTML, e o toque iria para os dois). -->
+  <div id="caixa-inicio" class="caixa-cartao">
+    <button type="button" id="btn-abrir-caixa" class="caixa-cartao-abrir">
+      <span class="caixa-cartao-rotulo">Caixa de hoje</span>
+      <strong id="caixa-inicio-valor" class="caixa-cartao-valor vazio">Nenhum lançamento hoje</strong>
+      <small id="caixa-inicio-linha" class="caixa-cartao-linha" hidden></small>
+      <small id="caixa-inicio-confirmacao" class="caixa-cartao-confirmacao" hidden></small>
+    </button>
+    <button type="button" id="btn-inicio-despesa" class="caixa-cartao-despesa">+ Despesa</button>
+  </div>
+
   <!-- Vitrine dos planos para quem esta no Gratis (pedido do Anderson,
        2026-11-14): uma faixa, nunca uma janela por cima. Fica DEPOIS dos dois
        caminhos de proposito: os precos chegam da loja alguns instantes depois
@@ -311,13 +328,31 @@
     <button type="button" id="btn-comecar" class="texto texto-centro">Começar sem abrir o mapa</button>
   </div>
 
-  <!-- Depois de encerrar: recibo, ou nada. Nem toda corrida precisa de recibo,
-       e cada recibo conta no limite do plano Gratis. -->
+  <!-- Depois de encerrar: recibo, so o caixa, ou nada. Nem toda corrida
+       precisa de recibo, e cada recibo conta no limite do plano Gratis.
+       "Quanto cobrou?" (app 1.8) vai para o recibo ou direto para o caixa. A
+       estimativa e so a dica de baixo: nunca preenche o campo, porque quem diz
+       o valor e o taximetro. Sem foco automatico no campo: o teclado subiria
+       por cima dos botoes. -->
   <div id="corrida-fim" hidden>
     <div id="fim-resumo" class="aviso"></div>
+    <label for="fim-valor">Quanto cobrou? (<span class="simbolo-moeda">R$</span>)</label>
+    <input type="text" id="fim-valor" class="campo-valor campo-valor-fim" inputmode="decimal"
+           autocomplete="off" placeholder="0,00">
+    <!-- Logo abaixo do campo: com o teclado aberto, e o que fica a vista. -->
+    <p id="erro-fim" class="erro erro-campo" role="alert" hidden></p>
+    <p id="fim-estimativa" class="dica dica-neutra" hidden></p>
+    <label for="fim-forma">Pagamento</label>
+    <select id="fim-forma">
+      <option>Pix</option><option>Dinheiro</option>
+      <option>Cartão</option><option>Aplicativo</option>
+    </select>
+    <!-- Tres acoes bem separadas: o toque errado com o carro andando lancaria
+         ou apagaria a corrida. "Não lançar" mantem o id do antigo "Sem recibo". -->
     <button type="button" id="btn-gerar-recibo" class="primario">Gerar recibo</button>
-    <button type="button" id="btn-sem-recibo" class="secundario">Sem recibo</button>
-    <button type="button" id="btn-retomar" class="texto texto-centro">Voltar para a corrida</button>
+    <button type="button" id="btn-lancar-corrida" class="secundario fim-lancar">Só lançar no caixa</button>
+    <button type="button" id="btn-sem-recibo" class="texto texto-alvo fim-texto">Não lançar</button>
+    <button type="button" id="btn-retomar" class="texto texto-alvo fim-texto">Voltar para a corrida</button>
   </div>
 </section>
 
@@ -470,6 +505,8 @@
     <button id="btn-compartilhar" class="secundario">Compartilhar PDF</button>
     <button id="btn-novo" class="secundario">Novo recibo</button>
     <button id="btn-voltar-historico" class="texto" hidden>Voltar ao histórico</button>
+    <!-- O recibo aberto pelo lancamento do caixa ("Do recibo de ...") volta para o caixa. -->
+    <button id="btn-voltar-caixa" class="texto texto-alvo" hidden>Voltar ao caixa</button>
   </div>
 
   <!-- A mesma vitrine, so no recibo recem-gerado por quem esta no Gratis.
@@ -743,6 +780,212 @@
     <button id="btn-voltar" class="texto">Voltar</button>
   </div>
   <div id="lista-historico"></div>
+</section>
+
+<!-- ── Caixa (app 1.8) ──────────────────────────────────────────────────── -->
+<!-- O dia do motorista: quanto entrou, quanto saiu e o liquido, com a lista
+     do dia. E tela de base, como o inicio: o menu e a assinatura voltam para
+     ela. No Gratis, dia de mes anterior mostra so o total do mes e o convite
+     ao Pro, nunca os lancamentos (o dado continua guardado). -->
+<section id="tela-caixa" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Caixa</h1>
+    <button id="btn-fechar-caixa" class="texto texto-alvo">Voltar</button>
+  </div>
+
+  <div class="caixa-navegar">
+    <button type="button" id="btn-dia-anterior" class="caixa-seta" aria-label="Dia anterior">‹</button>
+    <strong id="caixa-dia-titulo" class="caixa-navegar-titulo" aria-live="polite"></strong>
+    <button type="button" id="btn-dia-seguinte" class="caixa-seta" aria-label="Dia seguinte">›</button>
+  </div>
+
+  <div id="caixa-dia">
+    <div class="caixa-heroi">
+      <strong id="caixa-liquido" class="caixa-heroi-valor"></strong>
+      <span id="caixa-liquido-rotulo" class="caixa-heroi-rotulo"></span>
+    </div>
+
+    <!-- Meta do dia, do liquido: so neste aparelho. -->
+    <div class="caixa-meta">
+      <div id="meta-com" hidden>
+        <div class="caixa-meta-topo">
+          <div id="meta-barra" class="caixa-meta-barra" role="progressbar" aria-label="Meta do dia"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="meta-preenchida"></span></div>
+          <button type="button" id="btn-mudar-meta" class="texto caixa-meta-valor"></button>
+        </div>
+        <p id="meta-texto" class="caixa-meta-texto"></p>
+      </div>
+      <button type="button" id="btn-definir-meta" class="texto caixa-meta-definir" hidden>Definir meta do dia</button>
+      <form id="form-meta" class="caixa-meta-form" novalidate hidden>
+        <label for="meta-valor">Meta do dia, em líquido (<span class="simbolo-moeda">R$</span>)</label>
+        <div class="caixa-meta-campos">
+          <input type="text" id="meta-valor" inputmode="decimal" autocomplete="off">
+          <button type="submit" class="caixa-meta-salvar">Salvar</button>
+        </div>
+        <p id="erro-meta" class="erro" hidden></p>
+        <div class="caixa-meta-rodape">
+          <button type="button" id="btn-remover-meta" class="texto texto-alvo texto-perigo">Remover meta</button>
+          <button type="button" id="btn-cancelar-meta" class="texto texto-alvo">Cancelar</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="caixa-totais">
+      <div class="caixa-total">
+        <span class="caixa-total-nome">Receitas <small id="caixa-n-receitas"></small></span>
+        <strong id="caixa-receitas" class="valor-receita"></strong>
+      </div>
+      <div class="caixa-total">
+        <span class="caixa-total-nome">Despesas <small id="caixa-n-despesas"></small></span>
+        <strong id="caixa-despesas" class="valor-despesa"></strong>
+      </div>
+    </div>
+    <p id="caixa-outras-moedas" class="caixa-nota" hidden></p>
+
+    <div class="caixa-acoes">
+      <button type="button" id="btn-caixa-despesa" class="secundario caixa-mais">+ Despesa</button>
+      <button type="button" id="btn-caixa-receita" class="secundario caixa-mais">+ Receita</button>
+    </div>
+
+    <div id="caixa-lista" class="caixa-lista"></div>
+    <p id="caixa-vazio" class="caixa-vazio" hidden>Nenhum lançamento neste dia. Os recibos que você emitir entram aqui sozinhos.</p>
+  </div>
+
+  <div id="caixa-bloqueio" class="caixa-bloqueio" hidden>
+    <strong class="caixa-bloqueio-titulo">Os meses anteriores ficam no Pro.</strong>
+    <p class="caixa-bloqueio-isca"></p>
+    <button type="button" id="btn-caixa-pro" class="primario caixa-conhecer-pro">Conhecer o Pro</button>
+    <p class="caixa-nota">Seus lançamentos continuam guardados: ao assinar, o histórico aparece inteiro.</p>
+  </div>
+
+  <button type="button" id="btn-abrir-mes" class="caixa-mes-cartao">
+    <span class="caixa-mes-topo"><strong id="caixa-mes-nome"></strong><span class="caixa-seta-fim" aria-hidden="true">›</span></span>
+    <span id="caixa-mes-liquido" class="caixa-mes-liquido"></span>
+    <small id="caixa-mes-dias" class="caixa-mes-dias"></small>
+  </button>
+</section>
+
+<!-- ── Caixa do mês ─────────────────────────────────────────────────────── -->
+<section id="tela-caixa-mes" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1>Caixa do mês</h1>
+    <button id="btn-fechar-mes" class="texto texto-alvo">Voltar</button>
+  </div>
+
+  <div class="caixa-navegar">
+    <button type="button" id="btn-mes-anterior" class="caixa-seta" aria-label="Mês anterior">‹</button>
+    <strong id="mes-titulo" class="caixa-navegar-titulo" aria-live="polite"></strong>
+    <button type="button" id="btn-mes-seguinte" class="caixa-seta" aria-label="Mês seguinte">›</button>
+  </div>
+
+  <div id="mes-conteudo">
+    <div class="caixa-heroi">
+      <strong id="mes-liquido" class="caixa-heroi-valor"></strong>
+      <span id="mes-liquido-rotulo" class="caixa-heroi-rotulo"></span>
+    </div>
+    <p id="mes-media" class="caixa-media"></p>
+
+    <div class="caixa-totais">
+      <div class="caixa-total">
+        <span class="caixa-total-nome">Receitas <small id="mes-n-receitas"></small></span>
+        <strong id="mes-receitas" class="valor-receita"></strong>
+      </div>
+      <div class="caixa-total">
+        <span class="caixa-total-nome">Despesas <small id="mes-n-despesas"></small></span>
+        <strong id="mes-despesas" class="valor-despesa"></strong>
+      </div>
+    </div>
+    <p id="mes-outras-moedas" class="caixa-nota" hidden></p>
+
+    <div id="mes-bloco-despesas">
+      <h2 class="caixa-secao">Despesas por categoria</h2>
+      <div id="mes-cat-despesas"></div>
+    </div>
+    <div id="mes-bloco-receitas">
+      <h2 class="caixa-secao">Receitas por categoria</h2>
+      <div id="mes-cat-receitas"></div>
+    </div>
+    <div id="mes-bloco-dias">
+      <h2 class="caixa-secao">Dias</h2>
+      <div id="mes-dias"></div>
+    </div>
+    <p id="mes-vazio" class="caixa-vazio" hidden>Nenhum lançamento neste mês.</p>
+  </div>
+
+  <div id="mes-bloqueio" class="caixa-bloqueio" hidden>
+    <strong class="caixa-bloqueio-titulo">Os meses anteriores ficam no Pro.</strong>
+    <p class="caixa-bloqueio-isca"></p>
+    <button type="button" id="btn-mes-pro" class="primario caixa-conhecer-pro">Conhecer o Pro</button>
+    <p class="caixa-nota">Seus lançamentos continuam guardados: ao assinar, o histórico aparece inteiro.</p>
+  </div>
+</section>
+
+<!-- ── Lançamento do caixa ──────────────────────────────────────────────── -->
+<!-- Receita ou despesa, nova ou editada. O valor vem primeiro e abre o
+     teclado (o foco e dado no mesmo toque do "+ Despesa"). O resto, que quase
+     nunca muda (data, hora, observacao), fica recolhido em "Mais detalhes". -->
+<section id="tela-lancamento" class="tela" hidden>
+  <div class="cabecalho-tela">
+    <h1 id="titulo-lancamento">Nova despesa</h1>
+    <button id="btn-fechar-lancamento" class="texto texto-alvo">Cancelar</button>
+  </div>
+
+  <form id="form-lancamento" novalidate>
+    <div class="segmentos" role="radiogroup" aria-label="Tipo de lançamento">
+      <button type="button" id="tipo-receita" class="segmento" role="radio" aria-checked="false">Receita</button>
+      <button type="button" id="tipo-despesa" class="segmento" role="radio" aria-checked="true">Despesa</button>
+    </div>
+
+    <label for="l-valor">Valor (<span class="simbolo-moeda">R$</span>)</label>
+    <input type="text" id="l-valor" class="campo-valor" inputmode="decimal" autocomplete="off" placeholder="0,00">
+    <!-- Veio de um recibo: abre o recibo. O valor daqui e so o do caixa. -->
+    <button type="button" id="btn-l-recibo" class="linha-recibo" hidden></button>
+    <p id="l-dica-recibo" class="dica dica-neutra" hidden>Mudar o valor aqui não muda o recibo.</p>
+    <p id="l-rota" class="caixa-nota" hidden></p>
+
+    <span id="rotulo-categoria" class="rotulo">Categoria</span>
+    <div id="l-categorias" class="categorias" role="group" aria-labelledby="rotulo-categoria"></div>
+
+    <div id="campo-l-litros" hidden>
+      <label for="l-litros">Litros (opcional)</label>
+      <input type="text" id="l-litros" inputmode="decimal" maxlength="7" autocomplete="off" placeholder="30,5">
+    </div>
+
+    <!-- A forma de pagamento muda de lugar com o tipo (ver posicionarForma). -->
+    <div id="lugar-forma-receita">
+      <div id="campo-l-forma">
+        <label for="l-forma">Pagamento</label>
+        <select id="l-forma">
+          <option value="">Não informar</option>
+          <option>Pix</option><option>Dinheiro</option>
+          <option>Cartão</option><option>Aplicativo</option>
+        </select>
+      </div>
+    </div>
+
+    <details id="l-mais" class="mais-detalhes">
+      <summary>Mais detalhes</summary>
+      <div id="lugar-forma-despesa"></div>
+      <div class="linha">
+        <div>
+          <label for="l-data">Data</label>
+          <input type="date" id="l-data" min="2000-01-01">
+        </div>
+        <div>
+          <label for="l-hora">Hora</label>
+          <input type="time" id="l-hora">
+        </div>
+      </div>
+      <label for="l-obs">Observação (opcional)</label>
+      <input type="text" id="l-obs" maxlength="120" autocomplete="off">
+    </details>
+
+    <!-- Vai para baixo do campo que tem de ser corrigido (ver erroNoLancamento). -->
+    <p id="erro-lancamento" class="erro erro-campo" role="alert" hidden></p>
+    <p id="l-recusado" class="caixa-nota" hidden>A cópia deste lançamento não foi guardada no servidor.</p>
+    <button type="submit" id="btn-salvar-lancamento" class="primario">Salvar</button>
+    <button type="button" id="btn-apagar-lancamento" class="texto texto-alvo texto-perigo texto-centro" hidden>Apagar lançamento</button>
+  </form>
 </section>
 
 <script src="config.js"></script>

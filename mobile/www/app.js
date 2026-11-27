@@ -67,9 +67,10 @@ function abrirBanco() {
     };
     req.onsuccess = () => {
       const db = req.result;
-      // Cada chamada abre uma conexao, e ninguem a fecha. Sem isto, qualquer
-      // conexao aberta trava para sempre a proxima subida de versao (e o
-      // deleteDatabase dos testes), esperando por ela.
+      // Cada chamada abre uma conexao, que fecha quando a transacao dela acaba
+      // (ver transacao). A que ainda estiver aberta (uma leitura em voo) fecha
+      // aqui quando alguem pede a subida de versao (ou o deleteDatabase dos
+      // testes): sem isto, a subida esperaria por ela para sempre.
       db.onversionchange = () => db.close();
       ok(db);
     };
@@ -77,10 +78,25 @@ function abrirBanco() {
   });
 }
 
+// A transacao de cada operacao, numa conexao que fecha quando ela acaba (bem
+// ou mal). Com o ouvinte de versionchange (acima), o navegador deixa de
+// recolher a conexao esquecida: sem fechar, cada leitura e gravacao deixava
+// uma aberta ate o app morrer — centenas num dia de trabalho, uns 10 KB cada
+// no WebView do Android. Fecha no fim, e nao logo depois de criar: o get que
+// grava no proprio onsuccess (mudarLancamentos) segue na mesma transacao.
+function transacao(db, lojas, modo) {
+  let tx;
+  try { tx = db.transaction(lojas, modo); } catch (e) { db.close(); throw e; }
+  const fechar = () => db.close();
+  tx.addEventListener('complete', fechar);
+  tx.addEventListener('abort', fechar);
+  return tx;
+}
+
 async function salvarRecibo(recibo) {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const tx = db.transaction('recibos', 'readwrite');
+    const tx = transacao(db, 'recibos', 'readwrite');
     tx.objectStore('recibos').put(recibo);
     tx.oncomplete = () => ok(recibo);
     tx.onerror = () => falha(tx.error);
@@ -90,7 +106,7 @@ async function salvarRecibo(recibo) {
 async function todosOsRecibos() {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const req = db.transaction('recibos', 'readonly').objectStore('recibos').getAll();
+    const req = transacao(db, 'recibos', 'readonly').objectStore('recibos').getAll();
     req.onsuccess = () => ok(req.result.sort((a, b) => b.criado_em.localeCompare(a.criado_em)));
     req.onerror = () => falha(req.error);
   });
@@ -185,7 +201,7 @@ async function limparRecibosLocais() {
   const meus = await listarRecibos();
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const tx = db.transaction('recibos', 'readwrite');
+    const tx = transacao(db, 'recibos', 'readwrite');
     const loja = tx.objectStore('recibos');
     meus.forEach((r) => loja.delete(r.rid));
     tx.oncomplete = () => ok();
@@ -207,7 +223,7 @@ async function limparRecibosLocais() {
 async function todosOsLancamentos() {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const req = db.transaction('lancamentos', 'readonly').objectStore('lancamentos').getAll();
+    const req = transacao(db, 'lancamentos', 'readonly').objectStore('lancamentos').getAll();
     req.onsuccess = () => ok(req.result);
     req.onerror = () => falha(req.error);
   });
@@ -229,7 +245,7 @@ async function listarLancamentos() {
 async function buscarLancamento(id) {
   const db = await abrirBanco();
   const l = await new Promise((ok, falha) => {
-    const req = db.transaction('lancamentos', 'readonly').objectStore('lancamentos').get(String(id));
+    const req = transacao(db, 'lancamentos', 'readonly').objectStore('lancamentos').get(String(id));
     req.onsuccess = () => ok(req.result || null);
     req.onerror = () => falha(req.error);
   });
@@ -245,7 +261,7 @@ const abortada = (tx) => tx.error || new DOMException('Transação abortada', 'A
 async function salvarLancamento(l) {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const tx = db.transaction('lancamentos', 'readwrite');
+    const tx = transacao(db, 'lancamentos', 'readwrite');
     tx.objectStore('lancamentos').put(l);
     tx.oncomplete = () => ok(l);
     tx.onerror = () => falha(tx.error);
@@ -262,7 +278,7 @@ async function salvarLancamento(l) {
 async function mudarLancamentos(ids, muda) {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const tx = db.transaction('lancamentos', 'readwrite');
+    const tx = transacao(db, 'lancamentos', 'readwrite');
     const loja = tx.objectStore('lancamentos');
     const gravados = [];
     for (const id of ids) {
@@ -384,7 +400,7 @@ async function limparLancamentosLocais() {
   const meus = await listarLancamentos();
   const db = await abrirBanco();
   await new Promise((ok, falha) => {
-    const tx = db.transaction('lancamentos', 'readwrite');
+    const tx = transacao(db, 'lancamentos', 'readwrite');
     const loja = tx.objectStore('lancamentos');
     meus.forEach((l) => loja.delete(l.id));
     tx.oncomplete = () => ok();

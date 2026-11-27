@@ -1540,6 +1540,46 @@ window.addEventListener('load', async () => {
       await limparLancamentosLocais();
       ok('caixa: excluir a conta apaga so o caixa de quem excluiu', !(await todosOsLancamentos()).some((x) => x.dono === 'outro')
          && (await todosOsLancamentos()).some((x) => x.dono === 'web-motorista') && Guardado.get('caixa_meta:web-motorista') === 40000);
+      // Cada conexao com o banco fecha quando a transacao dela acaba. Com o
+      // ouvinte de versionchange, o navegador deixou de recolher a conexao
+      // esquecida: cada leitura e gravacao ficava aberta ate o app morrer.
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      clearTimeout(caixaReagendado); caixaReagendado = null;
+      if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      if (passadaDoCaixa) await passadaDoCaixa;
+      await espera(300);
+      const conexoes = [];
+      const fechadas = new WeakSet();
+      const abrirDoNavegador = IDBFactory.prototype.open;
+      const fecharDoNavegador = IDBDatabase.prototype.close;
+      indexedDB.open = function (...a) {
+        const req = abrirDoNavegador.apply(this, a);
+        req.addEventListener('success', () => conexoes.push(req.result));
+        return req;
+      };
+      IDBDatabase.prototype.close = function () { fechadas.add(this); return fecharDoNavegador.call(this); };
+      try {
+        await salvarRecibo({ rid: 'D0000000000001', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'outro', motorista: {},
+          dados: { rid: 'D0000000000001', origem: 'Conexoes', destino: 'Centro', valor: '12', valor_exibido: '12,00', moeda: 'BRL', data: hojeC,
+                   hora: '10:00', forma_pagamento: 'Pix' } });
+        await todosOsRecibos();
+        await completarCaixaComRecibos();
+        const l = await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 1500, data: hojeC });
+        await editarLancamento(l.id, { centavos: 1600 });
+        await buscarLancamento(l.id);
+        await apagarLancamento(l.id);
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        await enviarCaixa();
+        await limparLancamentosLocais();
+        await limparRecibosLocais();
+        await espera(400);
+      } finally {
+        delete indexedDB.open;
+        IDBDatabase.prototype.close = fecharDoNavegador;
+      }
+      const abertas = conexoes.filter((c) => !fechadas.has(c)).length;
+      ok('caixa: cada conexao com o banco fecha quando a transacao acaba (nenhuma fica aberta ate o app morrer)',
+         conexoes.length >= 10 && abertas === 0, `${abertas} de ${conexoes.length} abertas`);
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
     }

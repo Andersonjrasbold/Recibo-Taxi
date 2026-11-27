@@ -4645,13 +4645,13 @@ _portao_cx = A.CAIXA_A_PARTIR_DATA
 A.CAIXA_A_PARTIR_DATA = A.datetime(2000, 1, 1).date()
 
 
-def _conta_app_cx(nome):
+def _conta_app_cx(nome, **extra):
     """Conta nova pelo /api/cadastro: (cliente, cabecalho Bearer, id)."""
     _cli = A.app.test_client()
     _email = f"{nome}-{_suf_cx}@teste.invalid"
     _r = _cli.post("/api/cadastro", json={
         "nome_completo": "Caixa Teste", "email": _email, "senha": "senha12345",
-        "whatsapp": "45998231111", "cpf": "52998224725", "cidade": "Cascavel", "placa": "CXA1234"})
+        "whatsapp": "45998231111", "cpf": "52998224725", "cidade": "Cascavel", "placa": "CXA1234", **extra})
     _tk = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
     return _cli, {"Authorization": f"Bearer {_tk}"}, (A.get_store().get_user_by_email(_email) or {}).get("_id", "")
 
@@ -4677,6 +4677,13 @@ def _enviar_cx(*itens, cab=None, cli=None):
 
 def _linhas_cx(did=None):
     return {l["id"]: l for l in A.get_store().list_ledger_entries_by_driver(did or _uid_cx)}
+
+
+def _linha_crua_cx(lid, did=None):
+    """A linha com TODAS as colunas da tabela (uma coluna nova entra sozinha)."""
+    with A.get_store().pool.connection() as _conn:
+        return dict(_conn.execute("select * from public.ledger_entries where driver_id = %s and id = %s",
+                                  (did or _uid_cx, lid)).fetchone() or {})
 
 
 def _n_lanc_cx(did):
@@ -4740,6 +4747,27 @@ check("caixa: reenvio identico volta em aceitos e nao duplica (uma linha)",
 _enviar_cx(dict(_l1, centavos=9000, versao=2))
 _g = _linhas_cx()[_l1["id"]]
 check("caixa: versao maior atualiza", _g["amount"] == _DecCx("90.00") and _g["version"] == 2, str(_g))
+# A edicao no app pode trocar qualquer campo e manda a versao + 1: o UPDATE do
+# upsert tem de copiar TODAS as colunas, senao a copia guarda o dado velho sob a
+# versao nova, em silencio. A linha editada tem de ficar igual a do mesmo v2
+# gravado direto (outro id, mesmo lote).
+_v1_ed_cx = _lanc(obs="posto", km="12,4")
+_v2_ed_cx = dict(tipo="receita", categoria="gorjeta", centavos=1500, moeda="USD",
+                 data=(_dia_cx - A.timedelta(days=1)).isoformat(), hora="09:00", forma="Dinheiro",
+                 origem="corrida", rid="0A1B2C3D4E5F60", obs="corrigido", km="3", litros=None, versao=2)
+_dir_ed_cx = _lanc(**_v2_ed_cx)
+_enviar_cx(_v1_ed_cx)
+_antes_ed_cx = _linha_crua_cx(_v1_ed_cx["id"])
+_r = _enviar_cx(dict(_v1_ed_cx, **_v2_ed_cx), _dir_ed_cx)
+_ed_cx, _dir_g_cx = _linha_crua_cx(_v1_ed_cx["id"]), _linha_crua_cx(_dir_ed_cx["id"])
+_iguais_cx = [k for k in _dir_g_cx if k not in {"driver_id", "id", "created_at", "updated_at", "deleted_at"}
+              and _antes_ed_cx.get(k) == _dir_g_cx[k]]
+check("caixa: a edicao do teste troca todas as colunas de dados (coluna nova? troque-a aqui tambem)",
+      bool(_dir_g_cx) and not _iguais_cx, str(_iguais_cx))
+_dif_ed_cx = {k: (_ed_cx.get(k), _dir_g_cx[k]) for k in _dir_g_cx
+              if k not in {"id", "created_at", "updated_at"} and _ed_cx.get(k) != _dir_g_cx[k]}
+check("caixa: versao maior troca todas as colunas (igual ao mesmo v2 gravado direto)",
+      _r.status_code == 200 and _ed_cx.get("version") == 2 and not _dif_ed_cx, str(_dif_ed_cx))
 _r = _enviar_cx(dict(_l1, centavos=100, versao=1))
 _g = _linhas_cx()[_l1["id"]]
 check("caixa: versao menor nao sobrescreve e volta em aceitos (o servidor ja tem algo mais novo)",
@@ -4814,6 +4842,10 @@ _casos_cx = [
     ("versao zero", _lanc(versao=0), "versao_invalida"),
     ("versao em texto", _lanc(versao="1"), "versao_invalida"),
     ("versao acima do integer do banco", _lanc(versao=2**31), "versao_invalida"),
+    # Os dois abaixo passariam na API com um "match" no lugar do "fullmatch", ou
+    # com a maiuscula aceita, e o check do banco derrubaria o lote inteiro (503).
+    ("categoria com maiuscula sem acento", _lanc(categoria="Corrida"), "categoria_invalida"),
+    ("rid com 15 caracteres", _lanc(rid="0A1B2C3D4E5F60A"), "rid_invalido"),
 ]
 _bom_cx = _lanc()
 _r = _enviar_cx(*[c[1] for c in _casos_cx], _bom_cx)
@@ -4826,6 +4858,18 @@ for _nome_cx, _item_cx, _codigo_cx in _casos_cx:
     check(f"caixa: {_nome_cx} -> {_codigo_cx}", _erros_cx.get(_item_cx["id"]) == _codigo_cx, _erros_cx.get(_item_cx["id"]))
 _gravados_cx = _linhas_cx()
 check("caixa: nada dos itens recusados foi gravado", not any(c[1]["id"] in _gravados_cx for c in _casos_cx))
+# NUL e surrogate solto passam pelo JSON e o Postgres recusa os dois: sem tira-los
+# antes, um item assim derrubava o lote inteiro (503), e o app reenviava o mesmo
+# lote para sempre. O NUL sai; o surrogate vira "?". (NUL colado na observacao
+# chega do app de verdade: o maxlength do campo nao o tira.)
+_nul_cx = [_lanc(obs="posto\u0000 da avenida"), _lanc(obs="cafe \ud83d"), _lanc(forma="Pix\u0000"), _lanc()]
+_r = _enviar_cx(*_nul_cx)
+_g = _linhas_cx()
+check("caixa: NUL e surrogate solto em obs e forma nao derrubam o lote e saem antes do banco",
+      _r.status_code == 200 and _r.get_json() == {"aceitos": [_l["id"] for _l in _nul_cx], "recusados": []}
+      and (_g.get(_nul_cx[0]["id"]) or {}).get("note") == "posto da avenida"
+      and (_g.get(_nul_cx[1]["id"]) or {}).get("note") == "cafe ?"
+      and (_g.get(_nul_cx[2]["id"]) or {}).get("payment_method") == "Pix", f"{_r.status_code} {_r.get_json()}")
 
 _r = _enviar_cx("texto", [1], None, _lanc(id="tem espaço"), _lanc(id="x" * 50), _lanc(id=123), _lanc(id="abc\n"))
 _rec_cx = (_r.get_json() or {}).get("recusados", [])
@@ -4852,6 +4896,17 @@ _xyz_cx = _lanc(moeda="XYZ", centavos=1234)
 _enviar_cx(_xyz_cx)
 _g = _linhas_cx()[_xyz_cx["id"]]
 check("caixa: moeda fora da lista vale a do cadastro", _g["currency"] == "BRL" and _g["amount"] == _DecCx("12.34"), str(_g))
+# Com a conta em real nao da para saber se valeu o cadastro ou um BRL fixo: em
+# peso chileno (0 casas), 4500 tem de virar 4.500 pesos, e nao R$ 45,00.
+_cclp_cx, _cabclp_cx, _uidclp_cx = _conta_app_cx("caixa-clp", pais="CL", moeda="CLP")
+_clp_cx = [_lanc(moeda="XYZ", centavos=4500), _lanc(moeda="", centavos=4500), _lanc(centavos=4500)]
+del _clp_cx[2]["moeda"]
+_r = _enviar_cx(*_clp_cx, cab=_cabclp_cx, cli=_cclp_cx)
+_g = _linhas_cx(_uidclp_cx)
+check("caixa: moeda fora da lista, vazia ou ausente vale a do cadastro (peso chileno, 0 casas)",
+      (A.get_store().get_user_by_id(_uidclp_cx) or {}).get("currency") == "CLP" and _r.status_code == 200
+      and all((_g.get(_l["id"]) or {}).get("currency") == "CLP" and (_g.get(_l["id"]) or {}).get("amount") == _DecCx("4500")
+              for _l in _clp_cx), str({k: (v["currency"], v["amount"]) for k, v in _g.items()}))
 
 _varios_cx = [_lanc(hora="25:00"), _lanc(data=(_dia_cx + A.timedelta(days=2)).isoformat()), _lanc(data="2000-01-01"),
               _lanc(km=12.4, litros=30.5), _lanc(forma=None, obs=None, km="", litros="")]
@@ -5044,26 +5099,42 @@ check("caixa: excluir o cadastro pelo painel apaga os lancamentos",
       _antes_exc_cx == 1 and _r.status_code == 302 and A.get_store().get_user_by_id(_uidv_cx) is None
       and _n_lanc_cx(_uidv_cx) == 0, f"{_antes_exc_cx} {_r.status_code}")
 
-# Painel: so contagens. Com a consulta apontando para uma tabela que nao
-# existe (o mesmo erro da migracao por aplicar), o bloco sai indisponivel.
-def _caixa_no_painel():
-    _dd = {"_tempos": {}}
-    with A.get_store().pool.connection() as _conn:
-        A._executar_secoes(_conn, ["caixa"], A._params_dashboard_admin(), _dd)
+# Painel: so contagens. A SQL do bloco roda so sobre as contas deste teste: a
+# suite pode rodar contra o banco de verdade, onde a contagem de todos muda
+# sozinha entre dois retratos. Uma conta lanca agora (um deles apagado); a
+# outra lancou ha 10 e ha 40 dias, para conferir as janelas de 7 e 30 dias.
+# Com a consulta apontando para uma tabela que nao existe (o mesmo erro da
+# migracao por aplicar), o bloco sai indisponivel.
+def _caixa_no_painel(ids):
+    _sql = A._SQL_ADMIN["caixa"]
+    A._SQL_ADMIN["caixa"] = _sql.replace(
+        "public.ledger_entries",
+        "(select * from public.ledger_entries where driver_id = any(%(ids_teste)s::uuid[])) as ledger_entries")
+    try:
+        _dd = {"_tempos": {}}
+        with A.get_store().pool.connection() as _conn:
+            A._executar_secoes(_conn, ["caixa"], dict(A._params_dashboard_admin(), ids_teste=ids), _dd)
+    finally:
+        A._SQL_ADMIN["caixa"] = _sql
     return _dd["caixa"] or {}
 
 
-_antes_p_cx = _caixa_no_painel()
 _cp_cx, _cabp_cx, _uidp_cx = _conta_app_cx("caixa-painel")
 _rid_p_cx = os.urandom(7).hex().upper()
 _enviar_cx(_lanc(), _lanc(tipo="receita", categoria="corrida", origem="corrida", litros=None),
            _lanc(id=f"r-{_rid_p_cx}", tipo="receita", categoria="corrida", origem="recibo", rid=_rid_p_cx, litros=None),
            _lanc(apagado=True), cab=_cabp_cx, cli=_cp_cx)
-_depois_p_cx = _caixa_no_painel()
-_dif_cx = {k: int(_depois_p_cx.get(k) or 0) - int(_antes_p_cx.get(k) or 0) for k in _depois_p_cx}
-check("painel: contagens do Caixa sobem com os lancamentos (apagado fica fora das contagens por tipo e origem)",
-      _dif_cx == {"motoristas": 1, "motoristas_7d": 1, "total_30d": 3, "receitas_30d": 2, "despesas_30d": 1,
-                  "recibo_30d": 1, "corrida_30d": 1, "manual_30d": 1}, str(_dif_cx))
+_cpv_cx, _cabpv_cx, _uidpv_cx = _conta_app_cx("caixa-painel-antigo")
+_l40_cx, _l10_cx = _lanc(), _lanc()
+_enviar_cx(_l40_cx, _l10_cx, cab=_cabpv_cx, cli=_cpv_cx)
+with A.get_store().pool.connection() as _conn:
+    for _l_cx, _dias_cx in ((_l40_cx, 40), (_l10_cx, 10)):
+        _conn.execute("""update public.ledger_entries set created_at = now() - make_interval(days => %s)
+                          where driver_id = %s and id = %s""", (_dias_cx, _uidpv_cx, _l_cx["id"]))
+_p_cx = {k: int(v or 0) for k, v in _caixa_no_painel([_uidp_cx, _uidpv_cx]).items()}
+check("painel: contagens do Caixa nas janelas de 7 e 30 dias (apagado fica fora das contagens por tipo e origem)",
+      _p_cx == {"motoristas": 2, "motoristas_7d": 1, "total_30d": 4, "receitas_30d": 2, "despesas_30d": 2,
+                "recibo_30d": 1, "corrida_30d": 1, "manual_30d": 2}, str(_p_cx))
 _html_cx = _cadm_cx.get("/admin?atualizar=1").get_data(as_text=True)
 _bloco_cx = _html_cx[_html_cx.find("Caixa (app 1.8)"):]
 _bloco_cx = _bloco_cx[:_bloco_cx.find("Ressalva:")]

@@ -278,9 +278,16 @@
   // ficam: o lancamento de um recibo continua sendo dele.
   const EDITAVEIS = ['tipo', 'categoria', 'centavos', 'data', 'hora', 'forma', 'obs', 'km', 'litros'];
 
+  // O que veio de recibo ou de corrida e sempre receita: e o dinheiro que o
+  // passageiro pagou, e o recibo dele continua na mao do passageiro. Virar
+  // despesa descontava esse valor do liquido (o dia caia o dobro do recibo) e
+  // o recibo nunca voltava como receita, porque o r-<rid> ja existia.
+  const tipoFixo = (l) => !!l && (l.origem === 'recibo' || l.origem === 'corrida');
+
   function editado(atual, mudancas = {}, { agora } = {}) {
     const novo = { ...atual };
     for (const campo of EDITAVEIS) {
+      if (campo === 'tipo' && tipoFixo(atual)) continue;
       if (mudancas && Object.prototype.hasOwnProperty.call(mudancas, campo)) novo[campo] = mudancas[campo];
     }
     novo.hora = horaValida(novo.hora);
@@ -496,7 +503,7 @@
     kmDe, litrosDe, horaValida, rotaDe,
     diaLocal, horaLocal, dataReal, somarDias, mesDe, mesAnterior, mesSeguinte, nomeDoMes,
     dataCurta, rotuloDoDia, mesLiberado,
-    novoLancamento, editado, apagado, lancamentoDoRecibo, camposDaCorrida, erroDoLancamento, paraEnvio,
+    novoLancamento, editado, apagado, tipoFixo, lancamentoDoRecibo, camposDaCorrida, erroDoLancamento, paraEnvio,
     resumoDoDia, resumoDoMes, doDia, progressoDaMeta,
   });
 })(typeof window !== 'undefined' ? window : globalThis);

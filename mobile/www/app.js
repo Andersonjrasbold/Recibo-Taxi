@@ -3767,10 +3767,21 @@ function escolherTipo(tipo, categoria) {
 
 function trocarTipo(tipo) {
   if (tipo === tipoNaTela) return;
+  // Recibo e corrida sao sempre receita (Caixa.tipoFixo): o segmento fica
+  // desligado (travarTipo), e isto segura qualquer outro caminho.
+  if (Caixa.tipoFixo(lancamentoAberto)) return;
   vibrar('LIGHT');
   escolherTipo(tipo);
   if (!lancamentoAberto) $('l-forma').value = tipo === 'receita' ? ultimaForma() : '';
   $('erro-lancamento').hidden = true;
+}
+
+// O que veio de recibo ou de corrida nao troca de tipo: o outro segmento fica
+// desligado, a vista, e nao escondido (ele entende que nao da, e por que).
+function travarTipo(l) {
+  const fixo = Caixa.tipoFixo(l);
+  $('tipo-receita').disabled = fixo && l.tipo !== 'receita';
+  $('tipo-despesa').disabled = fixo && l.tipo !== 'despesa';
 }
 
 function desarmarApagar() {
@@ -3786,6 +3797,7 @@ function prepararLancamento() {
   desarmarApagar();
   $('l-mais').open = false;
   ['btn-l-recibo', 'l-dica-recibo', 'l-rota', 'l-recusado'].forEach((id) => { $(id).hidden = true; });
+  travarTipo(lancamentoAberto);
   $('l-data').max = Caixa.somarDias(Caixa.diaLocal(), 1);
 }
 

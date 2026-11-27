@@ -246,6 +246,15 @@ try {
       editadoL.id, editadoL.dono, editadoL.origem, editadoL.moeda, editadoL.criado_em],
     [2, true, '', depois, 9000, 'troco', 'l-0123456789abcdef', 'id-1', 'manual', 'BRL', agora]);
   ok('editar nao mexe no original', recusado.versao === 1 && recusado.centavos === 8600);
+  // Recibo e corrida sao sempre receita: a troca de tipo nao pega, o resto sim.
+  const daCorridaL = C.novoLancamento(C.camposDaCorrida(corrida, { centavos: 5800 }), { id: 'l-corrida', dono: 'id-1', agora });
+  const gorjetaL = C.novoLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 1000, data: '2026-11-26' }, { id: 'l-gorjeta', dono: 'id-1', agora });
+  const reciboVirado = C.editado(doRecibo, { tipo: 'despesa', centavos: 4000 }, { agora: depois });
+  igual('o tipo do que veio de recibo ou de corrida fica receita ao editar; o da manual muda',
+    [reciboVirado.tipo, reciboVirado.centavos, reciboVirado.versao, C.editado(daCorridaL, { tipo: 'despesa' }).tipo, C.editado(gorjetaL, { tipo: 'despesa' }).tipo],
+    ['receita', 4000, 2, 'receita', 'despesa']);
+  igual('tipo fixo: recibo e corrida sim; manual e nada, nao',
+    [C.tipoFixo(doRecibo), C.tipoFixo(daCorridaL), C.tipoFixo(gorjetaL), C.tipoFixo(null)], [true, true, false, false]);
   const tumulo = C.apagado(editadoL, { agora: depois });
   igual('apagar vira tumulo: apagado, versao + 1, pendente', [tumulo.apagado, tumulo.versao, tumulo.pendente, tumulo.centavos], [true, 3, true, 9000]);
 

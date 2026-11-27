@@ -1761,6 +1761,10 @@ window.addEventListener('load', async () => {
       ok('a receita do recibo diz de qual recibo veio, e que mudar o valor aqui nao muda o recibo',
          visivel('btn-l-recibo') && textoDe('btn-l-recibo') === `Do recibo de ${diaMes} às ${emitido.dados.hora} ›` && visivel('l-dica-recibo')
          && textoDe('l-dica-recibo') === 'Mudar o valor aqui não muda o recibo.', textoDe('btn-l-recibo'));
+      ok('a receita do recibo nao vira despesa: o segmento "Despesa" fica desligado', q('tipo-despesa').disabled && !q('tipo-receita').disabled);
+      clicar('tipo-despesa'); await espera(50);
+      ok('e o toque nele nao troca o tipo', q('tipo-receita').getAttribute('aria-checked') === 'true' && textoDe('titulo-lancamento') === 'Editar receita'
+         && categoria('corrida').getAttribute('aria-pressed') === 'true');
       clicar('btn-l-recibo'); await espera(400);
       ok('a linha abre o recibo, com "Voltar ao caixa"', !q('tela-recibo').hidden && q('btn-compartilhar').dataset.rid === emitido.rid
          && visivel('btn-voltar-caixa') && q('btn-voltar-historico').hidden);
@@ -1950,6 +1954,11 @@ window.addEventListener('load', async () => {
          && textoDe('caixa-inicio-linha') === linhaEsperada, `${textoDe('caixa-inicio-linha')} x ${linhaEsperada}`);
       await espera(5200);
       ok('a confirmacao some sozinha depois de ~5 s', !visivel('caixa-inicio-confirmacao'));
+      await abrirCaixa(lancada.data);
+      itemDa(lancada.id).click(); await espera(300);
+      ok('a receita do "Só lançar" tambem nao vira despesa (segmento desligado)', q('tipo-despesa').disabled
+         && textoDe('titulo-lancamento') === 'Editar receita');
+      clicar('btn-fechar-lancamento'); await espera(300);
 
       corridaEncerrada();
       await abrirCorrida(); await espera(150);

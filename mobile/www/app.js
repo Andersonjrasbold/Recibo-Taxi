@@ -3480,6 +3480,15 @@ document.querySelectorAll('.olho').forEach((botao) => botao.addEventListener('cl
 // escondida. O que chegar primeiro cobre; o outro nao acha nada a cobrir.
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') cobrirValores(); });
 if (P().App) P().App.addListener('pause', cobrirValores);
+// No iPhone, os dois chegam tarde: o WebKit congela a tela antes de avisar a
+// pagina, e a foto do app para a lista de apps abertos saia com os numeros; o
+// seletor de apps, aberto de dentro do app, nem os manda. O que chega antes,
+// com a tela ainda desenhando, e o appStateChange com isActive false (o
+// willResignActive do sistema): cobre ali. Cobre tambem ao puxar a Central de
+// Controle ou a de Notificacoes, numa ligacao e num aviso do sistema (compra,
+// localizacao), e ele toca no olho de novo. No Android esse aviso vem depois
+// do 'pause', que ja cobriu.
+if (P().App) P().App.addListener('appStateChange', ({ isActive } = {}) => { if (!isActive) cobrirValores(); });
 desenharOlhos();
 
 // ── Cartao do inicio ───────────────────────────────────────────────────────

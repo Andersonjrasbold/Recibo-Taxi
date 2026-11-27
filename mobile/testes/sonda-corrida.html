@@ -52,7 +52,7 @@ window.__pedidos = [];
 window.__regraCaixa = () => ({});       // como responder a cada POST /api/lancamentos (caixa, 1.8)
 window.__lotes = [];                    // corpos que o app mandou para /api/lancamentos
 window.__avaliacoes = 0;                // quantas vezes o app pediu avaliacao a loja
-window.__ouvintes = {};                 // eventos do plugin App ('resume', 'backButton')
+window.__ouvintes = {};                 // eventos do plugin App ('resume', 'pause', 'appStateChange', 'backButton')
 window.Capacitor = {
   isNativePlatform: () => true,
   getPlatform: () => 'ios',
@@ -1960,6 +1960,38 @@ window.addEventListener('load', async () => {
       (__ouvintes.pause || []).forEach((f) => f());
       ok('o "pause" do app tambem cobre na hora o cartao do inicio aberto', abertoNoInicio && !valoresVisiveis
          && textoDe('caixa-inicio-valor') === 'R$ ••••' && semDinheiro() && ariaDo('btn-olho-inicio') === 'Mostrar valores', dinheiroNaPagina().join(' | '));
+
+      // No iPhone, o 'pause' e a pagina escondida chegam tarde: o sistema tira a
+      // foto do app para a lista de apps abertos antes deles (e o seletor de
+      // apps, aberto de dentro do app, nem os manda). O que chega antes e o
+      // appStateChange com isActive false: sozinho, ele cobre na hora o cartao,
+      // o Caixa do dia e o mes, e o isActive true da volta nao mostra de novo.
+      const ficarAtivo = (isActive) => (__ouvintes.appStateChange || []).forEach((f) => f({ isActive }));
+      if (!valoresVisiveis) clicar('btn-olho-inicio');
+      const inativo = { antes: textoDe('caixa-inicio-valor') === reais(diaO.liquido) && !semDinheiro() };
+      ficarAtivo(false);
+      inativo.naHora = { estado: valoresVisiveis, cartao: textoDe('caixa-inicio-valor'), linha: textoDe('caixa-inicio-linha'), semDinheiro: semDinheiro() };
+      ficarAtivo(true);
+      inativo.naVolta = { estado: valoresVisiveis, cartao: textoDe('caixa-inicio-valor') };
+      ok('o app ficando inativo (appStateChange, que no iPhone chega antes do "pause") cobre na hora o cartao do inicio aberto, e a volta nao mostra',
+         inativo.antes && inativo.naHora.estado === false && inativo.naHora.cartao === 'R$ ••••'
+         && inativo.naHora.linha.startsWith('Receitas R$ •••• · Despesas R$ ••••') && inativo.naHora.semDinheiro
+         && inativo.naVolta.estado === false && inativo.naVolta.cartao === 'R$ ••••', `${JSON.stringify(inativo)} ${dinheiroNaPagina().join(' | ')}`);
+      await abrirCaixa();
+      if (!valoresVisiveis) clicar('btn-olho-caixa');
+      const caixaInativo = { antes: textoDe('caixa-liquido') === reais(diaO.liquido) && !semDinheiro() };
+      ficarAtivo(false);
+      Object.assign(caixaInativo, { estado: valoresVisiveis, dia: textoDe('caixa-liquido'), semDinheiro: semDinheiro(), olho: ariaDo('btn-olho-caixa') });
+      await abrirMesDoCaixa(mesAtual);
+      if (!valoresVisiveis) clicar('btn-olho-mes');
+      const mesInativo = { antes: textoDe('mes-liquido') === reais(mesO.liquido) };
+      ficarAtivo(false);
+      Object.assign(mesInativo, { estado: valoresVisiveis, mes: textoDe('mes-liquido'), semDinheiro: semDinheiro(), olho: ariaDo('btn-olho-mes') });
+      ok('e cobre na hora tambem o Caixa do dia e o do mes abertos, sem numero de dinheiro na pagina',
+         caixaInativo.antes && caixaInativo.estado === false && caixaInativo.dia === 'R$ ••••' && caixaInativo.semDinheiro
+         && caixaInativo.olho === 'Mostrar valores' && mesInativo.antes && mesInativo.estado === false && mesInativo.mes === 'R$ ••••'
+         && mesInativo.semDinheiro && mesInativo.olho === 'Mostrar valores', `${JSON.stringify({ caixaInativo, mesInativo })} ${dinheiroNaPagina().join(' | ')}`);
+      if (valoresVisiveis) aplicarOlho(false);   // o que vem depois comeca coberto, de qualquer jeito
 
       // A meta batida no cartao: a barra cheia, em verde, e o que passou.
       guardarMetaDoDia(diaO.liquido - 1000);

@@ -3823,7 +3823,13 @@ function prepararLancamento() {
   $('l-mais').open = false;
   ['btn-l-recibo', 'l-dica-recibo', 'l-rota', 'l-recusado'].forEach((id) => { $(id).hidden = true; });
   travarTipo(lancamentoAberto);
-  $('l-data').max = Caixa.diaLocal();   // ate hoje: ver Caixa.erroDoLancamento
+  // Ate hoje (ver Caixa.erroDoLancamento) e, no Gratis, so este mes: o mes
+  // anterior e do Pro, e o lancamento posto la sumia no bloqueio, sem como
+  // corrigir nem apagar. E a regra que ja esconde os botoes de lancar no dia
+  // bloqueado; o submit confere de novo (o seletor do sistema pode deixar passar).
+  const hoje = Caixa.diaLocal();
+  $('l-data').max = hoje;
+  $('l-data').min = ehPro() ? '2000-01-01' : `${Caixa.mesDe(hoje)}-01`;
 }
 
 // Novo lancamento, com o tipo do botao. O foco vai para o valor no mesmo
@@ -3955,6 +3961,14 @@ $('form-lancamento').addEventListener('submit', async (ev) => {
   if (Caixa.litrosDe(litros) === null) { erroNoLancamento(MENSAGENS_DO_CAIXA.litros_invalido, { campo: $('l-litros') }); return; }
   if (!Caixa.dataReal($('l-data').value)) {
     erroNoLancamento('Informe a data.', { campo: $('l-data'), depoisDe: $('l-data').closest('.linha') });
+    return;
+  }
+  // No Gratis, so este mes (ver prepararLancamento). Vale tambem na edicao:
+  // levar para o mes anterior um lancamento deste mes o tirava da vista.
+  const mesAtual = Caixa.mesDe(Caixa.diaLocal());
+  if (!Caixa.mesLiberado(Caixa.mesDe($('l-data').value), mesAtual, ehPro())) {
+    erroNoLancamento(`No plano Grátis, o caixa mostra só este mês: escolha um dia de ${Caixa.nomeDoMes(mesAtual).replace(/ de \d{4}$/, '')}.`,
+      { campo: $('l-data'), depoisDe: $('l-data').closest('.linha') });
     return;
   }
   const campos = {

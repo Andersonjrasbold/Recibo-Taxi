@@ -1944,6 +1944,18 @@ window.addEventListener('load', async () => {
          && textoDe('motivo-pro') === 'O Pro mostra os meses anteriores do seu caixa.');
       clicar('btn-fechar-pro'); await espera(400);
       ok('"Agora não" volta ao Caixa, no mesmo dia', !q('tela-caixa').hidden && visivel('caixa-bloqueio'));
+      // O formulario do Gratis nao lanca em mes anterior: o lancamento ia direto
+      // para o bloqueio, sem como corrigir nem apagar.
+      await abrirCaixa();
+      clicar('btn-caixa-despesa'); await espera(100);
+      ok('Gratis: a data do lancamento vai do dia 1 deste mes ate hoje', q('l-data').min === `${mesAtual}-01` && q('l-data').max === hoje,
+         `${q('l-data').min} ${q('l-data').max}`);
+      q('l-valor').value = '12,00'; categoria('pedagio').click(); q('l-data').value = `${mesPassado}-28`;
+      q('form-lancamento').requestSubmit(); await espera(300);
+      ok('Gratis: lancar com data do mes anterior explica, sob a data, e nao guarda',
+         textoDe('erro-lancamento') === `No plano Grátis, o caixa mostra só este mês: escolha um dia de ${Caixa.nomeDoMes(mesAtual).replace(/ de \d{4}$/, '')}.`
+         && q('l-mais').open && !q('tela-lancamento').hidden && !(await listarLancamentos()).some((x) => x.data === `${mesPassado}-28`), textoDe('erro-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
       await abrirMesDoCaixa(mesPassado);
       ok('Gratis: o mes anterior mostra o total como isca e o convite, sem dias nem categorias', visivel('mes-bloqueio') && !visivel('mes-conteudo')
          && textoDe('mes-bloqueio').includes(isca) && !q('tela-caixa-mes').innerText.includes('Aluguel'));
@@ -1957,6 +1969,9 @@ window.addEventListener('load', async () => {
          && !!q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${diaPassado}"]`), textoDe('mes-liquido'));
       await abrirCaixa(diaPassado);
       ok('Pro: o dia do mes anterior mostra os lancamentos', !visivel('caixa-bloqueio') && !!itemDa('l-passado1') && visivel('btn-abrir-mes'));
+      clicar('btn-caixa-despesa'); await espera(100);
+      ok('Pro: o lancamento pode ter data de mes anterior', q('l-data').min === '2000-01-01' && q('l-data').value === diaPassado);
+      clicar('btn-fechar-lancamento'); await espera(300);
       window.__sessao = sessaoGratis;
       await atualizarSessao(); await espera(400);
       ok('de volta ao Gratis, o dia do mes anterior trava de novo', visivel('caixa-bloqueio') && !visivel('caixa-dia'));

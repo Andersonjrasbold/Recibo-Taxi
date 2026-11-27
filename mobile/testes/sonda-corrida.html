@@ -2135,6 +2135,37 @@ window.addEventListener('load', async () => {
          textoDe('caixa-inicio-confirmacao') === textoDoMesPassado, textoDe('caixa-inicio-confirmacao'));
       // A corrida do dia continua com a frase curta (o teste do "Só lançar" acima).
 
+      // Gravacao que aborta (o Android sem espaco: o commit falha so com
+      // "abort", sem "error"): o "Só lançar" e o Salvar avisam e soltam a trava,
+      // em vez de ficar parados ate ele fechar o app.
+      const putDoNavegador = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...a) {
+        const req = putDoNavegador.apply(this, a);
+        if (this.name === 'lancamentos') {
+          const tx = this.transaction;
+          req.addEventListener('success', () => { try { tx.abort(); } catch { /* ja acabou */ } });
+        }
+        return req;
+      };
+      try {
+        corridaEncerrada({ inicio: saidaDeHoje() });
+        await abrirCorrida(); await espera(150);
+        digitar('fim-valor', '33,00');
+        clicar('btn-lancar-corrida'); await espera(600);
+        ok('gravacao abortada (aparelho sem espaco): o "Só lançar no caixa" avisa, solta a trava e a corrida fica',
+           textoDe('erro-fim') === 'Não deu para lançar no caixa. Tente de novo.' && !lancandoCorrida && !!corridaAtual(), textoDe('erro-fim'));
+        apagarCorrida();
+        await abrirCaixa();
+        clicar('btn-caixa-despesa'); await espera(100);
+        q('l-valor').value = '11,00'; categoria('lavagem').click();
+        q('form-lancamento').requestSubmit(); await espera(600);
+        ok('gravacao abortada: o Salvar avisa e volta a funcionar', textoDe('erro-lancamento') === 'Não deu para guardar o lançamento. Tente de novo.'
+           && !q('btn-salvar-lancamento').disabled && !salvandoLancamento && !q('tela-lancamento').hidden, textoDe('erro-lancamento'));
+        clicar('btn-fechar-lancamento'); await espera(300);
+      } finally {
+        IDBObjectStore.prototype.put = putDoNavegador;
+      }
+
       // ── Navegacao e voltar do Android ──
       await abrirCaixa();
       clicar('btn-caixa-despesa'); await espera(100);

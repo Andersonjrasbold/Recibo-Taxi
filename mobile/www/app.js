@@ -236,6 +236,12 @@ async function buscarLancamento(id) {
   return ehMeuLancamento(l) ? l : null;
 }
 
+// O abort tambem e falha: no Android sem espaco, o put da certo e o commit
+// falha so com "abort" (QuotaExceededError), sem nenhum "error". Sem ouvir o
+// abort, a promessa nunca acabava, e o Salvar e o "Só lançar no caixa"
+// ficavam travados, sem a frase de erro, ate o motorista fechar o app.
+const abortada = (tx) => tx.error || new DOMException('Transação abortada', 'AbortError');
+
 async function salvarLancamento(l) {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
@@ -243,6 +249,7 @@ async function salvarLancamento(l) {
     tx.objectStore('lancamentos').put(l);
     tx.oncomplete = () => ok(l);
     tx.onerror = () => falha(tx.error);
+    tx.onabort = () => falha(abortada(tx));
   });
 }
 
@@ -267,7 +274,7 @@ async function mudarLancamentos(ids, muda) {
     }
     tx.oncomplete = () => ok(gravados);
     tx.onerror = () => falha(tx.error);
-    tx.onabort = () => falha(tx.error);
+    tx.onabort = () => falha(abortada(tx));
   });
 }
 
@@ -382,6 +389,7 @@ async function limparLancamentosLocais() {
     meus.forEach((l) => loja.delete(l.id));
     tx.oncomplete = () => ok();
     tx.onerror = () => falha(tx.error);
+    tx.onabort = () => falha(abortada(tx));
   });
   removerMetaDoDia();
 }

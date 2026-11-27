@@ -1521,6 +1521,7 @@ window.addEventListener('load', async () => {
     const mesAtual = Caixa.mesDe(hoje);
     const mesPassado = Caixa.mesAnterior(mesAtual);
     const tarifa = { bandeirada: 5.5, km1: 3.5, km2: 4.55, hora: 42 };
+    const saidaDeHoje = () => new Date(Math.max(Date.now() - 31 * 60000, new Date(`${Caixa.diaLocal()}T00:00:00`).getTime())).toISOString();
     const corridaEncerrada = (extra = {}) => guardarCorrida({
       motorista: 'web-motorista', origem: 'Avenida Paulista, 1578', destino: 'Aeroporto de Congonhas',
       inicio: new Date(Date.now() - 31 * 60000).toISOString(), fim: new Date().toISOString(), bandeira: 1,
@@ -1978,7 +1979,9 @@ window.addEventListener('load', async () => {
 
       // ── Fim da corrida ──
       Guardado.set('tarifa', tarifa);
-      corridaEncerrada();
+      // A saida no dia de hoje: rodado logo depois da meia-noite, 31 min antes
+      // seria ontem (a corrida que passa da meia-noite tem o teste dela, abaixo).
+      corridaEncerrada({ inicio: saidaDeHoje() });
       await abrirCorrida(); await espera(200);
       ok('fim da corrida: "Quanto cobrou?" vazio e sem foco; a estimativa so como dica', visivel('fim-valor') && q('fim-valor').value === ''
          && document.activeElement !== q('fim-valor') && textoDe('fim-estimativa') === 'Estimativa desta corrida: R$ 55 a R$ 68'
@@ -2048,6 +2051,33 @@ window.addEventListener('load', async () => {
       clicar('btn-sem-recibo'); await espera(300);
       ok('"Não lançar" apaga a corrida e nao cria nada no caixa', !corridaAtual() && !q('tela-inicio').hidden
          && (await listarLancamentos()).length === antesDoNao);
+
+      // A corrida que passou da meia-noite entra no dia da SAIDA (ontem). A
+      // confirmacao sai no cartao de hoje: diz o dia, e o toque abre esse dia.
+      corridaEncerrada({ inicio: new Date(`${ontem}T23:50:00`).toISOString() });
+      await abrirCorrida(); await espera(150);
+      digitar('fim-valor', '58,00');
+      clicar('btn-lancar-corrida'); await espera(600);
+      const daMadrugada = (await listarLancamentos()).find((x) => x.origem === 'corrida' && x.data === ontem && x.hora === '23:50') || {};
+      const textoDeOntem = `Corrida lançada no caixa de ontem: R$ 58,00${ontemTravado ? `. ${nomeCurtoDoMes(Caixa.mesDe(ontem), mesAtual)} fica no Pro.` : ''}`;
+      ok('corrida que passou da meia-noite: entra em ontem, e a confirmacao diz "no caixa de ontem"', !!daMadrugada.id
+         && visivel('caixa-inicio-confirmacao') && textoDe('caixa-inicio-confirmacao') === textoDeOntem, textoDe('caixa-inicio-confirmacao'));
+      clicar('btn-abrir-caixa'); await espera(400);
+      ok('com a confirmacao a vista, o toque no cartao abre o dia da corrida (ontem), e nao hoje', !q('tela-caixa').hidden
+         && textoDe('caixa-dia-titulo').startsWith('Ontem, ') && (ontemTravado ? visivel('caixa-bloqueio') : !!itemDa(daMadrugada.id)),
+         textoDe('caixa-dia-titulo'));
+      // A corrida esquecida aberta desde o mes passado, no Gratis: a frase diz
+      // o dia e que aquele mes so aparece no Pro.
+      corridaEncerrada({ inicio: new Date(`${mesPassado}-15T22:00:00`).toISOString() });
+      await abrirCorrida(); await espera(150);
+      digitar('fim-valor', '58,00');
+      clicar('btn-lancar-corrida'); await espera(600);
+      const [anoPassado, numeroPassado] = mesPassado.split('-');
+      const textoDoMesPassado = `Corrida lançada no caixa de 15/${numeroPassado}${anoPassado === hoje.slice(0, 4) ? '' : `/${anoPassado}`}: R$ 58,00. `
+        + `${nomeCurtoDoMes(mesPassado, mesAtual)} fica no Pro.`;
+      ok('corrida de um mes anterior, no Gratis: a confirmacao diz o dia e que o mes fica no Pro',
+         textoDe('caixa-inicio-confirmacao') === textoDoMesPassado, textoDe('caixa-inicio-confirmacao'));
+      // A corrida do dia continua com a frase curta (o teste do "Só lançar" acima).
 
       // ── Navegacao e voltar do Android ──
       await abrirCaixa();

@@ -3302,7 +3302,7 @@ let ultimoDiaDoCaixa = '';       // ate onde as setas vao, da ultima leitura (ve
 let desenhosDoCaixa = 0;
 let desenhosDoMes = 0;
 let desenhosDoInicio = 0;
-let confirmacaoDoInicio = null;  // { texto, ate }: "Corrida lançada: R$ 58,00" por ~5 s
+let confirmacaoDoInicio = null;  // { texto, dia, ate }: "Corrida lançada: R$ 58,00" por ~5 s
 let apagaConfirmacao = null;
 
 // As mesmas do recibo.
@@ -3425,7 +3425,12 @@ function mostrarConfirmacaoDoInicio() {
   apagaConfirmacao = setTimeout(() => { confirmacaoDoInicio = null; linha.hidden = true; }, resta);
 }
 
-$('btn-abrir-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); });
+// Com a confirmacao da corrida a vista, o toque abre o dia em que ela entrou
+// (ontem, na corrida que passou da meia-noite), e nao hoje, onde ela nao esta.
+$('btn-abrir-caixa').addEventListener('click', () => {
+  vibrar('LIGHT');
+  abrirCaixa(confirmacaoDoInicio && confirmacaoDoInicio.ate > Date.now() ? confirmacaoDoInicio.dia : undefined);
+});
 $('btn-inicio-despesa').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'despesa' }); });
 $('btn-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); });
 
@@ -4344,6 +4349,22 @@ $('fim-forma').addEventListener('change', guardarFimDaCorrida);
 // so depois de o lancamento estar guardado.
 let lancandoCorrida = false;   // toque duplo: uma receita so
 
+// A confirmacao sai no cartao de HOJE, mas a receita vai para o dia da saida:
+// a corrida das 23h50 encerrada a 0h20 cai em ontem, e o cartao dizia
+// "Nenhum lançamento hoje" logo acima de "Corrida lançada" (parecia lancada e
+// nao contada; o risco era ele lancar de novo a mao). Fora de hoje, a frase
+// diz o dia; e, no Gratis, que aquele mes so aparece no Pro.
+function confirmacaoDaCorrida(l, m) {
+  const hoje = Caixa.diaLocal();
+  const valor = dinheiro(l.centavos, m);
+  if (l.data === hoje) return `Corrida lançada: ${valor}`;
+  const [ano, mes, dia] = String(l.data).split('-');
+  const quando = l.data === Caixa.somarDias(hoje, -1) ? 'ontem' : `${dia}/${mes}${ano === hoje.slice(0, 4) ? '' : `/${ano}`}`;
+  const mesAtual = Caixa.mesDe(hoje);
+  const travado = !Caixa.mesLiberado(Caixa.mesDe(l.data), mesAtual, ehPro());
+  return `Corrida lançada no caixa de ${quando}: ${valor}${travado ? `. ${nomeCurtoDoMes(Caixa.mesDe(l.data), mesAtual)} fica no Pro.` : ''}`;
+}
+
 $('btn-lancar-corrida').addEventListener('click', async () => {
   if (lancandoCorrida) return;
   const c = guardarFimDaCorrida();
@@ -4359,7 +4380,7 @@ $('btn-lancar-corrida').addEventListener('click', async () => {
     Guardado.set('caixa_forma', c.forma);
     apagarCorrida();
     vibrar('HEAVY');
-    confirmacaoDoInicio = { texto: `Corrida lançada: ${dinheiro(l.centavos, m)}`, ate: Date.now() + 5000 };
+    confirmacaoDoInicio = { texto: confirmacaoDaCorrida(l, m), dia: l.data, ate: Date.now() + 5000 };
     irParaInicio();
   } catch (e) {
     erroNoFim(MENSAGENS_DO_CAIXA[e && e.codigo] || 'Não deu para lançar no caixa. Tente de novo.');

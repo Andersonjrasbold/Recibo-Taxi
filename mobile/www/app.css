@@ -6,9 +6,10 @@
   --paper:#F7F5F2; --ink:#17191D; --muted:#6E675E; --linha:rgba(247,245,242,.12);
   /* Cores de TEXTO do caixa (1.8), medidas contra o --coal em 2026-11-26: o
      --coral da 4,35:1 e o --muted 3,4:1, abaixo dos 4,5:1 que texto pequeno
-     pede. Receita e valor positivo em --verde (10,4:1), despesa e liquido
-     negativo em --coral-texto (6,8:1), texto secundario no papel a 62%
-     (7,1:1). O --coral continua nos botoes e superficies. */
+     pede. Receita e valor positivo em --verde (10,4:1), despesa, liquido
+     negativo e os erros das telas do caixa em --coral-texto (6,8:1), texto
+     secundario no papel a 62% (7,1:1). O --coral continua nos botoes e
+     superficies. */
   --verde:#5BD68A; --coral-texto:#FF6B5E; --texto-suave:rgba(247,245,242,.62);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -387,6 +388,11 @@ button:disabled { opacity:.5; }
 .rotulo { display:block; font-size:.78rem; font-weight:800; margin:.9rem 0 .35rem; }
 /* Erro logo abaixo do campo a corrigir: colado nele, e nao solto entre dois. */
 .erro-campo { margin:.45rem 0 0; }
+/* Os erros das telas do caixa no coral de texto: o .erro do app e --coral, a
+   4,35:1 sobre o fundo, e e esta frase que ele precisa ler, ao sol, para o
+   Salvar funcionar. Por id: o .erro-campo zera a margem e colaria o erro da
+   meta no "Remover meta". */
+#erro-lancamento, #erro-fim, #erro-meta { color:var(--coral-texto); }
 
 /* Cartao do inicio: secundario, no tom do cartao de indicacao. O "+ Despesa"
    fica por cima, no canto, e as duas primeiras linhas deixam espaco para ele. */

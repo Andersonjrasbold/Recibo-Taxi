@@ -2135,6 +2135,25 @@ window.addEventListener('load', async () => {
          [cor(q('caixa-receitas')), cor(q('caixa-despesas')), cor(q('caixa-liquido-rotulo'))].join(' '));
       ok('numeros com algarismos de largura fixa', ['caixa-liquido', 'caixa-receitas', 'caixa-despesas'].every((id) => getComputedStyle(q(id)).fontVariantNumeric.includes('tabular-nums'))
          && getComputedStyle(q('caixa-lista').querySelector('.caixa-item-valor')).fontVariantNumeric.includes('tabular-nums'));
+      // Os erros das telas do caixa no coral de texto (6,8:1), e nao no --coral
+      // do .erro (4,35:1): e a frase que ele precisa ler para o Salvar funcionar.
+      clicar('btn-caixa-despesa'); await espera(100);
+      q('form-lancamento').requestSubmit(); await espera(150);
+      const corDoErroLancamento = visivel('erro-lancamento') && cor(q('erro-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+      clicar('btn-mudar-meta'); await espera(100);
+      q('meta-valor').value = 'abc'; q('form-meta').requestSubmit(); await espera(100);
+      const corDoErroMeta = visivel('erro-meta') && cor(q('erro-meta'));
+      clicar('btn-cancelar-meta'); await espera(200);
+      corridaEncerrada({ inicio: saidaDeHoje() });
+      await abrirCorrida(); await espera(150);
+      clicar('btn-lancar-corrida'); await espera(300);
+      const corDoErroFim = visivel('erro-fim') && cor(q('erro-fim'));
+      apagarCorrida();
+      ok('os erros do lancamento, da meta e do fim da corrida no coral de texto (6,8:1), e nao no coral do .erro (4,35:1)',
+         [corDoErroLancamento, corDoErroMeta, corDoErroFim].every((c) => c === 'rgb(255, 107, 94)'),
+         [corDoErroLancamento, corDoErroMeta, corDoErroFim].join(' | '));
+      await abrirCaixa();
       const pequenos = [];
       const medir = (raiz) => raiz.querySelectorAll('button, summary, select, input').forEach((b) => {
         const h = b.getBoundingClientRect().height;

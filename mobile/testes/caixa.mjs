@@ -266,6 +266,12 @@ try {
   ok('envio: o trajeto (origem e destino) nunca vai', !JSON.stringify(enviado).includes('Aeroporto') && !JSON.stringify(enviado).includes('Centro'));
   igual('envio do tumulo e do manual', [C.paraEnvio(tumulo).apagado, C.paraEnvio(tumulo).rid, C.paraEnvio(manual).apagado, C.paraEnvio(manual).litros],
     [true, null, false, '30.5']);
+  // O tumulo de um lancamento com observacao ("troco") e forma ("Pix"): as
+  // duas nao viajam com ele; no aparelho continuam, e o vivo manda as dele.
+  igual('envio do tumulo sem a observacao nem a forma (o resto do contrato vai)',
+    [C.paraEnvio(tumulo).obs, C.paraEnvio(tumulo).forma, C.paraEnvio(tumulo).centavos, C.paraEnvio(tumulo).versao, tumulo.obs, tumulo.forma,
+      C.paraEnvio(editadoL).obs, C.paraEnvio(editadoL).forma, C.paraEnvio(manual).obs],
+    ['', '', 9000, 3, 'troco', 'Pix', 'troco', 'Pix', 'posto da esquina']);
 
   // ── Resumos ─────────────────────────────────────────────────────────────
   const L = (id, tipo, categoria, centavos, data, hora = '', extra = {}) => ({

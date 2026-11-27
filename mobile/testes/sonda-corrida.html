@@ -1333,6 +1333,9 @@ window.addEventListener('load', async () => {
          doRecibo('A0000000000001').categoria === 'corrida' && doRecibo('A0000000000001').origem === 'recibo'
          && doRecibo('A0000000000001').rota === 'Rodoviária → Centro' && doRecibo('A0000000000001').versao === 1
          && doRecibo('A0000000000001').pendente === true && doRecibo('A0000000000001').dono === 'web-motorista');
+      // Uma observacao com o telefone de alguem, posta antes de apagar (sem
+      // mudar a versao): o tumulo que sobe nao a leva, nem a forma (ver o envio).
+      await mudarLancamentos(['r-A0000000000001'], (atual) => ({ ...atual, obs: 'ligar para a Maria 11 99999-0000' }));
       await apagarLancamento('r-A0000000000001');
       ok('caixa: completar de novo nao cria nada e nao ressuscita o apagado', (await completarCaixaComRecibos()) === 0
          && (await buscarLancamento('r-A0000000000001') || {}).apagado === true && (await listarLancamentos()).length === 5);
@@ -1379,6 +1382,10 @@ window.addEventListener('load', async () => {
          && !JSON.stringify(__lotes).includes('Rodoviária'));
       ok('caixa: o apagado sobe como apagado, com a versao nova', (itensEnviados.find((x) => x.id === 'r-A0000000000001') || {}).apagado === true
          && (itensEnviados.find((x) => x.id === 'r-A0000000000001') || {}).versao === 2);
+      const tumuloEnviado = itensEnviados.find((x) => x.id === 'r-A0000000000001') || {};
+      ok('caixa: o tumulo sobe sem a observacao nem a forma (no aparelho, ele continua inteiro)', tumuloEnviado.obs === '' && tumuloEnviado.forma === ''
+         && !JSON.stringify(__lotes).includes('99999-0000') && ((await buscarLancamento('r-A0000000000001')) || {}).obs === 'ligar para a Maria 11 99999-0000'
+         && ((await buscarLancamento('r-A0000000000001')) || {}).forma === 'Pix', JSON.stringify(tumuloEnviado));
       ok('caixa: aceito sai de pendente', envio1.enviados === 157 && (await listarLancamentos()).every((x) => !x.pendente), JSON.stringify(envio1));
       ok('caixa: o do outro motorista fica pendente e dele', ((await todosOsLancamentos()).find((x) => x.id === 'l-deoutromotorista') || {}).pendente === true);
       // Editado enquanto o lote viajava: continua pendente, com a versao nova.

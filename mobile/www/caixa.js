@@ -382,7 +382,11 @@
 
   // O item do POST /api/lancamentos. A rota (origem e destino) e o dono NUNCA
   // vao ao servidor; o resto e o que o contrato pede, nada alem.
+  // O tumulo so avisa que o id saiu: a observacao e a forma, texto livre onde
+  // cabe o nome ou o telefone de alguem, nao viajam com ele (o servidor as
+  // grava vazias de qualquer jeito). No aparelho, o tumulo continua inteiro.
   function paraEnvio(l) {
+    const apagado = l.apagado === true;
     return {
       id: l.id,
       tipo: l.tipo,
@@ -391,14 +395,14 @@
       moeda: l.moeda,
       data: l.data,
       hora: l.hora || '',
-      forma: l.forma || '',
+      forma: apagado ? '' : l.forma || '',
       origem: l.origem,
       rid: l.rid || null,
-      obs: l.obs || '',
+      obs: apagado ? '' : l.obs || '',
       km: l.km || null,
       litros: l.litros || null,
       versao: l.versao,
-      apagado: l.apagado === true,
+      apagado,
     };
   }
 

@@ -411,7 +411,12 @@ sozinhos como receita; o resto é lançado à mão.
   a lista, vazia ou com mais de `LANCAMENTOS_POR_LOTE` = 100), 401
   `nao_autenticado`, 429 `muitos_lancamentos` (teto de `LANCAMENTOS_DIARIOS` =
   500 itens por motorista por dia, no fuso de Brasília, contado antes de conferir)
-  e 503 `indisponivel` (banco fora do ar; o app guarda e tenta de novo).
+  e 503 `indisponivel` (banco fora do ar, ou antes de `CAIXA_A_PARTIR`, a data
+  que a Política anuncia; o app guarda e tenta de novo).
+- O portão da data (`CAIXA_A_PARTIR_DATA`, tirada do mesmo texto da Política)
+  deixa o app 1.8 ir às lojas antes da data: o Caixa funciona no aparelho, e a
+  cópia só sobe a partir dela, sozinha. Ao acertar a data no dia do merge, o
+  portão anda junto.
 - Dinheiro em inteiro na menor unidade (`centavos`; peso chileno e guarani têm 0
   casas), de 1 até o teto da moeda em `MOEDAS`; `float` e `bool` são recusados. O
   banco guarda o valor em `amount`. Moeda fora da lista vale a do cadastro.

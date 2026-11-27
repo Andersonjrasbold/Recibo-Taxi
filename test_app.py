@@ -4632,6 +4632,10 @@ import logging as _logging_cx
 _suf_cx = os.urandom(3).hex()
 _hoje_cx = A.today_br()
 _dia_cx = A.datetime.now(A.BR_TZ).date()
+# O POST so grava a partir da data que a Politica anuncia (CAIXA_A_PARTIR): o
+# grupo roda com o portao aberto, e o caso do portao fecha de proposito.
+_portao_cx = A.CAIXA_A_PARTIR_DATA
+A.CAIXA_A_PARTIR_DATA = A.datetime(2000, 1, 1).date()
 
 
 def _conta_app_cx(nome):
@@ -4686,6 +4690,28 @@ _r = _ccx.options("/api/lancamentos", headers={
 check("caixa: o app passa pelo preflight",
       _r.status_code in (200, 204) and _r.headers.get("Access-Control-Allow-Origin") == "capacitor://localhost",
       f"{_r.status_code} {_r.headers.get('Access-Control-Allow-Origin')}")
+
+# Antes de CAIXA_A_PARTIR nada e gravado: o app 1.8 pode chegar as lojas antes,
+# e o envio dele e automatico. 503 o app guarda e reenvia sozinho depois; e o
+# pedido recusado nao gasta o teto do dia.
+check("caixa: a data do portao e a do texto da Politica", _portao_cx.strftime("%d/%m/%Y") == A.CAIXA_A_PARTIR,
+      f"{_portao_cx} {A.CAIXA_A_PARTIR}")
+_cpt_cx, _cabpt_cx, _uidpt_cx = _conta_app_cx("caixa-portao")
+_lpt_cx = _lanc()
+_antes_cx = _contador_cx(_uidpt_cx)
+A.CAIXA_A_PARTIR_DATA = A.datetime.now(A.BR_TZ).date() + A.timedelta(days=1)
+try:
+    _r = _enviar_cx(_lpt_cx, cab=_cabpt_cx, cli=_cpt_cx)
+    check("caixa: antes da data da Politica devolve 503 indisponivel, sem gravar nem gastar o teto",
+          _r.status_code == 503 and _r.get_json() == {"erro": "indisponivel"} and _n_lanc_cx(_uidpt_cx) == 0
+          and _contador_cx(_uidpt_cx) == _antes_cx, f"{_r.status_code} {_r.get_json()} {_contador_cx(_uidpt_cx)}")
+    A.CAIXA_A_PARTIR_DATA = A.datetime.now(A.BR_TZ).date()
+    _r = _enviar_cx(_lpt_cx, cab=_cabpt_cx, cli=_cpt_cx)
+    check("caixa: no dia da data da Politica ja grava",
+          _r.status_code == 200 and _r.get_json()["aceitos"] == [_lpt_cx["id"]] and _n_lanc_cx(_uidpt_cx) == 1,
+          f"{_r.status_code} {_r.get_json()}")
+finally:
+    A.CAIXA_A_PARTIR_DATA = A.datetime(2000, 1, 1).date()
 
 _l1 = _lanc(obs="  posto da avenida  ", km="12,4")
 _r = _enviar_cx(_l1)
@@ -5076,6 +5102,7 @@ check("limpeza: apaga de vez o lancamento apagado ha mais de 30 dias e informa a
       and _d_cx.get("lancamentos_removidos", 0) >= 1, str(_d_cx))
 check("limpeza: mantem o apagado ha menos de 30 dias e o antigo que nao foi apagado",
       _recente_cx["id"] in _ficou_cx and _vivo_cx["id"] in _ficou_cx, str(list(_ficou_cx)))
+A.CAIXA_A_PARTIR_DATA = _portao_cx
 
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:

@@ -455,6 +455,13 @@ CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
 # Caixa do app 1.8: a data de publicação da Política + os 15 dias de aviso que
 # ela promete (seção 11). Rascunho: acertar no dia do merge.
 CAIXA_A_PARTIR = "12/12/2026"
+# A mesma data para o código: antes dela o POST /api/lancamentos não grava nada.
+# O envio do app é automático (na primeira abertura do 1.8 os recibos do
+# aparelho viram lançamentos e sobem sozinhos): sem o portão, o 1.8 liberado
+# nas lojas antes da data mandaria receitas, despesas e observações dentro do
+# prazo de aviso, e a Política ficaria falsa. Tirada do texto, para a data da
+# Política e a do código não se separarem quando ela for acertada.
+CAIXA_A_PARTIR_DATA = datetime.strptime(CAIXA_A_PARTIR, "%d/%m/%Y").date()
 # Integração com o PilotPostAi (CRM e atendimento da mesma empresa): cada
 # motorista vira cliente da conta do suporte lá (migração 0021). Um trigger em
 # `drivers` enfileira criação, alteração, "parar ofertas" e exclusão em
@@ -5435,6 +5442,12 @@ def api_lancamentos():
     lista = corpo_json().get("lancamentos")
     if not isinstance(lista, list) or not 1 <= len(lista) <= LANCAMENTOS_POR_LOTE:
         return jsonify({"erro": "lote_invalido", "maximo": LANCAMENTOS_POR_LOTE}), 400
+    # Antes da data que a Política anuncia, nada é gravado (ver
+    # CAIXA_A_PARTIR_DATA). O 503 deixa o lote pendente no app, que o reenvia
+    # sozinho depois. Antes do contador, para não gastar o teto do dia, e sem
+    # log: cada nova tentativa do app viraria ruído.
+    if datetime.now(BR_TZ).date() < CAIXA_A_PARTIR_DATA:
+        return jsonify({"erro": "indisponivel"}), 503
 
     motorista = g.user["_id"]
     store = get_store()

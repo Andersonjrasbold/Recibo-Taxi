@@ -44,7 +44,8 @@
           <p>
             O {{ app_name }} é uma ferramenta que gera <strong>recibos de corrida</strong> em formato
             digital, com link compartilhável por WhatsApp ou e-mail. Ele organiza e apresenta as
-            informações que <em>você</em> digita.
+            informações que <em>você</em> digita. No app, o Caixa ajuda você a acompanhar receitas e
+            despesas (item 4.2).
           </p>
 
           <div class="legal-callout legal-callout-warning">
@@ -99,6 +100,26 @@
             políticas próprios. Não respondemos pelas rotas que eles sugerem.
           </p>
 
+          <h3 class="legal-h3">4.2 Caixa: receitas e despesas</h3>
+          <p>
+            A partir de {{ caixa_a_partir }}, na versão 1.8 do app, o Caixa soma as receitas e as
+            despesas que você lança e mostra o resultado do dia e do mês. Os recibos que você emite e as
+            corridas que você encerra com "Só lançar no caixa" entram nele sozinhos.
+          </p>
+          <ul class="legal-list">
+            <li>É uma ferramenta de controle pessoal. <strong>Não é contabilidade nem declaração de
+                imposto</strong>, e não substitui o trabalho de um contador.</li>
+            <li>Os valores são os que você lançou, ou os dos recibos que você emitiu, e você responde por
+                eles. Não conferimos nem corrigimos os lançamentos.</li>
+            <li>No plano Grátis, o Caixa mostra o mês corrente; no Pro, também os meses anteriores
+                (item 6.1). No Grátis, os meses anteriores continuam guardados, no aparelho e no nosso
+                servidor, e aparecem inteiros quando você assina.</li>
+            <li>A trava do Grátis é só de exibição, nunca de acesso ao seu próprio dado: a qualquer
+                momento você pode pedir, sem custo, uma cópia de todos os seus lançamentos pelo canal da
+                seção "Seus direitos" da <a href="{{ url_for('privacidade') }}">Política de Privacidade</a>
+                (LGPD, art. 18).</li>
+          </ul>
+
           <h2 class="legal-h2">5. Uso proibido</h2>
           <p>É vedado usar o {{ app_name }} para:</p>
           <ul class="legal-list">
@@ -129,6 +150,11 @@
           <p class="legal-note">
             O limite do plano Grátis é contado por mês-calendário, no fuso de Brasília, e reinicia
             no primeiro dia de cada mês.
+          </p>
+          <p class="legal-note">
+            Caixa do app (a partir de {{ caixa_a_partir }}, versão 1.8): o plano Grátis mostra o mês
+            corrente, e o Pro também os meses anteriores. Os lançamentos dos meses anteriores continuam
+            guardados no Grátis (item 4.2).
           </p>
 
           <div class="legal-callout">
@@ -213,7 +239,7 @@
           <h2 class="legal-h2">7. Encerramento da conta</h2>
           <ul class="legal-list">
             <li>Você pode excluir sua conta a qualquer momento pelo painel, em <em>"Excluir minha conta"</em>.</li>
-            <li>A exclusão apaga definitivamente seu cadastro e <strong>todos os seus recibos</strong>, inclusive os links já compartilhados com passageiros. Essa ação não pode ser desfeita.</li>
+            <li>A exclusão apaga definitivamente seu cadastro, <strong>todos os seus recibos</strong>, inclusive os links já compartilhados com passageiros, e todos os lançamentos do Caixa. Essa ação não pode ser desfeita.</li>
             <li>Se houver assinatura ativa, ela é cancelada junto.</li>
             <li>Podemos suspender ou encerrar contas que violem estes Termos, com aviso prévio sempre que possível.</li>
           </ul>

@@ -449,8 +449,12 @@ PLANOS_DO_LINK = {
 # Política e Termos de 2026-11-21 (venda por telefone com representante). A
 # própria Política promete 15 dias de aviso para mudança relevante: as ligações e
 # o representante de vendas só começam nesta data, e o aviso vai por e-mail.
-POLITICA_ATUALIZADA_EM = "21 de novembro de 2026"
+# Versão de 2026-11-27: o Caixa do app 1.8 (lançamentos com cópia no servidor).
+POLITICA_ATUALIZADA_EM = "27 de novembro de 2026"   # rascunho: acertar no dia do merge
 CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
+# Caixa do app 1.8: a data de publicação da Política + os 15 dias de aviso que
+# ela promete (seção 11). Rascunho: acertar no dia do merge.
+CAIXA_A_PARTIR = "12/12/2026"
 # Integração com o PilotPostAi (CRM e atendimento da mesma empresa): cada
 # motorista vira cliente da conta do suporte lá (migração 0021). Um trigger em
 # `drivers` enfileira criação, alteração, "parar ofertas" e exclusão em
@@ -6735,13 +6739,15 @@ def email_descadastro(token: str):
 @app.get("/privacidade")
 def privacidade():
     return render_template("privacidade.html", updated_at=POLITICA_ATUALIZADA_EM,
-                           vendas_a_partir=CONTATO_DE_VENDAS_A_PARTIR)
+                           vendas_a_partir=CONTATO_DE_VENDAS_A_PARTIR,
+                           caixa_a_partir=CAIXA_A_PARTIR)
 
 
 @app.get("/termos")
 def termos():
     return render_template("termos.html", updated_at=POLITICA_ATUALIZADA_EM,
-                           vendas_a_partir=CONTATO_DE_VENDAS_A_PARTIR)
+                           vendas_a_partir=CONTATO_DE_VENDAS_A_PARTIR,
+                           caixa_a_partir=CAIXA_A_PARTIR)
 
 
 @app.get("/excluir-conta")
@@ -6757,7 +6763,9 @@ def pagina_excluir_conta():
 
     Mesma URL do POST logo abaixo, que e quem realmente apaga: aqui e GET.
     """
-    return render_template("excluir_conta.html", updated_at="12 de novembro de 2026")
+    # 27/11: a lista do que é apagado ganhou o Caixa. Rascunho: acertar no dia
+    # do merge, junto com POLITICA_ATUALIZADA_EM.
+    return render_template("excluir_conta.html", updated_at="27 de novembro de 2026")
 
 
 # ── Receipt view ──────────────────────────────────────────────────────────────

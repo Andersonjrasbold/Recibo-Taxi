@@ -4286,6 +4286,46 @@ check("termos: venda por telefone e link de pagamento (6.9) e conta criada pela 
       "6.9 Venda por telefone e link de pagamento" in _ter and "A conta pode ser criada pela nossa equipe" in _ter
       and A.CONTATO_DE_VENDAS_A_PARTIR in _ter and A.POLITICA_ATUALIZADA_EM in _ter)
 
+# -- Politica e Termos: Caixa do app 1.8 (rascunho de 2026-11-27) -------------
+# O texto quebra linha no meio das frases: compara com os espacos normalizados.
+print("\n-- Politica e Termos: Caixa do app 1.8 --")
+_pol_cx = " ".join(_pol.split())
+_aviso_cx = _pol_cx[_pol_cx.find("O que mudou em"):_pol_cx.find("1. Quem somos")]
+check("politica: o aviso do topo ganha o Caixa, com a data, e segue com as ligacoes de 21/11",
+      "Caixa" in _aviso_cx and A.CAIXA_A_PARTIR in _aviso_cx and A.POLITICA_ATUALIZADA_EM in _aviso_cx
+      and "Em 21 de novembro de 2026" in _aviso_cx and A.CONTATO_DE_VENDAS_A_PARTIR in _aviso_cx, _aviso_cx[:300])
+check("politica: 2.4 do Caixa depois da localizacao, e as seguintes renumeradas",
+      _pol_cx.find("2.3 Localização") < _pol_cx.find("2.4 Caixa: receitas e despesas, só no app")
+      < _pol_cx.find("2.5 Recibos emitidos sem conta") < _pol_cx.find("2.6 Dados que"))
+check("politica: o que o Caixa guarda, de onde vem e a versao do app",
+      "a observação que você escrever" in _pol_cx and "os litros de combustível quando houver" in _pol_cx
+      and "o código do recibo quando o lançamento veio de um recibo" in _pol_cx
+      and '"Só lançar no caixa" entram sozinhos' in _pol_cx and "versão 1.8 do app" in _pol_cx)
+check("politica: o trajeto e o passageiro ficam fora do servidor",
+      "a origem e o destino da corrida lançada no Caixa não vão para o nosso servidor" in _pol_cx
+      and "o Caixa não guarda dados do passageiro" in _pol_cx)
+check("politica: finalidade do Caixa, sem publicidade e a equipe so ve contagens",
+      "Mostrar o caixa do dia e do mês e guardar uma cópia" in _pol_cx
+      and "não são usados para publicidade nem compartilhados" in _pol_cx
+      and "nunca os valores de ninguém" in _pol_cx)
+check("politica: retencao do Caixa com o prazo da limpeza e a exclusao da conta",
+      f"sai do nosso servidor em até {A.LANCAMENTO_APAGADO_DIAS} dias" in _pol_cx
+      and "excluir a conta apaga todos na hora" in _pol_cx and "lançamentos do Caixa ficam armazenados" in _pol_cx)
+_ter_cx = " ".join(_ter.split())
+check("termos: o Caixa nao e contabilidade e o motorista responde pelos valores",
+      "4.2 Caixa: receitas e despesas" in _ter_cx and "Não é contabilidade nem declaração de imposto" in _ter_cx
+      and "você responde por eles" in _ter_cx and A.CAIXA_A_PARTIR in _ter_cx)
+check("termos: Gratis ve o mes corrente e Pro os anteriores, que continuam guardados",
+      "o Caixa mostra o mês corrente; no Pro, também os meses anteriores" in _ter_cx
+      and "os meses anteriores continuam guardados" in _ter_cx
+      and "o plano Grátis mostra o mês corrente, e o Pro também os meses anteriores" in _ter_cx)
+check("termos: copia de todos os lancamentos sem custo pelo canal de Seus direitos (a trava e so de exibicao)",
+      "sem custo, uma cópia de todos os seus lançamentos" in _ter_cx and '"Seus direitos"' in _ter_cx
+      and "LGPD, art. 18" in _ter_cx and "só de exibição" in _ter_cx and "7. Seus direitos" in _pol_cx)
+_exc_cx = " ".join(A.app.test_client().get("/excluir-conta").get_data(as_text=True).split())
+check("excluir conta: a pagina publica diz que o Caixa tambem e apagado",
+      "As receitas e despesas que você lançou no Caixa do app." in _exc_cx)
+
 # -- Visao geral: faturamento mes a mes e cliques por dia (2026-11-21) ---------
 # O mensal entra todo mes; o anual, uma vez no mes da cobranca; o pago uma vez
 # nao se repete. A previsao sao as assinaturas ativas renovando no preco atual.

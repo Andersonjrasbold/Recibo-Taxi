@@ -2004,6 +2004,25 @@ window.addEventListener('load', async () => {
       }
       clicar('btn-dia-seguinte'); await espera(300);
       ok('› volta para hoje e desliga de novo', textoDe('caixa-dia-titulo').startsWith('Hoje, ') && q('btn-dia-seguinte').disabled);
+      // Toques mais rapidos que a leitura do banco (aparelho lento, com meses
+      // de lancamentos): os cliques seguidos, na mesma tarefa, nao deixam
+      // nenhum desenho terminar entre eles, seja qual for a velocidade desta
+      // maquina. O toque que chegava a hoje guardava so o '' do diaDoCaixa, e
+      // o seguinte partia do dia desenhado antes de todos: o terceiro "›"
+      // voltava a ontem, e o "‹" logo depois do "›" ia a anteontem.
+      await abrirCaixa(Caixa.somarDias(hoje, -2));
+      clicar('btn-dia-seguinte'); clicar('btn-dia-seguinte'); clicar('btn-dia-seguinte'); await espera(300);
+      ok('tres "›" rapidos de anteontem param em hoje, e nao voltam a ontem', textoDe('caixa-dia-titulo').startsWith('Hoje, ')
+         && q('btn-dia-seguinte').disabled, textoDe('caixa-dia-titulo'));
+      await abrirCaixa(ontem);
+      clicar('btn-dia-seguinte'); clicar('btn-dia-anterior'); await espera(300);
+      ok('"›" e logo "‹" a partir de ontem voltam a ontem, e nao a anteontem', textoDe('caixa-dia-titulo').startsWith('Ontem, '),
+         textoDe('caixa-dia-titulo'));
+      await abrirCaixa(Caixa.somarDias(hoje, -6));
+      for (let i = 0; i < 7; i++) clicar('btn-dia-seguinte');
+      await espera(300);
+      ok('sete "›" rapidos de seis dias atras param em hoje', textoDe('caixa-dia-titulo').startsWith('Hoje, '), textoDe('caixa-dia-titulo'));
+      await abrirCaixa();
 
       // ── Mes ──
       const doMes = Caixa.resumoDoMes(await listarLancamentos(), mesAtual, 'BRL');
@@ -2059,6 +2078,12 @@ window.addEventListener('load', async () => {
       await guardarVarios([lanc('l-adiante', { tipo: 'receita', categoria: 'corrida', centavos: 4700, data: adiante, hora: '09:00', forma: 'Pix' })]);
       await abrirCaixa();
       ok('com um lancamento de data adiante, a seta da direita de hoje liga', !q('btn-dia-seguinte').disabled);
+      // E os toques rapidos passam por hoje sem parar nele (ver os toques
+      // rapidos em "Dias"): o segundo "›" partia de ontem de novo.
+      await abrirCaixa(ontem);
+      clicar('btn-dia-seguinte'); clicar('btn-dia-seguinte'); await espera(300);
+      ok('com ele, dois "›" rapidos de ontem passam por hoje e chegam a amanha',
+         textoDe('caixa-dia-titulo') === tituloDoDia(Caixa.somarDias(hoje, 1), hoje), textoDe('caixa-dia-titulo'));
       await abrirMesDoCaixa(Caixa.mesDe(adiante));
       const linhaAdiante = q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${adiante}"]`);
       ok('o mes do lancamento adiante abre, com a linha do dia dele', textoDe('mes-titulo') === nomeDoMesComMaiuscula(Caixa.mesDe(adiante)) && !!linhaAdiante

@@ -3319,7 +3319,7 @@ $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); ab
 // cru no innerHTML: a observacao "<img onerror=...>" viraria codigo rodando.
 
 let diaDoCaixa = '';             // o dia aberto no Caixa ('' = hoje)
-let diaDesenhado = '';           // o dia que a tela mostra (ver mudarDiaDoCaixa)
+let diaDesenhado = '';           // o dia que a tela mostra, ou o que a seta acabou de pedir (ver mudarDiaDoCaixa)
 let mesDoCaixa = '';             // o mes aberto na tela do mes
 let ultimoDiaDoCaixa = '';       // ate onde as setas vao, da ultima leitura (ver diaFinalDoCaixa)
 // Cada desenho ganha um numero e so o ultimo escreve: dois toques rapidos na
@@ -3651,17 +3651,21 @@ $('form-meta').addEventListener('submit', (ev) => {
   desenharCaixa();
 });
 
-// Em hoje (''), a partir do dia que esta na tela, e nao do hoje do relogio:
-// com o Caixa desenhado antes da meia-noite, o "‹" levava ao proprio dia
-// mostrado (so o titulo virava "Ontem"), e a seta parecia nao andar. Fora
-// de hoje, o dia escolhido: dois toques rapidos andam dois dias, mesmo com a
-// leitura do primeiro ainda a caminho.
+// Parte do dia que esta na tela ou, com a leitura do toque anterior ainda a
+// caminho, do dia que ele pediu, e nao do hoje do relogio: com o Caixa
+// desenhado antes da meia-noite, o "‹" levava ao proprio dia mostrado (so o
+// titulo virava "Ontem"), e a seta parecia nao andar. O dia pedido vai para o
+// diaDoCaixa e tambem para o diaDesenhado: hoje fica no diaDoCaixa como '', e
+// o toque seguinte ao que chegava a hoje partia do dia desenhado antes deles
+// ("›" "›" "›" de anteontem parava em ontem; "›" "‹" de ontem ia a anteontem).
+// Assim, toques rapidos andam um dia cada, mesmo com a leitura atrasada.
 function mudarDiaDoCaixa(dias) {
   const hoje = Caixa.diaLocal();
   const dia = Caixa.somarDias(diaDoCaixa || diaDesenhado || hoje, dias);
   if (dia > (ultimoDiaDoCaixa > hoje ? ultimoDiaDoCaixa : hoje) || dia < '2000-01-01') return;
   vibrar('LIGHT');
   diaDoCaixa = dia === hoje ? '' : dia;
+  diaDesenhado = dia;
   fecharFormularioDaMeta();
   desenharCaixa();
 }

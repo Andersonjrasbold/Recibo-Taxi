@@ -133,17 +133,25 @@ if (modo === 'fotos') {
     // gerar o recibo, e o recibo depois do "Agora não".
     ['c=vitrine', '11-vitrine-abertura'], ['c=vitrine-recibo', '12-vitrine-recibo'],
     ['c=vitrine-recibo-depois', '13-recibo-depois-da-vitrine'],
-    // Caixa (1.8): o dia vazio e o dia com lancamentos e meta, a despesa de
-    // combustivel com litros, o fim da corrida com o valor, o mes anterior no
-    // Gratis (travado) e no Pro, o inicio com o cartao, o dia travado, a
-    // receita de um recibo (com "Mais detalhes" aberto), o mes corrente, o
-    // campo da meta aberto e o cartao do inicio sem lancamento.
+    // Caixa (1.8). Os valores abrem cobertos (o olho): as telas do Caixa vem
+    // com o olho aberto, para revisar o desenho com os numeros: o dia vazio, o
+    // dia com lancamentos e meta (com o "+ Lançamento"), o mes anterior no
+    // Gratis (travado) e no Pro, o dia travado, a receita de um recibo (com
+    // "Mais detalhes" aberto), o mes corrente e o campo da meta aberto. E
+    // mais: o "Novo lançamento" trocado para Despesa (combustivel com
+    // litros), o fim da corrida com o valor, o inicio com o cartao em
+    // primeiro, coberto, com a meta (como abre), o inicio sem lancamento (com
+    // "Definir meta do dia"), o inicio com o olho aberto e a confirmacao
+    // "Corrida lançada", o dia e o mes cobertos, e o "Novo lançamento" como
+    // abre (Receita e "Corrida").
     ['c=caixa&passo=0', '14-caixa-vazio'], ['c=caixa&passo=1', '15-caixa-dia'],
     ['c=caixa&passo=2', '16-lancamento-despesa'], ['c=caixa&passo=3', '17-fim-da-corrida'],
     ['c=caixa&passo=4', '18-mes-gratis-bloqueado'], ['c=caixa&passo=5', '19-mes-pro'],
     ['c=caixa&passo=6', '20-inicio-com-caixa'], ['c=caixa&passo=7', '21-dia-gratis-bloqueado'],
     ['c=caixa&passo=8', '22-lancamento-do-recibo'], ['c=caixa&passo=9', '23-mes-atual'],
     ['c=caixa&passo=10', '24-caixa-meta'], ['c=caixa&passo=11', '25-inicio-sem-lancamento'],
+    ['c=caixa&passo=12', '26-inicio-olho-aberto'], ['c=caixa&passo=13', '27-caixa-coberto'],
+    ['c=caixa&passo=14', '28-mes-coberto'], ['c=caixa&passo=15', '29-lancamento-novo'],
   ];
   for (const [hash, nome] of casos) {
     await abrir(hash);

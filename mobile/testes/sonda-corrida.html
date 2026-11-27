@@ -1725,14 +1725,18 @@ window.addEventListener('load', async () => {
       }
 
       if (H.has('passo')) {
-        // Fotos: monta a tela e para ali.
+        // Fotos: monta a tela e para ali. Os valores abrem cobertos: as telas do
+        // Caixa que ja tinham foto abrem o olho (o desenho se revisa com os
+        // numeros), e a 20, a 27 e a 28 mostram como o app abre, coberto.
         const passo = Number(H.get('passo'));
-        if (passo === 0) { await abrirCaixa(); return; }
-        if (passo === 11) { irParaInicio(); return; }   // o cartao do inicio sem lancamento
+        if (passo === 0) { mostrarValores(); await abrirCaixa(); return; }
+        if (passo === 11) { irParaInicio(); return; }   // o cartao do inicio sem lancamento e sem meta
         await comMesDeTrabalho();
-        if (passo === 1) { guardarMetaDoDia(40000); await abrirCaixa(); return; }
+        if (passo === 1) { guardarMetaDoDia(40000); mostrarValores(); await abrirCaixa(); return; }
         if (passo === 2) {
-          abrirLancamento({ tipo: 'despesa' });
+          // "+ Lançamento" (que abre em Receita) e o toque em "Despesa".
+          abrirLancamento();
+          clicar('tipo-despesa');
           q('l-valor').value = '86,00'; categoria('combustivel').click(); q('l-litros').value = '30,5';
           q('l-forma').value = 'Cartão'; q('l-mais').open = true;   // a forma da despesa mora aqui dentro
           return;
@@ -1743,31 +1747,39 @@ window.addEventListener('load', async () => {
           await abrirCorrida();
           return;
         }
-        if (passo === 4) { await abrirMesDoCaixa(mesPassado); return; }
+        if (passo === 4) { mostrarValores(); await abrirMesDoCaixa(mesPassado); return; }
         if (passo === 5) {
           window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
           await atualizarSessao();
+          mostrarValores();
           await abrirMesDoCaixa(mesPassado);
           return;
         }
-        if (passo === 6) {
-          confirmacaoDoInicio = { texto: 'Corrida lançada: R$ 58,00', ate: Date.now() + 60000 };
-          irParaInicio();
-          return;
-        }
-        if (passo === 7) { await abrirCaixa(`${mesPassado}-14`); return; }
+        if (passo === 6) { guardarMetaDoDia(40000); irParaInicio(); return; }   // o cartao em primeiro, coberto, com a meta
+        if (passo === 7) { mostrarValores(); await abrirCaixa(`${mesPassado}-14`); return; }
         if (passo === 8) {
           const recibo = { rid: 'F0000000000008', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista', motorista: retrato,
             dados: { rid: 'F0000000000008', origem: 'Rodoviária', destino: 'Centro', valor: '45,00', valor_exibido: '45,00', moeda: 'BRL',
                      data: hoje, hora: '18:42', forma_pagamento: 'Pix' } };
           await salvarRecibo(recibo);
           await lancarReciboNoCaixa(recibo);
+          mostrarValores();
           await abrirLancamentoParaEditar('r-F0000000000008');
           q('l-mais').open = true;
           return;
         }
-        if (passo === 9) { await abrirMesDoCaixa(mesAtual); return; }
-        if (passo === 10) { guardarMetaDoDia(40000); await abrirCaixa(); clicar('btn-mudar-meta'); return; }
+        if (passo === 9) { mostrarValores(); await abrirMesDoCaixa(mesAtual); return; }
+        if (passo === 10) { guardarMetaDoDia(40000); mostrarValores(); await abrirCaixa(); clicar('btn-mudar-meta'); return; }
+        if (passo === 12) {   // o olho aberto e a confirmacao do "Só lançar no caixa"
+          guardarMetaDoDia(40000);
+          confirmacaoDoInicio = { texto: 'Corrida lançada: R$ 58,00', dia: hoje, ate: Date.now() + 60000 };
+          mostrarValores();
+          irParaInicio();
+          return;
+        }
+        if (passo === 13) { guardarMetaDoDia(40000); await abrirCaixa(); return; }   // o Caixa do dia como abre, coberto
+        if (passo === 14) { await abrirMesDoCaixa(mesAtual); return; }   // o mes, coberto
+        if (passo === 15) { abrirLancamento(); return; }   // "Novo lançamento" como abre: Receita e "Corrida"
         return;
       }
 

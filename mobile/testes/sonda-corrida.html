@@ -2770,6 +2770,25 @@ window.addEventListener('load', async () => {
         + `${nomeCurtoDoMes(mesPassado, mesAtual)} fica no Pro.`;
       ok('corrida de um mes anterior, no Gratis: a confirmacao diz o dia e que o mes fica no Pro',
          textoDe('caixa-inicio-confirmacao') === textoDoMesPassado, textoDe('caixa-inicio-confirmacao'));
+      // Esta frase ocupa duas linhas (a da corrida de ontem tambem, em 360 px).
+      // Ao sumir, fica o espaco das duas: com o de uma so, o cartao encolhia e
+      // puxava "Emitir recibo" e "Fazer corrida" para cima, embaixo do dedo. O
+      // apagar e o de sempre, so que mais cedo: sem os 5 s de espera.
+      const linhaDaConfirmacao = q('caixa-inicio-confirmacao');
+      const faixaDaConfirmacao = document.createRange();
+      faixaDaConfirmacao.selectNodeContents(linhaDaConfirmacao);
+      const linhasDaConfirmacao = new Set([...faixaDaConfirmacao.getClientRects()].map((l) => Math.round(l.top))).size;
+      if (confirmacaoDoInicio) confirmacaoDoInicio.ate = Date.now() + 600;
+      irParaInicio(); await espera(300);
+      const caminhosComDuasLinhas = document.querySelector('.caminhos').getBoundingClientRect().top;
+      await espera(600);
+      ok('a confirmacao de duas linhas tambem some sem puxar "Emitir recibo" e "Fazer corrida" para cima',
+         linhasDaConfirmacao >= 2 && textoDe('caixa-inicio-confirmacao') === '' && !confirmacaoDoInicio
+         && document.querySelector('.caminhos').getBoundingClientRect().top === caminhosComDuasLinhas,
+         `${linhasDaConfirmacao} linhas; ${caminhosComDuasLinhas} -> ${document.querySelector('.caminhos').getBoundingClientRect().top}`);
+      irParaInicio(); await espera(300);
+      ok('e na volta seguinte ao inicio ela sai de vez, sem guardar a altura das duas linhas', !visivel('caixa-inicio-confirmacao')
+         && linhaDaConfirmacao.style.minHeight === '');
       // A corrida do dia continua com a frase curta (o teste do "Só lançar" acima).
 
       // Gravacao que aborta (o Android sem espaco: o commit falha so com

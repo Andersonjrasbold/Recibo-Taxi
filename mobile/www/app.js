@@ -3560,15 +3560,22 @@ const linhaSemQuebra = (pedacos) => pedacos.map((p) => p.replace(/ /g, ' ')).jo
 // Com o cartao no topo do inicio, a linha que some encolhia o cartao e puxava
 // "Emitir recibo" e "Fazer corrida" para cima, embaixo do dedo de quem ia
 // tocar neles. Some so o texto; o espaco fica ate o proximo desenho do
-// cartao (a proxima volta ao inicio).
+// cartao (a proxima volta ao inicio), com a altura que o texto tinha: a frase
+// longa ("no caixa de ontem", "Outubro fica no Pro") ocupa duas linhas, e o
+// espaco de uma so ainda puxava os caminhos 20 px.
 function mostrarConfirmacaoDoInicio() {
   const linha = $('caixa-inicio-confirmacao');
   const resta = confirmacaoDoInicio ? confirmacaoDoInicio.ate - Date.now() : 0;
   linha.hidden = resta <= 0;
+  linha.style.minHeight = '';   // a altura presa no apagar vale so ate aqui
   if (resta <= 0) { confirmacaoDoInicio = null; return; }
   linha.textContent = confirmacaoDoInicio.texto;
   clearTimeout(apagaConfirmacao);
-  apagaConfirmacao = setTimeout(() => { confirmacaoDoInicio = null; linha.textContent = '\u00a0'; }, resta);
+  apagaConfirmacao = setTimeout(() => {
+    confirmacaoDoInicio = null;
+    linha.style.minHeight = `${linha.getBoundingClientRect().height}px`;
+    linha.textContent = '\u00a0';
+  }, resta);
 }
 
 // Com a confirmacao da corrida a vista, o toque abre o dia em que ela entrou

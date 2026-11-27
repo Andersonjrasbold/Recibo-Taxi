@@ -162,8 +162,12 @@ if (modo === 'fotos') {
 // Tres modos, nesta ordem: o fluxo (sem sessao, nada sobe), o envio com o
 // servidor simulado e as telas do caixa (1.8). O IndexedDB e o mesmo nos tres;
 // o modo rede limpa os recibos antes de comecar, e o do caixa, o banco inteiro.
+// Depois, o menu do perfil em telas baixas, cada uma no seu tamanho: o iPhone
+// SE/8 (375 x 647 uteis) e um Android pequeno, com o e-mail em duas linhas.
 const partes = [];
-for (const [hash, nome] of [['c=asserts', 'fluxo'], ['c=rede', 'rede simulada'], ['c=caixa', 'caixa']]) {
+for (const [hash, nome, [largura, altura] = [390, 844]] of [['c=asserts', 'fluxo'], ['c=rede', 'rede simulada'], ['c=caixa', 'caixa'],
+  ['c=menu&sem_rolar=1', 'menu no iPhone SE', [375, 647]], ['c=menu&email=longo', 'menu em tela pequena', [360, 568]]]) {
+  await cdp('Emulation.setDeviceMetricsOverride', { width: largura, height: altura, deviceScaleFactor: 2, mobile: true });
   await abrir(hash);
   let parte;
   for (let i = 0; i < 480 && !parte; i++) {   // ate 240 s por parte

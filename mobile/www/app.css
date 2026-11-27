@@ -50,14 +50,23 @@ body {
   min-width:15.5rem; max-width:min(20rem, calc(100vw - 2rem)); padding:.4rem;
   background:var(--coal-soft); border:1px solid var(--linha);
   border-radius:16px; box-shadow:0 18px 44px rgba(0,0,0,.6);
+  /* Rola por dentro quando nao cabe. O menu mora no cabecalho fixo (rolar a
+     pagina nao o move), e com o "Meu caixa" (1.8) passou a ter dez itens: no
+     iPhone SE/8 e nos Androids pequenos, o "Excluir minha conta" (exigido
+     pela Apple e pelo Google, e a unica entrada do app para excluir) saia
+     pelo pe da tela. Os 4,5rem sao o topo do menu (~4,1rem) e uma folga. */
+  max-height:calc(100vh - 4.5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  overflow-y:auto; overscroll-behavior:contain;
 }
 .menu-topo { padding:.7rem .8rem .8rem; border-bottom:1px solid var(--linha); margin-bottom:.3rem; }
 .menu-topo strong { display:block; font-size:.95rem; }
 .menu-topo small { display:block; color:var(--muted); font-size:.78rem; margin-top:.2rem; overflow-wrap:anywhere; }
 .menu-topo small.menu-plano { color:var(--ambar); font-weight:700; }
+/* 45 px de alvo (o minimo e 44): os dez itens cabem na altura dos nove de
+   antes, e o "Excluir minha conta" aparece sem rolar no iPhone SE/8. */
 .menu-item {
   display:block; width:100%; text-align:left; border-radius:11px;
-  padding:.85rem .8rem; font-size:.95rem; font-weight:700;
+  padding:.7rem .8rem; font-size:.95rem; font-weight:700;
   color:var(--paper); background:none;
 }
 .menu-item:active { background:rgba(247,245,242,.09); }

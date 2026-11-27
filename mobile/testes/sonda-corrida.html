@@ -8,6 +8,9 @@
 //   #c=caixa               as telas do caixa (1.8): dia, mes, lancamento, cartao do
 //                          inicio e fim da corrida, conferidos pelos botoes
 //   #c=caixa&passo=N       para na tela N do caixa (fotos)
+//   #c=menu                o menu do perfil na tela que o rodar.mjs escolheu (telas
+//                          baixas): o "Excluir minha conta" tem de aparecer e receber
+//                          o toque. &sem_rolar=1: sem rolar o menu; &email=longo
 //   #passo=N               para no passo N (fotos)
 //   #c=negado&passo=1      localizacao negada
 localStorage.clear();
@@ -24,6 +27,19 @@ if (REDE) localStorage.setItem('access_token', JSON.stringify('token-falso'));
 // nele enquanto o que as outras partes deixaram e apagado.
 const CAIXA = H.get('c') === 'caixa';
 const SERVIDOR = REDE || CAIXA;
+// Modo menu: com sessao e plano Gratis guardados (a linha "2 de 6 recibos"),
+// como o motorista abre o menu para excluir a conta.
+const MENU = H.get('c') === 'menu';
+if (MENU) {
+  localStorage.setItem('access_token', JSON.stringify('token-menu'));
+  localStorage.setItem('plano', JSON.stringify('free'));
+  localStorage.setItem('limite', JSON.stringify(6));
+  localStorage.setItem('usados', JSON.stringify(2));
+  if (H.get('email') === 'longo') {
+    localStorage.setItem('motorista', JSON.stringify({ full_name: 'José Carlos da Silva Pereira', plate: 'WEB1A23',
+      email: 'jose.carlos.da.silva.taxista.centro@provedor-de-email-grande.com.br' }));
+  }
+}
 window.__regra = () => ({});
 window.__sessao = null;                 // corpo do GET /api/sessao; null = 503
 window.__refresh = null;                // {status, corpo} do POST /api/refresh; null = sem rede
@@ -146,6 +162,46 @@ window.addEventListener('load', async () => {
     pre.textContent = linhas.join('\n');
     document.body.appendChild(pre);
   };
+
+  if (MENU) {
+    // ── Menu do perfil numa tela baixa ──────────────────────────────────────
+    // O menu mora no cabecalho fixo: rolar a pagina nao o move. Com o "Meu
+    // caixa" (1.8), o "Excluir minha conta" (exigido pela Apple e pelo Google,
+    // e a unica entrada do app para excluir) saia pelo pe da tela no iPhone
+    // SE/8 e nos Androids pequenos. O rodar.mjs escolhe o tamanho da tela.
+    const r = [];
+    const tela = `${innerWidth}x${innerHeight}${H.get('email') === 'longo' ? ', e-mail longo' : ''}`;
+    const ok = (nome, cond, extra = '') => r.push(`${cond ? 'OK   ' : 'FALHA'} menu (${tela}): ${nome}${cond ? '' : ' :: ' + extra}`);
+    try {
+      vitrineCheiaNestaAbertura = true;   // os planos em tela cheia nao entram no meio
+      await espera(1500);
+      irParaInicio(); await espera(200);
+      clicar('btn-perfil'); await espera(300);
+      const menu = q('menu-perfil'), ex = q('btn-excluir-conta');
+      const caixa = (el) => el.getBoundingClientRect();
+      const tocavel = () => {
+        const e = caixa(ex);
+        const alvo = document.elementFromPoint(e.left + e.width / 2, e.top + e.height / 2);
+        return alvo === ex || ex.contains(alvo);
+      };
+      const onde = () => JSON.stringify({ excluir: [Math.round(caixa(ex).top), Math.round(caixa(ex).bottom)], menu: Math.round(caixa(menu).bottom), tela: innerHeight });
+      ok('o menu abre sem passar do pe da tela', !menu.hidden && caixa(menu).bottom <= innerHeight, onde());
+      if (H.get('sem_rolar')) {
+        ok('"Excluir minha conta" aparece inteiro e recebe o toque sem rolar nada', caixa(ex).bottom <= caixa(menu).bottom && tocavel(), onde());
+      }
+      ex.scrollIntoView({ block: 'nearest' }); await espera(200);
+      ok('"Excluir minha conta" aparece inteiro e recebe o toque (rolando o menu, se preciso)', caixa(ex).top >= caixa(menu).top
+         && caixa(ex).bottom <= caixa(menu).bottom && caixa(ex).bottom <= innerHeight && tocavel(), onde());
+      const baixos = [...menu.querySelectorAll('.menu-item')].filter((b) => b.getBoundingClientRect().height < 44);
+      ok('todo item do menu com alvo de 44 px ou mais', baixos.length === 0, baixos.map((b) => b.textContent).join('|'));
+      clicar('btn-excluir-conta'); await espera(300);
+      ok('o toque em "Excluir minha conta" abre a exclusao', !q('tela-excluir').hidden);
+    } catch (e) {
+      r.push(`FALHA menu: excecao: ${e && e.stack || e}`);
+    }
+    terminar(r);
+    return;
+  }
 
   if (REDE) {
     const r = [];

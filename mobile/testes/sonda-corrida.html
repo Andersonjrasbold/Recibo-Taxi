@@ -1223,6 +1223,7 @@ window.addEventListener('load', async () => {
       // A sessao acabou no teste anterior; nada agendado mexe mais no banco.
       if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
       clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      clearTimeout(caixaReagendado); caixaReagendado = null;
       if (passadaDoCaixa) await passadaDoCaixa;
       await espera(500);
       // O banco da versao 1 (app ate a 1.7), com recibos, sobe para a 2 sem perder nada.
@@ -1348,13 +1349,14 @@ window.addEventListener('load', async () => {
                                    ['405 (servidor sem o caixa)', { status: 405, corpo: {} }], ['rede caida', { falhar: true }]]) {
         const fica = await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 3000, data: hojeC });
         clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
-        if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+        clearTimeout(caixaReagendado); caixaReagendado = null;
         window.__regraCaixa = () => regra;
         const envioAdiado = await enviarCaixa();
         const ficou = await buscarLancamento(fica.id);
         ok(`caixa: ${nome} deixa pendente, sem marcar recusado, e agenda outra tentativa`,
-           envioAdiado.adiada && ficou.pendente === true && !ficou.recusado && !!sincronizacaoAgendada, JSON.stringify(envioAdiado));
+           envioAdiado.adiada && ficou.pendente === true && !ficou.recusado && !!caixaReagendado, JSON.stringify(envioAdiado));
       }
+      clearTimeout(caixaReagendado); caixaReagendado = null;
       if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
       // O sincronizar leva o caixa junto, sem mudar o que devolve (o Salvar do perfil conta recibos).
       window.__regraCaixa = () => ({});
@@ -1363,6 +1365,78 @@ window.addEventListener('load', async () => {
       await enviarCaixa();
       ok('caixa: o sincronizar sobe o caixa e devolve o mesmo de antes', Object.keys(sincronia).join() === 'enviados,restantes,semCota'
          && __lotes.length === 1 && (await listarLancamentos()).every((x) => !x.pendente || x.recusado), JSON.stringify(sincronia));
+      // A espera do caixa e so dele. Com o temporizador e o contador dos
+      // recibos, o caixa recusado por muito tempo (servidor sem o caixa, 0022
+      // nao aplicada, teto do dia) prendia a nova tentativa dos recibos em 5 min.
+      const atrasos = [];   // os temporizadores longos (de 10 s ou mais) que o app armou
+      const setTimeoutDaPagina = window.setTimeout;
+      window.setTimeout = (fn, ms, ...resto) => { if (ms >= 10000) atrasos.push(ms); return setTimeoutDaPagina.call(window, fn, ms, ...resto); };
+      try {
+        clearTimeout(caixaReagendado); caixaReagendado = null; tentativasDoCaixa = 0;
+        if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+        tentativasAdiadas = 0;
+        await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 2500, data: hojeC });
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        window.__regraCaixa = () => ({ status: 405, corpo: {} });
+        for (let i = 0; i < 6; i++) {
+          clearTimeout(caixaReagendado); caixaReagendado = null;   // o temporizador do caixa "disparou"
+          await enviarCaixa();
+        }
+        ok('caixa: recusado sem parar (servidor sem o caixa), a espera do caixa sobe de 30 s ate 5 min',
+           atrasos.join() === '30000,60000,120000,240000,300000,300000', atrasos.join());
+        const reciboComCaixaTravado = (rid) => salvarRecibo({ rid, criado_em: new Date().toISOString(), pendente: true, dono: 'web-motorista',
+          motorista: retratoV, dados: { rid, origem: 'Caixa travado', destino: 'Centro', valor: '22', valor_exibido: '22,00', moeda: 'BRL',
+            data: hojeC, hora: '10:00', forma_pagamento: 'Pix' } });
+        atrasos.length = 0;
+        await reciboComCaixaTravado('B0000000000001');
+        window.__regra = () => ({ status: 503, corpo: { erro: 'indisponivel' } });
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        ok('caixa: com o caixa travado, o recibo que cai tenta de novo em 30 s, e nao no temporizador do caixa',
+           atrasos.join() === '30000' && !!sincronizacaoAgendada && tentativasAdiadas === 1, `${atrasos.join()} / ${tentativasAdiadas}`);
+        clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null;   // o temporizador dos recibos "disparou"
+        window.__regra = () => ({});
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        ok('caixa: o recibo que sobe zera a espera dos recibos, mesmo com o caixa ainda travado',
+           tentativasAdiadas === 0 && ((await listarRecibos()).find((x) => x.rid === 'B0000000000001') || {}).pendente === false
+           && tentativasDoCaixa === 6, `${tentativasAdiadas} / ${tentativasDoCaixa}`);
+        atrasos.length = 0;
+        await reciboComCaixaTravado('B0000000000002');
+        window.__regra = () => ({ status: 503, corpo: { erro: 'indisponivel' } });
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        ok('caixa: e o recibo seguinte que cai volta a esperar 30 s', atrasos.join() === '30000', atrasos.join());
+        clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null;
+        window.__regra = () => ({});
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        // O caixa volta: a espera dele zera.
+        window.__regraCaixa = () => ({});
+        clearTimeout(caixaReagendado); caixaReagendado = null;
+        await enviarCaixa();
+        ok('caixa: o caixa que volta zera a propria espera', tentativasDoCaixa === 0 && !caixaReagendado
+           && (await listarLancamentos()).every((x) => !x.pendente || x.recusado), String(tentativasDoCaixa));
+        // 429 do teto do dia: o servidor recusa ate a virada, e o app espera uma hora.
+        await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 2600, data: hojeC });
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        window.__regraCaixa = () => ({ status: 429, corpo: { erro: 'muitos_lancamentos', limite: 500 } });
+        atrasos.length = 0;
+        await enviarCaixa();
+        ok('caixa: 429 do teto do dia espera uma hora para tentar de novo, e nao 30 s', atrasos.join() === '3600000', atrasos.join());
+        clearTimeout(caixaReagendado); caixaReagendado = null;
+        window.__regraCaixa = () => ({ status: 429, corpo: {} });   // 429 de outro tipo (a borda): a curva de sempre
+        atrasos.length = 0;
+        await enviarCaixa();
+        ok('caixa: outro 429 segue a curva de 30 s a 5 min', atrasos.join() === '60000', atrasos.join());
+      } finally {
+        window.setTimeout = setTimeoutDaPagina;
+        window.__regra = () => ({}); window.__regraCaixa = () => ({});
+        clearTimeout(caixaReagendado); caixaReagendado = null;
+        if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      }
+      await enviarCaixa();
+      tentativasAdiadas = 0;
       // Guardar agenda a passada para ~2 s depois.
       __lotes.length = 0;
       const sozinho = await criarLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 300, data: hojeC });

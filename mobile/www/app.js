@@ -649,7 +649,7 @@ async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
   }
   const restantes = (await pendentes()).length;
   if (adiada && restantes && geracao === geracaoDaSessao) reagendarSincronizacao();
-  else if (!adiada && !caixaAdiado) tentativasAdiadas = 0;
+  else if (!adiada) tentativasAdiadas = 0;   // o caixa tem a espera dele (reagendarCaixa)
   // O caixa sobe depois dos recibos, e o sincronizar nao espera por ele: quem
   // espera esta passada (o botao do WhatsApp, que fica travado ate ela acabar,
   // e o Salvar de Meus dados) espera o recibo, nao a copia do caixa. A passada
@@ -665,7 +665,27 @@ async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
 const LANCAMENTOS_POR_LOTE = 100;
 let passadaDoCaixa = null;       // uma passada por vez; quem chama no meio recebe a mesma
 let envioDoCaixaAgendado = null;
-let caixaAdiado = false;         // a ultima passada parou por servidor fora, 429 ou rede
+
+// O caixa que parou (servidor fora, 429, sem a rota ou rede caida) tenta de
+// novo sozinho, na mesma curva dos recibos (30 s, 1 min, 2, ate 5 min), mas
+// com temporizador e contador so dele. Quando usava os dos recibos, o caixa
+// recusado por muito tempo (servidor sem o caixa, a 0022 nao aplicada, o teto
+// do dia) deixava o temporizador comum em 5 min: o recibo que caia esperava
+// por ele, e nao 30 s, e o passageiro abria o QR num 404 por mais tempo.
+let tentativasDoCaixa = 0;
+let caixaReagendado = null;
+
+// `tetoDoDia`: o 429 do teto diario (muitos_lancamentos). O servidor recusa
+// ate a virada do dia em Brasilia, e cada lote recusado ainda soma no
+// contador: insistir de 5 em 5 min so gastava pedido. Espera uma hora, e nao
+// ate a meia-noite exata: com o relogio do aparelho adiantado, a tentativa
+// cairia antes da virada, e a seguinte so no outro dia.
+function reagendarCaixa({ tetoDoDia = false } = {}) {
+  if (caixaReagendado) return;
+  const atraso = tetoDoDia ? 60 * 60e3 : Math.min(30e3 * 2 ** tentativasDoCaixa, 5 * 60e3);
+  tentativasDoCaixa++;
+  caixaReagendado = setTimeout(() => { caixaReagendado = null; enviarCaixa(); }, atraso);
+}
 
 // Devolve { enviados, recusados, restantes, adiada } e nunca falha: chamada
 // sem esperar (no fim do sincronizar), um erro viraria rejeicao solta.
@@ -678,6 +698,7 @@ async function passarCaixa() {
   const resultado = { enviados: 0, recusados: 0, restantes: 0, adiada: false };
   if (!token() || !(await temRede())) return resultado;
   const geracao = geracaoDaSessao;   // a passada e desta sessao, como a da fila dos recibos
+  let tetoDoDia = false;             // 429 do teto diario: espera mais (ver reagendarCaixa)
   try {
     const fila = (await listarLancamentos()).filter((l) => l.pendente).sort((a, b) =>
       String(a.criado_em).localeCompare(String(b.criado_em)) || String(a.id).localeCompare(String(b.id)));
@@ -720,15 +741,16 @@ async function passarCaixa() {
         // responde 405 (e nao 404) ao POST, por causa da rota de OPTIONS. Os
         // outros lotes levariam a mesma resposta; fica tudo para a proxima.
         resultado.adiada = true;
+        if (resp.status === 429) tetoDoDia = ((await resp.json().catch(() => null)) || {}).erro === 'muitos_lancamentos';
         break;
       } else {
         break;   // inesperado: fica pendente, sem marcar recusado nem insistir agora
       }
     }
     if (geracao !== geracaoDaSessao) return resultado;
-    caixaAdiado = resultado.adiada;
     resultado.restantes = (await listarLancamentos()).filter((l) => l.pendente).length;
-    if (resultado.adiada && resultado.restantes) reagendarSincronizacao();
+    if (resultado.adiada && resultado.restantes) reagendarCaixa({ tetoDoDia });
+    else if (!resultado.adiada) tentativasDoCaixa = 0;
   } catch { /* banco local com defeito: o caixa fica para a proxima passada */ }
   return resultado;
 }
@@ -2625,7 +2647,8 @@ function encerrarSessao() {
   tentativasAdiadas = 0;
   limparPerfil();
   if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
-  clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null; caixaAdiado = false;
+  clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+  clearTimeout(caixaReagendado); caixaReagendado = null; tentativasDoCaixa = 0;
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');

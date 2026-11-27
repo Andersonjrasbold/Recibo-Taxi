@@ -5308,14 +5308,25 @@ def ler_lancamento(item: dict, moeda_do_cadastro: str, hoje) -> dict:
         dia = datetime.strptime(data, "%Y-%m-%d").date()
     except ValueError as exc:
         raise LancamentoRecusado("data_invalida") from exc
-    # Dois dias de folga: o relógio do aparelho e o fuso de quem roda fora do Brasil.
-    if not _LANCAMENTO_DATA_MINIMA <= dia <= hoje + timedelta(days=2):
+    # Dois dias de folga: o relógio do aparelho e o fuso de quem roda fora do
+    # Brasil. O lançamento de um recibo não tem teto: ele leva a data do recibo,
+    # que o /api/recibos aceita sem teto (corrida agendada e paga antes, dia
+    # errado no calendário). Recusada, essa cópia nunca chegaria ao servidor: o
+    # app não reenvia o recusado, nem quando a data chega.
+    teto = None if item.get("origem") == "recibo" else hoje + timedelta(days=2)
+    if dia < _LANCAMENTO_DATA_MINIMA or (teto is not None and dia > teto):
         raise LancamentoRecusado("data_invalida")
 
     hora = item.get("hora")
     hora = hora_valida(hora if isinstance(hora, str) else "")
 
-    forma = _texto_do_lancamento(item.get("forma"), 40)
+    # Só o booleano true apaga: "true", 1 ou qualquer outra coisa não. O túmulo
+    # só marca o id como apagado: a forma e a observação, texto livre onde cabe
+    # o nome ou o telefone de alguém, não ficam nele (gravadas vazias, também
+    # somem do lançamento que já tinha subido), e nem são conferidas, para um
+    # texto longo não recusar a exclusão.
+    apagado = item.get("apagado") is True
+    forma = "" if apagado else _texto_do_lancamento(item.get("forma"), 40)
     if forma is None:
         raise LancamentoRecusado("campo_longo")
 
@@ -5334,7 +5345,7 @@ def ler_lancamento(item: dict, moeda_do_cadastro: str, hoje) -> dict:
     if origem == "recibo" and (rid is None or lid != f"r-{rid}"):
         raise LancamentoRecusado("rid_invalido")
 
-    obs = _texto_do_lancamento(item.get("obs"), 120)
+    obs = "" if apagado else _texto_do_lancamento(item.get("obs"), 120)
     if obs is None:
         raise LancamentoRecusado("campo_longo")
 
@@ -5356,9 +5367,7 @@ def ler_lancamento(item: dict, moeda_do_cadastro: str, hoje) -> dict:
         "amount": str(Decimal(centavos).scaleb(-casas)), "currency": moeda,
         "entry_date": data, "entry_time": hora, "payment_method": forma,
         "source": LANCAMENTO_ORIGENS[origem], "rid": rid, "note": obs,
-        "distance_km": km, "liters": litros, "version": versao,
-        # Só o booleano true apaga: "true", 1 ou qualquer outra coisa não.
-        "apagado": item.get("apagado") is True,
+        "distance_km": km, "liters": litros, "version": versao, "apagado": apagado,
     }
 
 

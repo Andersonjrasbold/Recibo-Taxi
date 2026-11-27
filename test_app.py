@@ -4731,6 +4731,26 @@ _l2 = _lanc(apagado="true")
 _enviar_cx(_l2)
 check("caixa: so o booleano true apaga ('true' em texto nao)", _linhas_cx()[_l2["id"]]["deleted_at"] is None)
 
+# O tumulo nao leva texto livre: a observacao e a forma (onde cabe o nome ou o
+# telefone de alguem) nao ficam no servidor, nem as do lancamento que ja tinha
+# subido; e texto longo nao recusa a exclusao.
+_tu1_cx = _lanc(obs="emprestimo p/ Joao 45 99999-1234", forma="Pix")
+_enviar_cx(_tu1_cx)
+_tu2_cx = _lanc(obs="x" * 200, forma="y" * 60, versao=2, apagado=True)   # apagado antes de subir
+_r = _enviar_cx(dict(_tu1_cx, versao=2, apagado=True), _tu2_cx)
+_g = _linhas_cx()
+check("caixa: o tumulo chega sem observacao nem forma e limpa as do lancamento que ja tinha subido",
+      _r.status_code == 200 and _r.get_json() == {"aceitos": [_tu1_cx["id"], _tu2_cx["id"]], "recusados": []}
+      and _g[_tu1_cx["id"]]["note"] == "" and _g[_tu1_cx["id"]]["payment_method"] == ""
+      and _g[_tu1_cx["id"]]["deleted_at"] is not None, f"{_r.status_code} {_r.get_json()} {_g.get(_tu1_cx['id'])}")
+check("caixa: observacao e forma longas nao recusam o tumulo e nao sao gravadas",
+      _tu2_cx["id"] in _g and _g[_tu2_cx["id"]]["note"] == "" and _g[_tu2_cx["id"]]["payment_method"] == ""
+      and _g[_tu2_cx["id"]]["deleted_at"] is not None, str(_g.get(_tu2_cx["id"])))
+_enviar_cx(_tu1_cx)
+_g = _linhas_cx()[_tu1_cx["id"]]
+check("caixa: a v1 atrasada nao traz a observacao de volta ao tumulo",
+      _g["note"] == "" and _g["version"] == 2 and _g["deleted_at"] is not None, str(_g))
+
 # Um caso por campo da tabela do contrato, todos no mesmo lote com um item bom:
 # o errado vai para recusados com o codigo dele e o bom segue.
 _casos_cx = [
@@ -4824,6 +4844,26 @@ _g = _linhas_cx().get(_lr_cx["id"]) or {}
 check("caixa: lancamento de recibo (r-<rid>) aceito sem o recibo existir no servidor",
       _r.get_json() == {"aceitos": [_lr_cx["id"]], "recusados": []} and _g.get("source") == "receipt"
       and _g.get("rid") == _rid_cx and _g.get("kind") == "income" and A.get_store().get_receipt(_rid_cx) is None, str(_g))
+# O lancamento do recibo leva a data do recibo, que o /api/recibos aceita sem
+# teto (corrida agendada e paga antes, dia errado no calendario). Com o teto de
+# hoje + 2 a copia era recusada, e o app nao reenvia o recusado nem quando a
+# data chega. O teto continua para o manual e a corrida; 2000 vale para todos.
+_dfut_cx = (_dia_cx + A.timedelta(days=30)).isoformat()
+_rid_fut_cx, _rid_1999_cx = os.urandom(7).hex().upper(), os.urandom(7).hex().upper()
+_lr_fut_cx = _lanc(id=f"r-{_rid_fut_cx}", tipo="receita", categoria="corrida", centavos=4500, origem="recibo",
+                   rid=_rid_fut_cx, litros=None, data=_dfut_cx)
+_lr_1999_cx = _lanc(id=f"r-{_rid_1999_cx}", tipo="receita", categoria="corrida", centavos=4500, origem="recibo",
+                    rid=_rid_1999_cx, litros=None, data="1999-12-31")
+_man_fut_cx, _cor_fut_cx = _lanc(data=_dfut_cx), _lanc(origem="corrida", data=_dfut_cx)
+_r = _enviar_cx(_lr_fut_cx, _lr_1999_cx, _man_fut_cx, _cor_fut_cx)
+_g = _linhas_cx().get(_lr_fut_cx["id"]) or {}
+check("caixa: lancamento de recibo com a data de hoje + 30 dias e aceito e grava a data do recibo",
+      _r.status_code == 200 and (_r.get_json() or {}).get("aceitos") == [_lr_fut_cx["id"]]
+      and str(_g.get("entry_date")) == _dfut_cx, f"{_r.status_code} {_r.get_json()} {_g}")
+check("caixa: recibo antes de 2000, manual e corrida com a mesma data adiante continuam data_invalida",
+      (_r.get_json() or {}).get("recusados") == [{"id": _l["id"], "erro": "data_invalida"}
+                                                 for _l in (_lr_1999_cx, _man_fut_cx, _cor_fut_cx)],
+      str(_r.get_json()))
 
 # Mesmo id duas vezes no lote: sem isto o upsert estourava (500) com
 # "cannot affect row a second time".

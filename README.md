@@ -415,13 +415,18 @@ sozinhos como receita; o resto é lançado à mão.
 - Dinheiro em inteiro na menor unidade (`centavos`; peso chileno e guarani têm 0
   casas), de 1 até o teto da moeda em `MOEDAS`; `float` e `bool` são recusados. O
   banco guarda o valor em `amount`. Moeda fora da lista vale a do cadastro.
+- `data` de 2000-01-01 até hoje + 2 dias no fuso de Brasília (folga para o
+  relógio do aparelho). O lançamento de um recibo (`origem: "recibo"`) não tem
+  teto: leva a data do recibo, que o `/api/recibos` aceita sem teto, e o app não
+  reenvia o recusado.
 - Idempotente: a chave é `(driver_id, id)`, com o `driver_id` sempre do token, e
   dois motoristas com o mesmo id são linhas diferentes. Só uma `versao` igual ou
   maior troca a guardada; a mais velha não sobrescreve, mas volta em `aceitos` (o
   servidor já tem algo igual ou mais novo). O mesmo id duas vezes no lote: fica o
   de maior versão (empate: o último). `apagado: true` vira túmulo
   (`deleted_at`), que a limpeza tira de vez em `LANCAMENTO_APAGADO_DIAS` = 30
-  dias; versão maior com `apagado: false` desapaga.
+  dias; versão maior com `apagado: false` desapaga. O túmulo não guarda texto
+  livre: `obs` e `forma` são gravadas vazias, sem conferir o tamanho.
 - Nunca chegam ao servidor: origem e destino (o trajeto fica no aparelho), o
   passageiro, nada além dos campos acima. O log leva só contagens e códigos de
   erro, nunca valor, categoria ou observação.

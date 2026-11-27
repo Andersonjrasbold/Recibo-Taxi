@@ -463,7 +463,13 @@ CAIXA_A_PARTIR = "12/12/2026"
 # nas lojas antes da data mandaria receitas, despesas e observações dentro do
 # prazo de aviso, e a Política ficaria falsa. Tirada do texto, para a data da
 # Política e a do código não se separarem quando ela for acertada.
-CAIXA_A_PARTIR_DATA = datetime.strptime(CAIXA_A_PARTIR, "%d/%m/%Y").date()
+try:
+    CAIXA_A_PARTIR_DATA = datetime.strptime(CAIXA_A_PARTIR.strip(), "%d/%m/%Y").date()
+except ValueError:
+    # Data digitada errada no dia do merge: o portão fica fechado (o app guarda
+    # e reenvia, nada se perde) em vez de o site inteiro cair na importação. A
+    # suíte acusa ("a data do portao e a do texto da Politica").
+    CAIXA_A_PARTIR_DATA = datetime.max.date()
 # Integração com o PilotPostAi (CRM e atendimento da mesma empresa): cada
 # motorista vira cliente da conta do suporte lá (migração 0021). Um trigger em
 # `drivers` enfileira criação, alteração, "parar ofertas" e exclusão em

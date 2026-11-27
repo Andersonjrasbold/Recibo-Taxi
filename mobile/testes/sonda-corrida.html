@@ -1915,9 +1915,11 @@ window.addEventListener('load', async () => {
          && q('corrida-fim').textContent.includes('Quanto cobrou? (R$)') && q('fim-valor').inputMode === 'decimal', textoDe('fim-estimativa'));
       const alturas = ['btn-sem-recibo', 'btn-retomar'].map((id) => Math.round(q(id).getBoundingClientRect().height));
       ok('"Não lançar" e "Voltar para a corrida" com alvo de 44 px', alturas.every((h) => h >= 44), JSON.stringify(alturas));
-      const [bGerar, bLancar, bNao] = ['btn-gerar-recibo', 'btn-lancar-corrida', 'btn-sem-recibo'].map((id) => q(id).getBoundingClientRect());
-      ok('as tres acoes ficam afastadas umas das outras (12 px ou mais)', bLancar.top - bGerar.bottom >= 12 && bNao.top - bLancar.bottom >= 12,
-         `${Math.round(bLancar.top - bGerar.bottom)} ${Math.round(bNao.top - bLancar.bottom)}`);
+      const [bGerar, bLancar, bNao, bVoltar] = ['btn-gerar-recibo', 'btn-lancar-corrida', 'btn-sem-recibo', 'btn-retomar']
+        .map((id) => q(id).getBoundingClientRect());
+      ok('as acoes ficam afastadas umas das outras (12 px ou mais), inclusive "Não lançar" e "Voltar para a corrida"',
+         bLancar.top - bGerar.bottom >= 12 && bNao.top - bLancar.bottom >= 12 && bVoltar.top - bNao.bottom >= 12,
+         `${Math.round(bLancar.top - bGerar.bottom)} ${Math.round(bNao.top - bLancar.bottom)} ${Math.round(bVoltar.top - bNao.bottom)}`);
       ok('o antigo "Sem recibo" agora e "Não lançar", com o mesmo id', textoDe('btn-sem-recibo') === 'Não lançar' && textoDe('btn-lancar-corrida') === 'Só lançar no caixa');
       const antesDeLancar = (await listarLancamentos()).length;
       clicar('btn-lancar-corrida'); await espera(300);

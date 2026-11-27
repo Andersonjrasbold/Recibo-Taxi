@@ -561,8 +561,9 @@ button:disabled { opacity:.5; }
 #lugar-forma-despesa label, #lugar-forma-despesa:empty + .linha label { margin-top:0; }
 #btn-apagar-lancamento { margin-top:1rem; font-size:.92rem; }
 
-/* Fim da corrida: as tres acoes afastadas umas das outras (toque com o carro
-   andando), e os dois botoes de texto com alvo de dedo. */
+/* Fim da corrida: as acoes afastadas umas das outras (toque com o carro
+   andando), e os dois botoes de texto com alvo de dedo. "Voltar para a
+   corrida" fica tao longe do "Não lançar" quanto os outros: os dois tem a
+   mesma cara, e o toque que errasse por cima apagava a corrida de vez. */
 #corrida-fim .fim-lancar { margin-top:1rem; }
 .fim-texto { display:block; width:100%; margin-top:.9rem; font-size:.92rem; }
-#btn-retomar.fim-texto { margin-top:.35rem; }

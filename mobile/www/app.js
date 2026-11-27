@@ -2665,7 +2665,7 @@ function encerrarSessao() {
   $('vitrine-inicio').hidden = true; $('vitrine-recibo').hidden = true; $('vitrine-recibo-atalho').hidden = true;
   // O Caixa da tela era de quem saiu: o proximo abre no dia de hoje, sem o
   // lancamento aberto nem a confirmacao da corrida do outro.
-  diaDoCaixa = ''; mesDoCaixa = ''; lancamentoAberto = null; confirmacaoDoInicio = null;
+  diaDoCaixa = ''; mesDoCaixa = ''; ultimoDiaDoCaixa = ''; lancamentoAberto = null; confirmacaoDoInicio = null;
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -3295,6 +3295,7 @@ $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); ab
 
 let diaDoCaixa = '';             // o dia aberto no Caixa ('' = hoje)
 let mesDoCaixa = '';             // o mes aberto na tela do mes
+let ultimoDiaDoCaixa = '';       // ate onde as setas vao, da ultima leitura (ver diaFinalDoCaixa)
 // Cada desenho ganha um numero e so o ultimo escreve: dois toques rapidos na
 // seta leem o banco duas vezes, e a leitura do dia anterior podia chegar
 // depois e pintar a tela com o dia errado.
@@ -3310,7 +3311,7 @@ const FORMAS_DE_PAGAMENTO = ['Pix', 'Dinheiro', 'Cartão', 'Aplicativo'];
 // O codigo que criarLancamento/editarLancamento recusam, em palavras.
 const MENSAGENS_DO_CAIXA = {
   valor_invalido: 'Confira o valor.',
-  data_invalida: 'Confira a data: vale de 2000 até amanhã.',
+  data_invalida: 'Confira a data: vale de 2000 até hoje.',
   tipo_invalido: 'Escolha receita ou despesa.',
   categoria_invalida: 'Escolha a categoria.',
   campo_longo: 'A observação passou de 120 letras.',
@@ -3441,19 +3442,33 @@ function abrirCaixa(dia) {
   });
 }
 
+// O ultimo dia que o Caixa mostra: hoje, ou o do lancamento com data
+// adiantada. O formulario vai so ate hoje, mas o recibo nao tem esse limite, e
+// o recibo emitido com a data errada para a frente vira receita naquele dia.
+// Com as telas presas em hoje, ela ficava fora de todas (o dia, a seta, o mes,
+// e a linha dela na lista do mes abria hoje), sem como corrigir nem apagar.
+function diaFinalDoCaixa(lista, hoje) {
+  let fim = hoje;
+  for (const l of lista) if (l && !l.apagado && Caixa.dataReal(l.data) && l.data > fim) fim = l.data;
+  return fim;
+}
+
 async function desenharCaixa() {
   const vez = ++desenhosDoCaixa;
   const hoje = Caixa.diaLocal();
-  // O app aberto de um dia para o outro: o "hoje" guardado virou ontem, e a
-  // seta da direita nao pode levar a um dia que ainda nao chegou.
-  const dia = diaDoCaixa && diaDoCaixa <= hoje ? diaDoCaixa : hoje;
-  diaDoCaixa = dia;
-  $('caixa-dia-titulo').textContent = tituloDoDia(dia, hoje);
-  $('btn-dia-seguinte').disabled = dia >= hoje;
-  $('btn-dia-anterior').disabled = dia <= '2000-01-01';
   let lista = [];
   try { lista = await listarLancamentos(); } catch { /* banco local com defeito: o dia aparece vazio */ }
   if (vez !== desenhosDoCaixa) return;
+  // O app aberto de um dia para o outro: o "hoje" guardado virou ontem, e a
+  // seta da direita nao pode levar a um dia que ainda nao chegou (a nao ser o
+  // de um lancamento com data adiantada).
+  const fim = diaFinalDoCaixa(lista, hoje);
+  ultimoDiaDoCaixa = fim;
+  const dia = diaDoCaixa && diaDoCaixa <= fim ? diaDoCaixa : hoje;
+  diaDoCaixa = dia;
+  $('caixa-dia-titulo').textContent = tituloDoDia(dia, hoje);
+  $('btn-dia-seguinte').disabled = dia >= fim;
+  $('btn-dia-anterior').disabled = dia <= '2000-01-01';
   const m = moedaDoCaixa();
   const mes = Caixa.mesDe(dia);
   const mesAtual = Caixa.mesDe(hoje);
@@ -3591,7 +3606,7 @@ $('form-meta').addEventListener('submit', (ev) => {
 function mudarDiaDoCaixa(dias) {
   const hoje = Caixa.diaLocal();
   const dia = Caixa.somarDias(diaDoCaixa || hoje, dias);
-  if (dia > hoje || dia < '2000-01-01') return;
+  if (dia > (ultimoDiaDoCaixa > hoje ? ultimoDiaDoCaixa : hoje) || dia < '2000-01-01') return;
   vibrar('LIGHT');
   diaDoCaixa = dia;
   fecharFormularioDaMeta();
@@ -3636,14 +3651,18 @@ async function desenharMesDoCaixa() {
   const vez = ++desenhosDoMes;
   const hoje = Caixa.diaLocal();
   const mesAtual = Caixa.mesDe(hoje);
-  const mes = mesDoCaixa && mesDoCaixa <= mesAtual ? mesDoCaixa : mesAtual;
-  mesDoCaixa = mes;
-  $('mes-titulo').textContent = nomeDoMesComMaiuscula(mes);
-  $('btn-mes-seguinte').disabled = mes >= mesAtual;
-  $('btn-mes-anterior').disabled = mes <= '2000-01';
   let lista = [];
   try { lista = await listarLancamentos(); } catch { /* banco local com defeito: o mes aparece vazio */ }
   if (vez !== desenhosDoMes) return;
+  // Ate o mes atual, ou o do lancamento com data adiantada (ver diaFinalDoCaixa).
+  const fim = diaFinalDoCaixa(lista, hoje);
+  ultimoDiaDoCaixa = fim;
+  const mesFinal = Caixa.mesDe(fim);
+  const mes = mesDoCaixa && mesDoCaixa <= mesFinal ? mesDoCaixa : mesAtual;
+  mesDoCaixa = mes;
+  $('mes-titulo').textContent = nomeDoMesComMaiuscula(mes);
+  $('btn-mes-seguinte').disabled = mes >= mesFinal;
+  $('btn-mes-anterior').disabled = mes <= '2000-01';
   const m = moedaDoCaixa();
   const r = Caixa.resumoDoMes(lista, mes, m.codigo);
   const liberado = Caixa.mesLiberado(mes, mesAtual, ehPro());
@@ -3703,10 +3722,11 @@ function linhaDeDia(d, hoje, m) {
 }
 
 function mudarMesDoCaixa(passo) {
-  const mesAtual = Caixa.mesDe(Caixa.diaLocal());
+  const hoje = Caixa.diaLocal();
+  const mesAtual = Caixa.mesDe(hoje);
   const atual = mesDoCaixa || mesAtual;
   const mes = passo < 0 ? Caixa.mesAnterior(atual) : Caixa.mesSeguinte(atual);
-  if (mes > mesAtual || mes < '2000-01') return;
+  if (mes > Caixa.mesDe(ultimoDiaDoCaixa > hoje ? ultimoDiaDoCaixa : hoje) || mes < '2000-01') return;
   vibrar('LIGHT');
   mesDoCaixa = mes;
   desenharMesDoCaixa();
@@ -3803,7 +3823,7 @@ function prepararLancamento() {
   $('l-mais').open = false;
   ['btn-l-recibo', 'l-dica-recibo', 'l-rota', 'l-recusado'].forEach((id) => { $(id).hidden = true; });
   travarTipo(lancamentoAberto);
-  $('l-data').max = Caixa.somarDias(Caixa.diaLocal(), 1);
+  $('l-data').max = Caixa.diaLocal();   // ate hoje: ver Caixa.erroDoLancamento
 }
 
 // Novo lancamento, com o tipo do botao. O foco vai para o valor no mesmo
@@ -3963,7 +3983,7 @@ $('form-lancamento').addEventListener('submit', async (ev) => {
     if (telaBase === 'tela-caixa') diaDoCaixa = salvo.data;
     voltarParaBase();
   } catch (e) {
-    // A data digitada pode passar da conferencia acima (amanha + 1, antes de 2000).
+    // A data digitada pode passar da conferencia acima (depois de hoje, antes de 2000).
     const codigo = e && e.codigo;
     const onde = {
       valor_invalido: { campo: $('l-valor') },

@@ -1901,6 +1901,34 @@ window.addEventListener('load', async () => {
         ok('tocar num dia da lista abre o dia', !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Hoje, '));
       }
 
+      // ── Data adiante ──
+      // O formulario vai so ate hoje: amanha sumia do dia que ele olhava.
+      await abrirCaixa();
+      clicar('btn-caixa-despesa'); await espera(100);
+      ok('a data do lancamento vai ate hoje (o calendario nao oferece amanha)', q('l-data').max === hoje);
+      q('l-valor').value = '10,00'; categoria('pedagio').click(); q('l-data').value = Caixa.somarDias(hoje, 1);
+      q('form-lancamento').requestSubmit(); await espera(300);
+      ok('lancamento com data de amanha nao e guardado, e a frase diz ate quando vale', textoDe('erro-lancamento') === 'Confira a data: vale de 2000 até hoje.'
+         && !q('tela-lancamento').hidden && !(await listarLancamentos()).some((x) => x.data > hoje), textoDe('erro-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+      // O recibo nao tem esse limite: a receita do recibo com a data errada para
+      // a frente fica no dia dela, e o Caixa vai ate la (antes, nenhuma tela chegava).
+      const adiante = Caixa.somarDias(hoje, 3);
+      await guardarVarios([lanc('l-adiante', { tipo: 'receita', categoria: 'corrida', centavos: 4700, data: adiante, hora: '09:00', forma: 'Pix' })]);
+      await abrirCaixa();
+      ok('com um lancamento de data adiante, a seta da direita de hoje liga', !q('btn-dia-seguinte').disabled);
+      await abrirMesDoCaixa(Caixa.mesDe(adiante));
+      const linhaAdiante = q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${adiante}"]`);
+      ok('o mes do lancamento adiante abre, com a linha do dia dele', textoDe('mes-titulo') === nomeDoMesComMaiuscula(Caixa.mesDe(adiante)) && !!linhaAdiante
+         && q('btn-mes-seguinte').disabled, textoDe('mes-titulo'));
+      if (linhaAdiante) linhaAdiante.click();
+      await espera(300);
+      ok('a linha do dia no mes abre aquele dia (e nao hoje), com o lancamento, e para ali', !q('tela-caixa').hidden
+         && textoDe('caixa-dia-titulo') === tituloDoDia(adiante, hoje) && !!itemDa('l-adiante') && q('btn-dia-seguinte').disabled, textoDe('caixa-dia-titulo'));
+      await apagarLancamento('l-adiante');
+      await abrirCaixa();
+      ok('sem lancamento adiante, a seta da direita de hoje desliga de novo', q('btn-dia-seguinte').disabled);
+
       // ── Gratis e Pro ──
       const diaPassado = `${mesPassado}-15`;
       await guardarVarios([lanc('l-passado1', { tipo: 'receita', categoria: 'corrida', centavos: 420000, data: diaPassado, hora: '09:00', forma: 'Pix' }),

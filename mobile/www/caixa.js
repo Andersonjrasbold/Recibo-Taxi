@@ -364,13 +364,16 @@
   // O que o servidor recusaria (POST /api/lancamentos), conferido antes de
   // guardar: recusado la, o lancamento ficaria sem copia ate alguem editar.
   // So os campos que o motorista preenche; id, origem, recibo e versao sao do
-  // app. A data vai ate amanha no relogio do aparelho: o servidor aceita ate
-  // hoje + 2 dias no de Brasilia, e nenhum fuso fica mais de um dia a frente dele.
+  // app. A data vai ate hoje no relogio do aparelho: nada do que ele lanca
+  // acontece amanha (o "Só lançar" usa a saida da corrida), e a data adiante,
+  // um toque errado no calendario, tirava o lancamento do dia que ele olhava.
+  // O servidor aceita ate hoje + 2 dias no fuso de Brasilia, folga que cobre
+  // qualquer fuso e o relogio um pouco adiantado.
   function erroDoLancamento(l, { hoje = diaLocal() } = {}) {
     if (!l || !TIPOS.includes(l.tipo)) return 'tipo_invalido';
     if (!/^[a-z][a-z0-9_]{0,29}$/.test(String(l.categoria || ''))) return 'categoria_invalida';
     if (!Number.isInteger(l.centavos) || l.centavos < 1 || l.centavos > tetoEmCentavos(l.moeda)) return 'valor_invalido';
-    if (!dataReal(l.data) || l.data < '2000-01-01' || l.data > somarDias(hoje, 1)) return 'data_invalida';
+    if (!dataReal(l.data) || l.data < '2000-01-01' || l.data > hoje) return 'data_invalida';
     if (String(l.forma || '').length > 40 || String(l.obs || '').trim().length > 120) return 'campo_longo';
     if (l.km != null && kmDe(l.km) === null) return 'km_invalido';
     if (l.litros != null && litrosDe(l.litros) === null) return 'litros_invalido';

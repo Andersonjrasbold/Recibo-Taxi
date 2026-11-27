@@ -227,9 +227,10 @@ try {
     [erro({ centavos: 0 }), erro({ centavos: -1 }), erro({ centavos: 1.5 }), erro({ centavos: '4500' }), erro({ centavos: true }),
       erro({ centavos: 10000000 }), erro({ centavos: 9999999 }), erro({ moeda: 'CLP', centavos: 99999999 }), erro({ moeda: 'CLP', centavos: 100000000 })],
     ['valor_invalido', 'valor_invalido', 'valor_invalido', 'valor_invalido', 'valor_invalido', 'valor_invalido', '', '', 'valor_invalido']);
-  igual('data: real, de 2000 ate amanha',
-    [erro({ data: '2026-02-31' }), erro({ data: '1999-12-31' }), erro({ data: '2000-01-01' }), erro({ data: '2026-11-27' }), erro({ data: '2026-11-28' }), erro({ data: '' })],
-    ['data_invalida', 'data_invalida', '', '', 'data_invalida', 'data_invalida']);
+  igual('data: real, de 2000 ate hoje (amanha ja nao: o Caixa abre no dia de hoje)',
+    [erro({ data: '2026-02-31' }), erro({ data: '1999-12-31' }), erro({ data: '2000-01-01' }), erro({ data: '2026-11-26' }), erro({ data: '2026-11-27' }),
+      erro({ data: '2026-11-28' }), erro({ data: '' })],
+    ['data_invalida', 'data_invalida', '', '', 'data_invalida', 'data_invalida', 'data_invalida']);
   igual('forma ate 40 e observacao ate 120 (sem contar espaco nas pontas)',
     [erro({ forma: 'x'.repeat(41) }), erro({ forma: 'x'.repeat(40) }), erro({ obs: 'x'.repeat(121) }), erro({ obs: ` ${'x'.repeat(120)} ` })],
     ['campo_longo', '', 'campo_longo', '']);

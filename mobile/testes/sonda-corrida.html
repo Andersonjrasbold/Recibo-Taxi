@@ -2114,6 +2114,107 @@ window.addEventListener('load', async () => {
       await atualizarSessao(); await espera(400);
       ok('de volta ao Gratis, o dia do mes anterior trava de novo', visivel('caixa-bloqueio') && !visivel('caixa-dia'));
 
+      // ── Meia-noite e virada do mes (Gratis, relogio adiantado) ──
+      // O app e o caixa.js leem o Date global a cada conta: trocar o window.Date
+      // por um adiantado muda o "hoje" de tudo. O do teste e o ultimo dia deste
+      // mes as 23h59 e, depois, o dia 1 do seguinte. Volta ao de verdade no finally.
+      const DataDeVerdade = Date;
+      const relogioEm = (quando) => {
+        const desvio = new DataDeVerdade(quando).getTime() - DataDeVerdade.now();
+        window.Date = class extends DataDeVerdade {
+          constructor(...a) { if (a.length) super(...a); else super(DataDeVerdade.now() + desvio); }
+          static now() { return DataDeVerdade.now() + desvio; }
+        };
+      };
+      const diaUm = `${Caixa.mesSeguinte(mesAtual)}-01`;
+      const fimDoMes = Caixa.somarDias(diaUm, -1);
+      const doValor = async (centavos) => (await listarLancamentos()).find((x) => x.centavos === centavos && !x.apagado) || null;
+      const dataNaTela = () => `${q('l-data').value} ${q('l-data').min}..${q('l-data').max}`;
+      try {
+        // Tela acesa: o Caixa aberto em hoje as 23h59, e o "+ Despesa" tocado
+        // depois da meia-noite (antes, ia para o dia que passou, sem hora).
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:00:10`);
+        clicar('btn-caixa-despesa'); await espera(100);
+        ok('Caixa aberto em hoje antes da meia-noite: o "+ Despesa" de depois dela vem no dia novo, com a hora de agora',
+           q('l-data').value === diaUm && /^00:0\d$/.test(q('l-hora').value) && dataNaTela() === `${diaUm} ${diaUm}..${diaUm}`,
+           `${dataNaTela()} ${q('l-hora').value}`);
+        clicar('btn-fechar-lancamento'); await espera(300);
+        ok('e o Cancelar volta ao Caixa no dia novo, como "Hoje", sem o bloqueio do Pro', !q('tela-caixa').hidden
+           && textoDe('caixa-dia-titulo') === tituloDoDia(diaUm, diaUm) && visivel('caixa-dia'), textoDe('caixa-dia-titulo'));
+        // Na tela que ficou desenhada de antes da meia-noite, o "‹" anda a
+        // partir do dia mostrado, e nao do hoje novo (que so mudava o titulo).
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:00:10`);
+        clicar('btn-dia-anterior'); await espera(300);
+        ok('na tela desenhada antes da meia-noite, o "‹" vai ao dia antes do mostrado (e nao ao proprio, renomeado "Ontem")',
+           textoDe('caixa-dia-titulo') === tituloDoDia(Caixa.somarDias(fimDoMes, -1), diaUm), textoDe('caixa-dia-titulo'));
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:00:10`);
+        clicar('btn-abrir-mes'); await espera(300);
+        ok('e o cartao do mes, tocado nessa tela, abre o mes que ele mostra', !q('tela-caixa-mes').hidden
+           && textoDe('mes-titulo') === nomeDoMesComMaiuscula(mesAtual), textoDe('mes-titulo'));
+        clicar('btn-fechar-mes'); await espera(300);
+
+        // O formulario aberto antes da meia-noite do ultimo dia do mes e o
+        // Salvar depois dela: no Gratis, o dia 30 ja e do mes travado.
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        clicar('btn-caixa-despesa'); await espera(100);
+        const aoAbrir = dataNaTela();
+        q('l-valor').value = '23,00'; categoria('estacionamento').click();
+        relogioEm(`${diaUm}T00:00:10`);
+        q('form-lancamento').requestSubmit(); await espera(300);
+        const mesNovo = Caixa.nomeDoMes(Caixa.mesDe(diaUm)).replace(/ de \d{4}$/, '');
+        ok('Gratis, formulario aberto na virada do mes: o Salvar explica, e o calendario passa a oferecer o dia 1 do mes novo',
+           aoAbrir === `${fimDoMes} ${mesAtual}-01..${fimDoMes}` && q('l-mais').open && !(await doValor(2300))
+           && textoDe('erro-lancamento') === `No plano Grátis, o caixa mostra só este mês: escolha um dia de ${mesNovo}.`
+           && q('l-data').min === diaUm && q('l-data').max === diaUm, `${aoAbrir} | ${textoDe('erro-lancamento')} | ${dataNaTela()}`);
+        q('l-data').value = q('l-data').max; q('l-data').dispatchEvent(new Event('change'));
+        q('form-lancamento').requestSubmit(); await espera(400);
+        const naVirada = await doValor(2300);
+        ok('e com o dia que o calendario oferece, o Salvar guarda nele e volta ao Caixa em "Hoje"', !!naVirada && naVirada.data === diaUm
+           && !q('tela-caixa').hidden && textoDe('caixa-dia-titulo') === tituloDoDia(diaUm, diaUm) && visivel('caixa-dia'),
+           `${JSON.stringify(naVirada)} ${textoDe('caixa-dia-titulo')}`);
+        if (naVirada) await apagarLancamento(naVirada.id);
+
+        // Tocar na data com o formulario aberto desde antes da meia-noite: o
+        // calendario do sistema le o min e o max nessa hora.
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        clicar('btn-caixa-despesa'); await espera(100);
+        relogioEm(`${diaUm}T00:00:10`);
+        q('l-mais').open = true; await espera(50);
+        clicar('l-data');
+        ok('tocar na data com o formulario aberto de um dia para o outro: o calendario vai ate o hoje novo, e a data escolhida fica',
+           dataNaTela() === `${fimDoMes} ${diaUm}..${diaUm}`, dataNaTela());
+        clicar('btn-fechar-lancamento'); await espera(300);
+
+        // Bloqueou as 23h50 com o Caixa em hoje e voltou depois da meia-noite,
+        // com rede: a sessao relida redesenha o Caixa (atualizarVitrines).
+        relogioEm(`${fimDoMes}T23:50:00`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:10:00`);
+        redesenharCaixaAberto(); await espera(300);
+        ok('Gratis, Caixa em hoje redesenhado depois da virada do mes: e o hoje novo, e nao o dia 30 travado como "Ontem"',
+           textoDe('caixa-dia-titulo') === tituloDoDia(diaUm, diaUm) && visivel('caixa-dia') && !visivel('caixa-bloqueio'), textoDe('caixa-dia-titulo'));
+        clicar('btn-caixa-despesa'); await espera(100);
+        q('l-valor').value = '24,00'; categoria('estacionamento').click();
+        q('form-lancamento').requestSubmit(); await espera(400);
+        const depoisDaVolta = await doValor(2400);
+        irParaInicio(); await espera(300);
+        ok('e o lancamento vai para o dia novo, com a hora, e o cartao do inicio o conta', !!depoisDaVolta && depoisDaVolta.data === diaUm
+           && depoisDaVolta.hora === '00:10' && textoDe('caixa-inicio-valor') === '−R$ 24,00',
+           `${JSON.stringify(depoisDaVolta)} ${textoDe('caixa-inicio-valor')}`);
+        if (depoisDaVolta) await apagarLancamento(depoisDaVolta.id);
+      } finally {
+        window.Date = DataDeVerdade;
+      }
+      irParaInicio(); await espera(300);
+
       // ── Fim da corrida ──
       Guardado.set('tarifa', tarifa);
       // A saida no dia de hoje: rodado logo depois da meia-noite, 31 min antes

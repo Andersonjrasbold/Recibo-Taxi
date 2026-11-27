@@ -2689,7 +2689,7 @@ function encerrarSessao() {
   $('vitrine-inicio').hidden = true; $('vitrine-recibo').hidden = true; $('vitrine-recibo-atalho').hidden = true;
   // O Caixa da tela era de quem saiu: o proximo abre no dia de hoje, sem o
   // lancamento aberto nem a confirmacao da corrida do outro.
-  diaDoCaixa = ''; mesDoCaixa = ''; ultimoDiaDoCaixa = ''; lancamentoAberto = null; confirmacaoDoInicio = null;
+  diaDoCaixa = ''; diaDesenhado = ''; mesDoCaixa = ''; ultimoDiaDoCaixa = ''; lancamentoAberto = null; confirmacaoDoInicio = null;
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -3318,6 +3318,7 @@ $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); ab
 // cru no innerHTML: a observacao "<img onerror=...>" viraria codigo rodando.
 
 let diaDoCaixa = '';             // o dia aberto no Caixa ('' = hoje)
+let diaDesenhado = '';           // o dia que a tela mostra (ver mudarDiaDoCaixa)
 let mesDoCaixa = '';             // o mes aberto na tela do mes
 let ultimoDiaDoCaixa = '';       // ate onde as setas vao, da ultima leitura (ver diaFinalDoCaixa)
 // Cada desenho ganha um numero e so o ultimo escreve: dois toques rapidos na
@@ -3462,8 +3463,13 @@ $('btn-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); 
 // Mostra na hora e desenha em seguida: a leitura do banco leva milissegundos,
 // e o toque nao espera por ela. Ao abrir, os recibos que o caixa ainda nao
 // tem viram receitas (o recibo recusado por cota tambem).
+// Hoje fica guardado como '' (o hoje do relogio), e nao com a data: o Caixa
+// aberto as 23h59 e deixado na tela (ou no fundo) seguia no dia que passou,
+// e o "+ Despesa" de depois da meia-noite lancava nele, sem hora e calado (no
+// Gratis, na virada do mes, o Salvar ainda era recusado).
 function abrirCaixa(dia) {
-  diaDoCaixa = dia || Caixa.diaLocal();
+  diaDoCaixa = dia && dia !== Caixa.diaLocal() ? dia : '';
+  diaDesenhado = '';
   fecharFormularioDaMeta();
   mostrar('tela-caixa');
   return desenharCaixa().then(async () => {
@@ -3488,13 +3494,14 @@ async function desenharCaixa() {
   let lista = [];
   try { lista = await listarLancamentos(); } catch { /* banco local com defeito: o dia aparece vazio */ }
   if (vez !== desenhosDoCaixa) return;
-  // O app aberto de um dia para o outro: o "hoje" guardado virou ontem, e a
-  // seta da direita nao pode levar a um dia que ainda nao chegou (a nao ser o
-  // de um lancamento com data adiantada).
+  // A seta da direita nao leva a um dia que ainda nao chegou (a nao ser o de
+  // um lancamento com data adiantada), pelo relogio de cada desenho: o app
+  // aberto de um dia para o outro redesenha o dia escolhido como "Ontem".
   const fim = diaFinalDoCaixa(lista, hoje);
   ultimoDiaDoCaixa = fim;
   const dia = diaDoCaixa && diaDoCaixa <= fim ? diaDoCaixa : hoje;
-  diaDoCaixa = dia;
+  diaDoCaixa = dia === hoje ? '' : dia;   // hoje segue o relogio (ver abrirCaixa)
+  diaDesenhado = dia;
   $('caixa-dia-titulo').textContent = tituloDoDia(dia, hoje);
   $('btn-dia-seguinte').disabled = dia >= fim;
   $('btn-dia-anterior').disabled = dia <= '2000-01-01';
@@ -3632,12 +3639,17 @@ $('form-meta').addEventListener('submit', (ev) => {
   desenharCaixa();
 });
 
+// Em hoje (''), a partir do dia que esta na tela, e nao do hoje do relogio:
+// com o Caixa desenhado antes da meia-noite, o "‹" levava ao proprio dia
+// mostrado (so o titulo virava "Ontem"), e a seta parecia nao andar. Fora
+// de hoje, o dia escolhido: dois toques rapidos andam dois dias, mesmo com a
+// leitura do primeiro ainda a caminho.
 function mudarDiaDoCaixa(dias) {
   const hoje = Caixa.diaLocal();
-  const dia = Caixa.somarDias(diaDoCaixa || hoje, dias);
+  const dia = Caixa.somarDias(diaDoCaixa || diaDesenhado || hoje, dias);
   if (dia > (ultimoDiaDoCaixa > hoje ? ultimoDiaDoCaixa : hoje) || dia < '2000-01-01') return;
   vibrar('LIGHT');
-  diaDoCaixa = dia;
+  diaDoCaixa = dia === hoje ? '' : dia;
   fecharFormularioDaMeta();
   desenharCaixa();
 }
@@ -3646,8 +3658,9 @@ $('btn-dia-anterior').addEventListener('click', () => mudarDiaDoCaixa(-1));
 $('btn-dia-seguinte').addEventListener('click', () => mudarDiaDoCaixa(1));
 $('btn-fechar-caixa').addEventListener('click', () => irParaInicio());
 $('btn-abrir-mes').addEventListener('click', () => { vibrar('LIGHT'); abrirMesDoCaixa(); });
-$('btn-caixa-despesa').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'despesa', dia: diaDoCaixa }); });
-$('btn-caixa-receita').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'receita', dia: diaDoCaixa }); });
+// Em hoje (''), o lancamento abre no dia do toque, com a hora de agora.
+$('btn-caixa-despesa').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'despesa', dia: diaDoCaixa || undefined }); });
+$('btn-caixa-receita').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'receita', dia: diaDoCaixa || undefined }); });
 $('caixa-lista').addEventListener('click', (ev) => {
   const item = ev.target.closest('.caixa-item[data-id]');
   if (!item) return;
@@ -3670,8 +3683,10 @@ function redesenharCaixaAberto() {
 }
 
 // ── Caixa do mes ───────────────────────────────────────────────────────────
+// Sem mes, o do dia que esta na tela (o cartao tocado diz o nome dele), como
+// as setas (ver mudarDiaDoCaixa).
 function abrirMesDoCaixa(mes) {
-  mesDoCaixa = mes || Caixa.mesDe(diaDoCaixa || Caixa.diaLocal());
+  mesDoCaixa = mes || Caixa.mesDe(diaDoCaixa || diaDesenhado || Caixa.diaLocal());
   mostrar('tela-caixa-mes');
   return desenharMesDoCaixa();
 }
@@ -3853,10 +3868,17 @@ function prepararLancamento() {
   $('l-mais').open = false;
   ['btn-l-recibo', 'l-dica-recibo', 'l-rota', 'l-recusado'].forEach((id) => { $(id).hidden = true; });
   travarTipo(lancamentoAberto);
-  // Ate hoje (ver Caixa.erroDoLancamento) e, no Gratis, so este mes: o mes
-  // anterior e do Pro, e o lancamento posto la sumia no bloqueio, sem como
-  // corrigir nem apagar. E a regra que ja esconde os botoes de lancar no dia
-  // bloqueado; o submit confere de novo (o seletor do sistema pode deixar passar).
+  limitarDataDoLancamento();
+}
+
+// Ate hoje (ver Caixa.erroDoLancamento) e, no Gratis, so este mes: o mes
+// anterior e do Pro, e o lancamento posto la sumia no bloqueio, sem como
+// corrigir nem apagar. E a regra que ja esconde os botoes de lancar no dia
+// bloqueado; o submit confere de novo (o seletor do sistema pode deixar passar).
+// Sempre pelo relogio de agora, e nao so ao abrir: o formulario aberto antes
+// da meia-noite do dia 30 ficava com o calendario preso em novembro, e no
+// Gratis o Salvar pedia um dia de dezembro que o calendario nao oferecia.
+function limitarDataDoLancamento() {
   const hoje = Caixa.diaLocal();
   $('l-data').max = hoje;
   $('l-data').min = ehPro() ? '2000-01-01' : `${Caixa.mesDe(hoje)}-01`;
@@ -3943,6 +3965,10 @@ $('l-categorias').addEventListener('click', (ev) => {
 $('l-data').addEventListener('change', () => {
   if (horaAutomatica) $('l-hora').value = $('l-data').value === Caixa.diaLocal() ? Caixa.horaLocal() : '';
 });
+// O calendario do sistema le o min e o max quando abre (no Android, logo
+// depois do toque): o formulario que ficou aberto de um dia para o outro
+// passa a oferecer o hoje de agora. A data escolhida fica como esta.
+['focus', 'click'].forEach((ev) => $('l-data').addEventListener(ev, limitarDataDoLancamento));
 $('l-hora').addEventListener('input', () => { horaAutomatica = false; });
 $('btn-fechar-lancamento').addEventListener('click', () => { desarmarApagar(); voltarParaBase(); });
 
@@ -3979,6 +4005,10 @@ $('form-lancamento').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   if (salvandoLancamento) return;
   $('erro-lancamento').hidden = true;
+  // Com o relogio de agora (ver limitarDataDoLancamento): passada a meia-noite
+  // do ultimo dia do mes, o erro do Gratis abaixo abre a data com o calendario
+  // ja no mes novo, onde ha dia para escolher.
+  limitarDataDoLancamento();
   const editando = lancamentoAberto;
   const moeda = editando ? editando.moeda : moedaDoCaixa().codigo;
   const casas = Caixa.casasDaMoeda(moeda);
@@ -4024,7 +4054,7 @@ $('form-lancamento').addEventListener('submit', async (ev) => {
     vibrar('LIGHT');
     lancamentoAberto = null;
     // O Caixa volta no dia do lancamento: se ele mudou a data, ve onde foi parar.
-    if (telaBase === 'tela-caixa') diaDoCaixa = salvo.data;
+    if (telaBase === 'tela-caixa') diaDoCaixa = salvo.data === Caixa.diaLocal() ? '' : salvo.data;
     voltarParaBase();
   } catch (e) {
     // A data digitada pode passar da conferencia acima (depois de hoje, antes de 2000).

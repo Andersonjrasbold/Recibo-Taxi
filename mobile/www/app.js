@@ -2691,6 +2691,11 @@ function encerrarSessao() {
   // O Caixa da tela era de quem saiu: o proximo abre no dia de hoje, sem o
   // lancamento aberto nem a confirmacao da corrida do outro.
   diaDoCaixa = ''; diaDesenhado = ''; mesDoCaixa = ''; ultimoDiaDoCaixa = ''; lancamentoAberto = null; confirmacaoDoInicio = null;
+  // Os valores voltam a se cobrir, nas telas escondidas tambem (quem entrar,
+  // ou ele mesmo de novo, abre o olho), e as leituras guardadas para o olho
+  // eram de quem saiu.
+  aplicarOlho(false);
+  cartaoDoInicio = null; caixaNaTela = null; mesNaTela = null;
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -3356,12 +3361,31 @@ function moedaDoCaixa() {
   return { codigo: m.codigo, simbolo: m.simbolo, casas: Caixa.casasDaMoeda(m.codigo) };
 }
 
+// Os valores do Caixa abrem cobertos (pedido do Anderson, 2026-11-27): o
+// motorista abre o app com o passageiro no carro, ou passa o celular a
+// alguem, e quanto ele ganhou no dia nao e da conta de ninguem. O olho mostra
+// os numeros. Um estado so para o cartao do inicio e as duas telas do Caixa,
+// e nao guardado: toda abertura do app comeca coberta, e a ida ao fundo (o
+// Waze da corrida, o WhatsApp do recibo, a tela bloqueada) e o Sair cobrem de
+// novo (ver aplicarOlho). Os formularios (o lancamento editado, a meta)
+// mostram o valor de verdade: editar e ato dele.
+let valoresVisiveis = false;
+// A mesma para qualquer valor, e nunca tirada do numero: com o tamanho dele,
+// "R$ ••••••" diria que o dia passou de mil.
+const MASCARA = '••••';
+
 const dinheiro = (centavos, m = moedaDoCaixa()) => Caixa.formatar(centavos, m.casas, m.simbolo);
+// Todo valor em dinheiro das telas do Caixa passa por aqui: o numero, ou
+// "R$ ••••". Coberto, sem o sinal: o "−" diria que o dia fechou no vermelho.
+const valorNaTela = (centavos, m) => (valoresVisiveis ? dinheiro(centavos, m) : `${m.simbolo} ${MASCARA}`);
 const exemploDoValor = (casas) => (0).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
 const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
-const corDoValor = (centavos) => (centavos > 0 ? 'valor-receita' : centavos < 0 ? 'valor-despesa' : '');
-// "+ R$ 398,40" e "− R$ 86,00"; o zero vai sem sinal.
-const comSinal = (tipo, centavos, m) => `${centavos ? `${tipo === 'despesa' ? '−' : '+'} ` : ''}${dinheiro(centavos, m)}`;
+// A cor do liquido. Coberto, nenhuma: o verde ou o coral entregaria o sinal.
+const corDoValor = (centavos) => (!valoresVisiveis ? '' : centavos > 0 ? 'valor-receita' : centavos < 0 ? 'valor-despesa' : '');
+// "+ R$ 398,40" e "− R$ 86,00" (coberto, "+ R$ ••••"); o zero vai sem sinal.
+// O sinal aqui e o do tipo, e nao o do numero, e o zero ja esta no
+// "0 lançamentos" ao lado: coberto, nada disso diz quanto foi.
+const comSinal = (tipo, centavos, m) => `${centavos ? `${tipo === 'despesa' ? '−' : '+'} ` : ''}${valorNaTela(centavos, m)}`;
 const ultimaForma = () => (FORMAS_DE_PAGAMENTO.includes(Guardado.get('caixa_forma')) ? Guardado.get('caixa_forma') : 'Pix');
 
 function nomeDoMesComMaiuscula(mes) {
@@ -3410,7 +3434,57 @@ function notaDeOutrasMoedas(nota, n) {
   nota.textContent = n ? `${plural(n, 'lançamento', 'lançamentos')} em outra moeda ${n === 1 ? 'fica' : 'ficam'} fora desta conta.` : '';
 }
 
+// ── Olho ───────────────────────────────────────────────────────────────────
+// Cada tela guarda a ultima leitura (cartaoDoInicio, caixaNaTela, mesNaTela)
+// e se pinta a partir dela numa funcao sem espera (pintarCaixaDoInicio,
+// pintarCaixa, pintarMesDoCaixa): o olho redesenha na hora, sem ler o banco.
+//
+// O desenho do olho e o do Lucide (licenca ISC): aberto com os valores
+// cobertos (o toque mostra), riscado com eles a mostra (o toque cobre).
+const svgDoOlho = (tracos) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+  + `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${tracos}</svg>`;
+const OLHO_ABERTO = svgDoOlho('<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/>'
+  + '<circle cx="12" cy="12" r="3"/>');
+const OLHO_RISCADO = svgDoOlho('<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/>'
+  + '<path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/>'
+  + '<path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/>'
+  + '<path d="m2 2 20 20"/>');
+
+function desenharOlhos() {
+  document.querySelectorAll('.olho').forEach((botao) => {
+    botao.innerHTML = valoresVisiveis ? OLHO_RISCADO : OLHO_ABERTO;
+    botao.setAttribute('aria-label', valoresVisiveis ? 'Esconder valores' : 'Mostrar valores');
+  });
+}
+
+// Troca o estado e repinta, na mesma hora, o cartao e as duas telas do
+// Caixa, abertos ou nao: o que ficou desenhado numa tela escondida tambem se
+// cobre. Nada de esperar o banco aqui: com uma leitura no meio, o numero
+// ficaria na tela ate ela terminar, e e nesse meio-tempo que o sistema tira
+// a foto do app para a lista de apps abertos.
+function aplicarOlho(visiveis) {
+  valoresVisiveis = !!visiveis;
+  desenharOlhos();
+  pintarCaixaDoInicio();
+  pintarCaixa();
+  pintarMesDoCaixa();
+}
+
+const cobrirValores = () => { if (valoresVisiveis) aplicarOlho(false); };
+
+document.querySelectorAll('.olho').forEach((botao) => botao.addEventListener('click', () => {
+  vibrar('LIGHT');
+  aplicarOlho(!valoresVisiveis);
+}));
+// Ao ir para o fundo: o 'pause' do Capacitor e, no WebView, a pagina que fica
+// escondida. O que chegar primeiro cobre; o outro nao acha nada a cobrir.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') cobrirValores(); });
+if (P().App) P().App.addListener('pause', cobrirValores);
+desenharOlhos();
+
 // ── Cartao do inicio ───────────────────────────────────────────────────────
+let cartaoDoInicio = null;       // { r, m }: o resumo de hoje da ultima leitura
+
 async function desenharCaixaDoInicio() {
   const vez = ++desenhosDoInicio;
   const m = moedaDoCaixa();
@@ -3418,24 +3492,40 @@ async function desenharCaixaDoInicio() {
   try {
     r = Caixa.resumoDoDia(await listarLancamentos(), Caixa.diaLocal(), m.codigo);
   } catch {
-    // Banco local com defeito: sem cartao, e o inicio segue de pe.
-    if (vez === desenhosDoInicio) $('caixa-inicio').hidden = true;
+    // Banco local com defeito: sem cartao, e o inicio segue de pe. O que ele
+    // tinha sai junto, para o olho fechado nao deixar numero escondido ali.
+    if (vez === desenhosDoInicio) {
+      cartaoDoInicio = null;
+      $('caixa-inicio').hidden = true;
+      $('caixa-inicio-valor').textContent = '';
+      $('caixa-inicio-linha').textContent = '';
+    }
     return;
   }
   if (vez !== desenhosDoInicio) return;
+  cartaoDoInicio = { r, m };
   $('caixa-inicio').hidden = false;
+  pintarCaixaDoInicio();
+  mostrarConfirmacaoDoInicio();
+}
+
+function pintarCaixaDoInicio() {
+  if (!cartaoDoInicio) return;
+  const { r, m } = cartaoDoInicio;
   const vazio = !r.nReceitas && !r.nDespesas;
   const valor = $('caixa-inicio-valor');
   // So lancamentos de outra moeda (os recibos de antes de ele trocar a moeda
   // no site): ficam fora da conta, mas existem, e o Caixa aberto pelo cartao
   // os lista. "Nenhum lançamento hoje" desmentia a tela seguinte.
-  valor.textContent = !vazio ? dinheiro(r.liquido, m)
+  valor.textContent = !vazio ? valorNaTela(r.liquido, m)
     : r.outrasMoedas ? `${plural(r.outrasMoedas, 'lançamento', 'lançamentos')} em outra moeda` : 'Nenhum lançamento hoje';
   valor.className = `caixa-cartao-valor ${vazio ? 'vazio' : corDoValor(r.liquido)}`;
+  $('caixa-inicio').classList.toggle('vazio', vazio);   // a frase de ponta a ponta (ver o app.css)
   $('caixa-inicio-linha').hidden = vazio;
-  $('caixa-inicio-linha').textContent = linhaSemQuebra([`Receitas ${dinheiro(r.receitas, m)}`,
-    `Despesas ${dinheiro(r.despesas, m)}`, ...(r.nCorridas ? [plural(r.nCorridas, 'corrida', 'corridas')] : [])]);
-  mostrarConfirmacaoDoInicio();
+  $('caixa-inicio-linha').textContent = vazio ? '' : linhaSemQuebra([`Receitas ${valorNaTela(r.receitas, m)}`,
+    `Despesas ${valorNaTela(r.despesas, m)}`, ...(r.nCorridas ? [plural(r.nCorridas, 'corrida', 'corridas')] : [])]);
+  // Sem nada a cobrir (nenhum lancamento, ou so de outra moeda), sem olho.
+  $('btn-olho-inicio').hidden = vazio;
 }
 
 // "Receitas R$ 298,40 · Despesas R$ 110,00 · 4 corridas" nao cabe numa linha
@@ -3497,6 +3587,9 @@ function diaFinalDoCaixa(lista, hoje) {
   return fim;
 }
 
+// A ultima leitura do Caixa do dia, que o olho repinta sem ler o banco.
+let caixaNaTela = null;          // { lista, hoje, fim, dia, m }
+
 async function desenharCaixa() {
   const vez = ++desenhosDoCaixa;
   const hoje = Caixa.diaLocal();
@@ -3511,10 +3604,26 @@ async function desenharCaixa() {
   const dia = diaDoCaixa && diaDoCaixa <= fim ? diaDoCaixa : hoje;
   diaDoCaixa = dia === hoje ? '' : dia;   // hoje segue o relogio (ver abrirCaixa)
   diaDesenhado = dia;
+  caixaNaTela = { lista, hoje, fim, dia, m: moedaDoCaixa() };
+  pintarCaixa();
+}
+
+// Os campos de valor do dia e do bloqueio. A pintura comeca esvaziando
+// todos: o dia liberado que fica por tras do bloqueio (e a isca, por tras do
+// dia) guardava os numeros de quando o olho estava aberto, escondidos na
+// pagina depois de ele fechar.
+const VALORES_DO_DIA = ['caixa-liquido', 'caixa-receitas', 'caixa-despesas', 'btn-mudar-meta', 'meta-texto',
+  'caixa-mes-liquido', 'caixa-mes-dias'];
+
+function pintarCaixa() {
+  if (!caixaNaTela) return;
+  const { lista, hoje, fim, dia, m } = caixaNaTela;
+  VALORES_DO_DIA.forEach((id) => { $(id).textContent = ''; });
+  trocarFilhos($('caixa-lista'), []);
+  $('caixa-bloqueio').querySelector('.caixa-bloqueio-isca').textContent = '';
   $('caixa-dia-titulo').textContent = tituloDoDia(dia, hoje);
   $('btn-dia-seguinte').disabled = dia >= fim;
   $('btn-dia-anterior').disabled = dia <= '2000-01-01';
-  const m = moedaDoCaixa();
   const mes = Caixa.mesDe(dia);
   const mesAtual = Caixa.mesDe(hoje);
   // No Gratis, o dia de um mes anterior mostra so o total do mes e o convite:
@@ -3529,7 +3638,7 @@ async function desenharCaixa() {
   }
 
   const r = Caixa.resumoDoDia(lista, dia, m.codigo);
-  $('caixa-liquido').textContent = dinheiro(r.liquido, m);
+  $('caixa-liquido').textContent = valorNaTela(r.liquido, m);
   $('caixa-liquido').className = `caixa-heroi-valor ${corDoValor(r.liquido)}`;
   $('caixa-liquido-rotulo').textContent = dia === hoje ? 'líquido de hoje'
     : dia === Caixa.somarDias(hoje, -1) ? 'líquido de ontem' : 'líquido do dia';
@@ -3546,17 +3655,18 @@ async function desenharCaixa() {
 
   const doMes = Caixa.resumoDoMes(lista, mes, m.codigo);
   $('caixa-mes-nome').textContent = nomeDoMesComMaiuscula(mes);
-  $('caixa-mes-liquido').textContent = `Líquido ${dinheiro(doMes.liquido, m)}`;
+  $('caixa-mes-liquido').textContent = `Líquido ${valorNaTela(doMes.liquido, m)}`;
   $('caixa-mes-liquido').className = `caixa-mes-liquido ${corDoValor(doMes.liquido)}`;
   $('caixa-mes-dias').textContent = doMes.diasTrabalhados
-    ? `${plural(doMes.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · ${dinheiro(doMes.mediaPorDia, m)}/dia`
+    ? `${plural(doMes.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · ${valorNaTela(doMes.mediaPorDia, m)}/dia`
     : 'Nenhum dia trabalhado ainda';
 }
 
 // Uma linha da lista do dia: hora, "Corrida · Pix", embaixo os litros, a rota
 // ou a observacao, e o valor com o sinal. A forma igual a categoria nao se
 // repete ("Aplicativo · Aplicativo"). O valor vai sem o simbolo (o dia e todo
-// na mesma moeda); o de outra moeda, com o dele.
+// na mesma moeda); o de outra moeda, com o dele. Coberto, "+ ••••" na cor do
+// tipo: a cor e o sinal dizem receita ou despesa, que a categoria ja diz.
 function itemDoCaixa(l, m) {
   const item = el('button', 'caixa-item');
   item.type = 'button';
@@ -3567,7 +3677,8 @@ function itemDoCaixa(l, m) {
   meio.appendChild(el('span', 'caixa-item-titulo', titulo));
   const detalhe = [l.litros ? `${String(l.litros).replace('.', ',')} litros` : '', l.rota, l.obs].filter(Boolean).join(' · ');
   if (detalhe) meio.appendChild(el('span', 'caixa-item-detalhe', detalhe));
-  const valor = l.moeda === m.codigo ? Caixa.formatar(l.centavos, m.casas) : Caixa.formatarNaMoeda(l.centavos, l.moeda);
+  const valor = !valoresVisiveis ? MASCARA
+    : l.moeda === m.codigo ? Caixa.formatar(l.centavos, m.casas) : Caixa.formatarNaMoeda(l.centavos, l.moeda);
   item.appendChild(el('span', 'caixa-item-hora', l.hora || ''));
   item.appendChild(meio);
   item.appendChild(el('span', `caixa-item-valor ${l.tipo === 'despesa' ? 'valor-despesa' : 'valor-receita'}`,
@@ -3584,14 +3695,20 @@ function desenharBloqueio(bloco, resumo, mes, mesAtual, m) {
   const nome = nomeCurtoDoMes(mes, mesAtual);
   const naMoeda = resumo.nReceitas + resumo.nDespesas;
   bloco.querySelector('.caixa-bloqueio-isca').textContent = naMoeda
-    ? `${nome} fechou com ${dinheiro(resumo.liquido, m)} de líquido.`
+    ? `${nome} fechou com ${valorNaTela(resumo.liquido, m)} de líquido.`
     : resumo.outrasMoedas ? `${nome} tem ${plural(resumo.outrasMoedas, 'lançamento', 'lançamentos')} em outra moeda.`
       : `Nenhum lançamento em ${nome.charAt(0).toLowerCase()}${nome.slice(1)}.`;
   bloco.querySelector('.caixa-bloqueio-guardados').hidden = !naMoeda && !resumo.outrasMoedas;
 }
 
-// Meta do dia, do liquido. Barra em ambar; "Faltam" hoje, "Faltaram" num dia
-// que ja passou.
+// "Faltam R$ 87,60" (num dia que ja passou, "Faltaram") ou "Meta batida!
+// + R$ 12,00"; coberto, "Faltam R$ ••••". A barra fica sempre a vista: ela
+// diz quanto da meta ja foi, e nao quanto ele ganhou.
+const textoDaMeta = (p, ehHoje, m) => (p.batida
+  ? `Meta batida!${p.passou ? ` + ${valorNaTela(p.passou, m)}` : ''}`
+  : `${ehHoje ? 'Faltam' : 'Faltaram'} ${valorNaTela(p.falta, m)}`);
+
+// Meta do dia, do liquido. Barra em ambar, e o que falta.
 function desenharMeta(liquido, ehHoje, m) {
   const meta = metaDoDia();
   const editando = !$('form-meta').hidden;
@@ -3602,12 +3719,10 @@ function desenharMeta(liquido, ehHoje, m) {
   const parte = Math.round(p.fracao * 100);
   $('meta-preenchida').style.width = `${parte}%`;
   $('meta-barra').setAttribute('aria-valuenow', String(parte));
-  $('btn-mudar-meta').textContent = `meta ${dinheiro(meta, m)}`;
+  $('btn-mudar-meta').textContent = `meta ${valorNaTela(meta, m)}`;
   const texto = $('meta-texto');
   texto.classList.toggle('batida', p.batida);
-  texto.textContent = p.batida
-    ? `Meta batida!${p.passou ? ` + ${dinheiro(p.passou, m)}` : ''}`
-    : `${ehHoje ? 'Faltam' : 'Faltaram'} ${dinheiro(p.falta, m)}`;
+  texto.textContent = textoDaMeta(p, ehHoje, m);
 }
 
 // O campo da meta abre no mesmo toque, com o foco: no iPhone o teclado so
@@ -3711,10 +3826,12 @@ function abrirMesDoCaixa(mes) {
   return desenharMesDoCaixa();
 }
 
+// A ultima leitura do mes, que o olho repinta sem ler o banco.
+let mesNaTela = null;            // { lista, hoje, mes, mesFinal, m }
+
 async function desenharMesDoCaixa() {
   const vez = ++desenhosDoMes;
   const hoje = Caixa.diaLocal();
-  const mesAtual = Caixa.mesDe(hoje);
   let lista = [];
   try { lista = await listarLancamentos(); } catch { /* banco local com defeito: o mes aparece vazio */ }
   if (vez !== desenhosDoMes) return;
@@ -3722,12 +3839,25 @@ async function desenharMesDoCaixa() {
   const fim = diaFinalDoCaixa(lista, hoje);
   ultimoDiaDoCaixa = fim;
   const mesFinal = Caixa.mesDe(fim);
-  const mes = mesDoCaixa && mesDoCaixa <= mesFinal ? mesDoCaixa : mesAtual;
+  const mes = mesDoCaixa && mesDoCaixa <= mesFinal ? mesDoCaixa : Caixa.mesDe(hoje);
   mesDoCaixa = mes;
+  mesNaTela = { lista, hoje, mes, mesFinal, m: moedaDoCaixa() };
+  pintarMesDoCaixa();
+}
+
+// Esvaziados antes de cada pintura, como os do dia (ver VALORES_DO_DIA).
+const VALORES_DO_MES = ['mes-liquido', 'mes-media', 'mes-receitas', 'mes-despesas'];
+
+function pintarMesDoCaixa() {
+  if (!mesNaTela) return;
+  const { lista, hoje, mes, mesFinal, m } = mesNaTela;
+  const mesAtual = Caixa.mesDe(hoje);
+  VALORES_DO_MES.forEach((id) => { $(id).textContent = ''; });
+  ['mes-cat-despesas', 'mes-cat-receitas', 'mes-dias'].forEach((id) => trocarFilhos($(id), []));
+  $('mes-bloqueio').querySelector('.caixa-bloqueio-isca').textContent = '';
   $('mes-titulo').textContent = nomeDoMesComMaiuscula(mes);
   $('btn-mes-seguinte').disabled = mes >= mesFinal;
   $('btn-mes-anterior').disabled = mes <= '2000-01';
-  const m = moedaDoCaixa();
   const r = Caixa.resumoDoMes(lista, mes, m.codigo);
   const liberado = Caixa.mesLiberado(mes, mesAtual, ehPro());
   $('mes-conteudo').hidden = !liberado;
@@ -3735,11 +3865,11 @@ async function desenharMesDoCaixa() {
   if (!liberado) { desenharBloqueio($('mes-bloqueio'), r, mes, mesAtual, m); return; }
 
   const nome = Caixa.nomeDoMes(mes).replace(/ de \d{4}$/, '');
-  $('mes-liquido').textContent = dinheiro(r.liquido, m);
+  $('mes-liquido').textContent = valorNaTela(r.liquido, m);
   $('mes-liquido').className = `caixa-heroi-valor ${corDoValor(r.liquido)}`;
   $('mes-liquido-rotulo').textContent = mes === mesAtual ? `líquido de ${nome} até hoje` : `líquido de ${nome}`;
   $('mes-media').textContent = r.diasTrabalhados
-    ? `${plural(r.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · média de ${dinheiro(r.mediaPorDia, m)} por dia`
+    ? `${plural(r.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · média de ${valorNaTela(r.mediaPorDia, m)} por dia`
     : 'Nenhum dia trabalhado';
   desenharTotal($('mes-receitas'), 'receita', r.receitas, m);
   desenharTotal($('mes-despesas'), 'despesa', r.despesas, m);
@@ -3761,11 +3891,13 @@ async function desenharMesDoCaixa() {
 // Categoria do mes: nome, valor, a parte do total e uma barra fina com ela.
 // O texto da parte e o do caixa.js ("<1%", ">99%"); a barra vai pela fracao de
 // verdade, e nao pelo numero arredondado, com 1% de minimo para a pequena aparecer.
+// Coberto, so o valor vira "R$ ••••": a parte e a barra dizem onde o dinheiro
+// foi, e nao quanto.
 function linhaDeCategoria(c, tipo, m) {
   const linha = el('div', 'caixa-categoria');
   const topo = el('div', 'caixa-categoria-linha');
   topo.appendChild(el('span', 'caixa-categoria-nome', c.rotulo));
-  topo.appendChild(el('span', 'caixa-categoria-valor', dinheiro(c.centavos, m)));
+  topo.appendChild(el('span', 'caixa-categoria-valor', valorNaTela(c.centavos, m)));
   topo.appendChild(el('span', 'caixa-categoria-parte', Caixa.textoDaParte(c.parte)));
   const barra = el('div', `caixa-categoria-barra ${tipo}`);
   const cheia = el('span');
@@ -3781,7 +3913,7 @@ function linhaDeDia(d, hoje, m) {
   botao.type = 'button';
   botao.dataset.dia = d.data;
   botao.appendChild(el('span', 'caixa-dia-item-nome', tituloDoDia(d.data, hoje)));
-  botao.appendChild(el('span', `caixa-dia-item-valor ${corDoValor(d.liquido)}`, dinheiro(d.liquido, m)));
+  botao.appendChild(el('span', `caixa-dia-item-valor ${corDoValor(d.liquido)}`, valorNaTela(d.liquido, m)));
   const seta = el('span', 'caixa-seta-fim', '›');
   seta.setAttribute('aria-hidden', 'true');
   botao.appendChild(seta);

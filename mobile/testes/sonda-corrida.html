@@ -1626,6 +1626,9 @@ window.addEventListener('load', async () => {
     // A despesa a mao, como o motorista faz: "+ Lançamento" no Caixa (que abre
     // em Receita) e o toque em "Despesa".
     const lancarDespesa = () => { clicar('btn-caixa-lancamento'); clicar('tipo-despesa'); };
+    // Os valores do Caixa abrem cobertos (o olho): o que le numeros abre o olho
+    // antes, e de novo depois do que o cobre (o app no fundo, o Sair).
+    const mostrarValores = () => { if (!valoresVisiveis) aplicarOlho(true); };
     const hoje = Caixa.diaLocal();
     const ontem = Caixa.somarDias(hoje, -1);
     const mesAtual = Caixa.mesDe(hoje);
@@ -1706,7 +1709,13 @@ window.addEventListener('load', async () => {
         window.__sessaoAtraso = 4000;
         const abertura = iniciar();
         await espera(1500);
-        cartaoComSessaoLenta = { cartao: textoDe('caixa-inicio-valor'), semSessao: Guardado.get('plano') == null };
+        // Os valores abrem cobertos: coberto, o cartao ja diz que ha lancamento
+        // ("R$ ••••", e nao "Nenhum lançamento hoje"), e o olho mostra quanto.
+        const coberto = { valor: textoDe('caixa-inicio-valor'), olho: q('btn-olho-inicio').getAttribute('aria-label'),
+                          olhoAVista: visivel('btn-olho-inicio'), estado: valoresVisiveis };
+        clicar('btn-olho-inicio');
+        cartaoComSessaoLenta = { coberto, cartao: textoDe('caixa-inicio-valor'), semSessao: Guardado.get('plano') == null };
+        clicar('btn-olho-inicio');
         await abertura;
         window.__sessaoAtraso = 0;
         clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
@@ -1763,7 +1772,10 @@ window.addEventListener('load', async () => {
       }
 
       // ── Menu e cartao do inicio ──
-      ok('primeira abertura da 1.8 com a sessao demorando: o cartao do inicio ja conta o recibo de hoje, antes de ela chegar',
+      ok('ao abrir o app, os valores vem cobertos: o cartao diz "R$ ••••", com o olho "Mostrar valores" a vista',
+         !!cartaoComSessaoLenta && cartaoComSessaoLenta.coberto.valor === 'R$ ••••' && cartaoComSessaoLenta.coberto.olho === 'Mostrar valores'
+         && cartaoComSessaoLenta.coberto.olhoAVista && cartaoComSessaoLenta.coberto.estado === false, JSON.stringify(cartaoComSessaoLenta));
+      ok('primeira abertura da 1.8 com a sessao demorando: o cartao do inicio ja conta o recibo de hoje, antes de ela chegar (com o olho aberto)',
          !!cartaoComSessaoLenta && cartaoComSessaoLenta.semSessao && cartaoComSessaoLenta.cartao === 'R$ 45,00', JSON.stringify(cartaoComSessaoLenta));
       ok('"Meu caixa" no menu, logo depois de "Meus dados"', q('btn-meus-dados').nextElementSibling === q('btn-caixa') && textoDe('btn-caixa') === 'Meu caixa');
       const depois = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
@@ -1783,6 +1795,151 @@ window.addEventListener('load', async () => {
          && depois(q('caixa-inicio'), q('vitrine-inicio')) && depois(q('caixa-inicio'), q('btn-ir-indicar')));
       ok('sem lancamento: "Nenhum lançamento hoje" e o "+ Lançamento"', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje'
          && visivel('btn-inicio-lancamento') && textoDe('btn-inicio-lancamento') === '+ Lançamento' && q('caixa-inicio-linha').hidden);
+      ok('sem nada a cobrir no cartao, sem o olho', !visivel('btn-olho-inicio'));
+
+      // ── Olho: os valores cobertos ──
+      // Um mes de trabalho, com a meta, e o olho fechado, como em toda abertura
+      // do app: nenhum numero de dinheiro no cartao nem nas telas do Caixa, nem
+      // escondido na pagina. O olho mostra e cobre, um estado so para os tres.
+      const neutro = (e) => !e.classList.contains('valor-receita') && !e.classList.contains('valor-despesa');
+      const ariaDo = (id) => q(id).getAttribute('aria-label');
+      const temAlgarismo = (ids) => ids.some((id) => /\d/.test(q(id).textContent));
+      // Numero de dinheiro ("298,40") no texto, escondido ou nao, e nos atributos
+      // (aria-label, title, data-*): devolve onde achou, para a mensagem da falha.
+      // O placeholder do campo da meta ("0,00") e o formato, e nao um valor.
+      const dinheiroNaPagina = () => ['caixa-inicio', 'tela-caixa', 'tela-caixa-mes'].flatMap((id) => {
+        const achados = [];
+        const andar = document.createTreeWalker(q(id), NodeFilter.SHOW_TEXT);
+        while (andar.nextNode()) {
+          const n = andar.currentNode;
+          if (/\d,\d\d/.test(n.nodeValue)) achados.push(`${n.parentElement.id || n.parentElement.className}: ${n.nodeValue.trim().slice(0, 60)}`);
+        }
+        q(id).querySelectorAll('*').forEach((e) => [...e.attributes].forEach((a) => {
+          if (a.name !== 'placeholder' && /\d,\d\d/.test(a.value)) achados.push(`${e.id || e.tagName} [${a.name}]: ${a.value.slice(0, 60)}`);
+        }));
+        return achados;
+      });
+      const semDinheiro = () => !dinheiroNaPagina().length;
+      await comMesDeTrabalho();
+      guardarMetaDoDia(40000);
+      const todosO = await listarLancamentos();
+      const diaO = Caixa.resumoDoDia(todosO, hoje, 'BRL');
+      const mesO = Caixa.resumoDoMes(todosO, mesAtual, 'BRL');
+      const parteO = Math.round(Math.min(1, Math.max(0, diaO.liquido) / 40000) * 100);
+      irParaInicio(); await espera(300);
+      ok('olho fechado: o cartao mostra "R$ ••••" na cor neutra e "Receitas R$ •••• · Despesas R$ •••• · N corridas", com o olho a vista',
+         !valoresVisiveis && textoDe('caixa-inicio-valor') === 'R$ ••••' && neutro(q('caixa-inicio-valor'))
+         && textoDe('caixa-inicio-linha') === `Receitas R$ •••• · Despesas R$ •••• · ${plural(diaO.nCorridas, 'corrida', 'corridas')}`
+         && visivel('btn-olho-inicio') && ariaDo('btn-olho-inicio') === 'Mostrar valores' && !temAlgarismo(['caixa-inicio-valor']),
+         `${textoDe('caixa-inicio-valor')} | ${textoDe('caixa-inicio-linha')}`);
+      await abrirCaixa();
+      const valoresDaLista = [...q('caixa-lista').querySelectorAll('.caixa-item-valor')];
+      ok('olho fechado, no Caixa do dia: o liquido "R$ ••••" na cor neutra, "+ R$ ••••" e "− R$ ••••" nas cores dos tipos, e as contagens a vista',
+         textoDe('caixa-liquido') === 'R$ ••••' && neutro(q('caixa-liquido')) && textoDe('caixa-receitas') === '+ R$ ••••'
+         && textoDe('caixa-despesas') === '− R$ ••••' && q('caixa-receitas').classList.contains('valor-receita') && q('caixa-despesas').classList.contains('valor-despesa')
+         && textoDe('caixa-n-receitas') === plural(diaO.nReceitas, 'lançamento', 'lançamentos') && ariaDo('btn-olho-caixa') === 'Mostrar valores'
+         && !temAlgarismo(['caixa-liquido', 'caixa-receitas', 'caixa-despesas']), `${textoDe('caixa-liquido')} | ${textoDe('caixa-receitas')} | ${textoDe('caixa-despesas')}`);
+      ok('olho fechado: a lista do dia com "+ ••••" e "− ••••" na cor do tipo, e a hora, a categoria e a rota a vista',
+         valoresDaLista.length === hojeDaFoto.length && valoresDaLista.every((v) => /^[+−] ••••$/.test(v.textContent)
+           && v.classList.contains(v.textContent.startsWith('−') ? 'valor-despesa' : 'valor-receita'))
+         && textoDe('caixa-lista').includes('Aeroporto → Hotel Ibis Paulista') && textoDe('caixa-lista').includes('17:10'),
+         valoresDaLista.map((v) => v.textContent).join(' '));
+      ok('olho fechado: a meta diz "meta R$ ••••" e "Faltam R$ ••••", e a barra fica a vista, com a parte certa',
+         textoDe('btn-mudar-meta') === 'meta R$ ••••' && textoDe('meta-texto') === 'Faltam R$ ••••' && parteO > 0
+         && q('meta-preenchida').style.width === `${parteO}%` && q('meta-barra').getAttribute('aria-valuenow') === String(parteO),
+         `${textoDe('btn-mudar-meta')} | ${textoDe('meta-texto')} | ${q('meta-preenchida').style.width}`);
+      ok('olho fechado: o cartao do mes diz "Líquido R$ ••••" e "N dias trabalhados · R$ ••••/dia"', textoDe('caixa-mes-liquido') === 'Líquido R$ ••••'
+         && neutro(q('caixa-mes-liquido')) && textoDe('caixa-mes-dias') === `${plural(mesO.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · R$ ••••/dia`,
+         `${textoDe('caixa-mes-liquido')} | ${textoDe('caixa-mes-dias')}`);
+      await abrirMesDoCaixa(mesAtual);
+      const partesO = [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-parte')];
+      ok('olho fechado, no mes: liquido, media, receitas, despesas, categorias e dias com "R$ ••••"; as partes e as barras a vista',
+         textoDe('mes-liquido') === 'R$ ••••' && neutro(q('mes-liquido'))
+         && textoDe('mes-media') === `${plural(mesO.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · média de R$ •••• por dia`
+         && textoDe('mes-receitas') === '+ R$ ••••' && textoDe('mes-despesas') === '− R$ ••••' && !temAlgarismo(['mes-liquido', 'mes-receitas', 'mes-despesas'])
+         && [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-valor')].every((v) => v.textContent === 'R$ ••••')
+         && partesO.length > 1 && partesO.every((p) => /%$/.test(p.textContent))
+         && [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-barra span')].every((b) => parseFloat(b.style.width) > 0)
+         && [...q('mes-dias').querySelectorAll('.caixa-dia-item-valor')].every((v) => v.textContent === 'R$ ••••' && neutro(v))
+         && ariaDo('btn-olho-mes') === 'Mostrar valores', `${textoDe('mes-media')} | ${textoDe('mes-cat-despesas')}`);
+      const iscaCoberta = `${nomeCurtoDoMes(mesPassado, mesAtual)} fechou com R$ •••• de líquido.`;
+      await abrirMesDoCaixa(mesPassado);
+      ok('olho fechado, no Gratis: a isca do mes anterior diz "fechou com R$ •••• de líquido."', visivel('mes-bloqueio')
+         && textoDe('mes-bloqueio').includes(iscaCoberta) && visivel('btn-olho-mes'), textoDe('mes-bloqueio'));
+      await abrirCaixa(`${mesPassado}-15`);
+      ok('e a do dia de mes anterior tambem, com o olho a vista no bloqueio', visivel('caixa-bloqueio')
+         && textoDe('caixa-bloqueio').includes(iscaCoberta) && visivel('btn-olho-caixa'), textoDe('caixa-bloqueio'));
+      ok('olho fechado: nenhum numero de dinheiro na pagina do cartao e das telas do Caixa, nem escondido, nem em atributo', semDinheiro(),
+         dinheiroNaPagina().join(' | '));
+
+      // O olho mostra e cobre na hora, e o estado e um so.
+      irParaInicio(); await espera(300);
+      const linhaAberta = `Receitas ${reais(diaO.receitas)} · Despesas ${reais(diaO.despesas)} · ${plural(diaO.nCorridas, 'corrida', 'corridas')}`;
+      clicar('btn-olho-inicio');
+      ok('o olho do cartao mostra os valores na hora (o liquido na cor dele) e vira "Esconder valores", com o olho riscado',
+         valoresVisiveis && textoDe('caixa-inicio-valor') === reais(diaO.liquido) && q('caixa-inicio-valor').classList.contains('valor-receita')
+         && textoDe('caixa-inicio-linha') === linhaAberta && ariaDo('btn-olho-inicio') === 'Esconder valores'
+         && q('btn-olho-inicio').innerHTML.includes('m2 2 20 20'), `${textoDe('caixa-inicio-valor')} | ${textoDe('caixa-inicio-linha')}`);
+      await abrirCaixa();
+      ok('um estado so: o Caixa aberto depois ja vem com os valores, e o olho dele em "Esconder valores"',
+         textoDe('caixa-liquido') === reais(diaO.liquido) && textoDe('caixa-receitas') === `+ ${reais(diaO.receitas)}`
+         && textoDe('caixa-despesas') === `− ${reais(diaO.despesas)}` && textoDe('btn-mudar-meta') === `meta ${reais(40000)}`
+         && textoDe('meta-texto') === `Faltam ${reais(40000 - diaO.liquido)}` && itemDa('l-hoje1').querySelector('.caixa-item-valor').textContent === '+ 32,00'
+         && textoDe('caixa-mes-liquido') === `Líquido ${reais(mesO.liquido)}` && ariaDo('btn-olho-caixa') === 'Esconder valores', textoDe('caixa-liquido'));
+      clicar('btn-olho-caixa');
+      ok('o olho do Caixa cobre de novo, e os do cartao e do mes tambem voltam a "Mostrar valores", com o olho aberto',
+         !valoresVisiveis && textoDe('caixa-liquido') === 'R$ ••••' && textoDe('caixa-inicio-valor') === 'R$ ••••'
+         && ['btn-olho-caixa', 'btn-olho-inicio', 'btn-olho-mes'].every((id) => ariaDo(id) === 'Mostrar valores' && !q(id).innerHTML.includes('m2 2 20 20')));
+      clicar('btn-abrir-mes'); await espera(400);
+      const mesCoberto = textoDe('mes-liquido');
+      clicar('btn-olho-mes');
+      ok('o mes abre coberto, e o olho dele mostra o liquido, as receitas, a media e as categorias', mesCoberto === 'R$ ••••'
+         && textoDe('mes-liquido') === reais(mesO.liquido) && textoDe('mes-receitas') === `+ ${reais(mesO.receitas)}`
+         && textoDe('mes-media').includes(`média de ${reais(mesO.mediaPorDia)} por dia`)
+         && [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-valor')].every((v) => /^R\$ \d/.test(v.textContent))
+         && ariaDo('btn-olho-mes') === 'Esconder valores', `${mesCoberto} | ${textoDe('mes-liquido')}`);
+      clicar('btn-fechar-mes'); await espera(400);
+      ok('e o dia, na volta do mes, tambem com os valores', textoDe('caixa-liquido') === reais(diaO.liquido) && ariaDo('btn-olho-caixa') === 'Esconder valores');
+
+      // Coberto, os formularios mostram o valor de verdade: editar e ato dele.
+      clicar('btn-olho-caixa');
+      itemDa('l-hoje0').click(); await espera(300);
+      ok('olho fechado: o lancamento aberto para editar mostra o valor de verdade', !valoresVisiveis && !q('tela-lancamento').hidden
+         && textoDe('titulo-lancamento') === 'Editar despesa' && q('l-valor').value === '86,00', q('l-valor').value);
+      clicar('btn-fechar-lancamento'); await espera(300);
+      clicar('btn-mudar-meta'); await espera(100);
+      ok('olho fechado: o campo da meta, aberto, mostra a meta de verdade', !valoresVisiveis && visivel('form-meta') && q('meta-valor').value === '400,00',
+         q('meta-valor').value);
+      clicar('btn-cancelar-meta'); await espera(300);
+
+      // Ao ir para o fundo (o Waze, o WhatsApp, a tela bloqueada), cobre na
+      // hora, sem esperar o banco: o que esta na tela e o que ficou desenhado
+      // nas outras. Aqui a pagina "escondida" e o 'pause' do Capacitor.
+      clicar('btn-olho-caixa');
+      clicar('btn-abrir-mes'); await espera(400);
+      clicar('btn-fechar-mes'); await espera(400);
+      const abertoAntes = !semDinheiro() && textoDe('caixa-liquido') === reais(diaO.liquido);
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      const naHora = { estado: valoresVisiveis, dia: textoDe('caixa-liquido'), lista: textoDe('caixa-lista').includes('+ 32,00'),
+                       cartao: textoDe('caixa-inicio-valor'), mes: textoDe('mes-liquido'), semDinheiro: semDinheiro(), olho: ariaDo('btn-olho-caixa') };
+      delete document.visibilityState;
+      ok('a pagina escondida (o app indo para o fundo) cobre na hora o Caixa aberto, e o cartao e o mes desenhados antes',
+         abertoAntes && naHora.estado === false && naHora.dia === 'R$ ••••' && !naHora.lista && naHora.cartao === 'R$ ••••'
+         && naHora.mes === 'R$ ••••' && naHora.semDinheiro && naHora.olho === 'Mostrar valores', `${JSON.stringify(naHora)} ${dinheiroNaPagina().join(' | ')}`);
+      irParaInicio(); await espera(300);
+      clicar('btn-olho-inicio');
+      const abertoNoInicio = textoDe('caixa-inicio-valor') === reais(diaO.liquido);
+      (__ouvintes.pause || []).forEach((f) => f());
+      ok('o "pause" do app tambem cobre na hora o cartao do inicio aberto', abertoNoInicio && !valoresVisiveis
+         && textoDe('caixa-inicio-valor') === 'R$ ••••' && semDinheiro() && ariaDo('btn-olho-inicio') === 'Mostrar valores', dinheiroNaPagina().join(' | '));
+
+      // De volta ao Caixa vazio do resto da parte, e com os numeros a vista:
+      // as verificacoes daqui em diante leem valores.
+      removerMetaDoDia();
+      await limparCaixa();
+      irParaInicio(); await espera(300);
+      mostrarValores();
 
       clicar('btn-perfil'); await espera(100);
       clicar('btn-caixa'); await espera(400);
@@ -2385,6 +2542,8 @@ window.addEventListener('load', async () => {
       await abrirCorrida(); await espera(150);
       ok('reabrir a corrida traz o valor e a forma de volta', q('fim-valor').value === '58,00' && q('fim-forma').value === 'Dinheiro');
       const saida = agoraLocal(new Date(corridaAtual().inicio));
+      // Ele volta do Waze com o caixa coberto (o app foi para o fundo).
+      aplicarOlho(false);
       clicar('btn-lancar-corrida'); clicar('btn-lancar-corrida'); await espera(600);
       const daCorrida = (await listarLancamentos()).filter((x) => x.origem === 'corrida');
       const lancada = daCorrida[0] || {};
@@ -2394,7 +2553,12 @@ window.addEventListener('load', async () => {
          && lancada.rota === 'Avenida Paulista, 1578 → Aeroporto de Congonhas', JSON.stringify(daCorrida));
       ok('e apaga a corrida e volta ao inicio com "Corrida lançada: R$ 58,00"', !corridaAtual() && !q('tela-inicio').hidden
          && visivel('caixa-inicio-confirmacao') && textoDe('caixa-inicio-confirmacao') === 'Corrida lançada: R$ 58,00');
+      // A confirmacao e a corrida que o passageiro acabou de pagar, e nao o caixa.
+      ok('com o caixa coberto, a confirmacao continua com o valor da corrida, e o cartao fica coberto', !valoresVisiveis
+         && textoDe('caixa-inicio-confirmacao') === 'Corrida lançada: R$ 58,00' && textoDe('caixa-inicio-valor') === 'R$ ••••',
+         `${textoDe('caixa-inicio-confirmacao')} | ${textoDe('caixa-inicio-valor')}`);
       await espera(300);
+      mostrarValores();
       const diaComCorrida = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'BRL');
       const linhaEsperada = [`Receitas ${reais(diaComCorrida.receitas)}`, `Despesas ${reais(diaComCorrida.despesas)}`,
         ...(diaComCorrida.nCorridas ? [plural(diaComCorrida.nCorridas, 'corrida', 'corridas')] : [])].join(' · ');
@@ -2591,6 +2755,26 @@ window.addEventListener('load', async () => {
       irParaInicio(); await espera(200); medir(q('caixa-inicio'));
       ok('todo botao e campo das telas do caixa com alvo de 44 px ou mais', pequenos.length === 0, pequenos.join(' '));
       ok('a pagina do Caixa nao rola de lado (390 px)', (await abrirCaixa(), document.documentElement.scrollWidth <= innerWidth), String(document.documentElement.scrollWidth));
+
+      // ── Sair cobre ──
+      // Com o olho aberto, o Sair: tudo coberto, tambem nas telas escondidas.
+      // Entrando de novo, o cartao abre coberto, e o caixa continua no aparelho.
+      mostrarValores();
+      await abrirCaixa();
+      irParaInicio(); await espera(300);
+      const comValoresAntesDeSair = !semDinheiro();
+      clicar('btn-perfil'); await espera(100);
+      clicar('btn-sair'); await espera(300);
+      ok('Sair cobre os valores: nenhum numero de dinheiro no cartao nem nas telas do Caixa, e o olho volta a "Mostrar valores"',
+         comValoresAntesDeSair && !valoresVisiveis && !q('tela-login').hidden && semDinheiro()
+         && ['btn-olho-inicio', 'btn-olho-caixa', 'btn-olho-mes'].every((id) => ariaDo(id) === 'Mostrar valores'), dinheiroNaPagina().join(' | '));
+      entrarNaSessao({ access_token: 'token-caixa3', refresh_token: 'refresh-caixa3' }, 'web@teste.invalid');
+      await iniciar(); await espera(300);
+      const diaDaVolta = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'BRL');
+      ok('entrando de novo, o cartao vem coberto', !q('tela-inicio').hidden && !valoresVisiveis && textoDe('caixa-inicio-valor') === 'R$ ••••'
+         && diaDaVolta.nReceitas + diaDaVolta.nDespesas > 0, textoDe('caixa-inicio-valor'));
+      mostrarValores();
+      ok('e, com o olho aberto, o caixa dele continua no aparelho', textoDe('caixa-inicio-valor') === reais(diaDaVolta.liquido), textoDe('caixa-inicio-valor'));
     } catch (e) {
       r.push(`FALHA caixa: excecao: ${e && e.stack || e}`);
     }

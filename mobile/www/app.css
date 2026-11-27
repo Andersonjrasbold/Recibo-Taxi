@@ -403,30 +403,75 @@ button:disabled { opacity:.5; }
    meta no "Remover meta". */
 #erro-lancamento, #erro-fim, #erro-meta { color:var(--coral-texto); }
 
+/* O olho (1.8): mostra e cobre os valores do Caixa. Alvo de 44 px, com o
+   desenho menor no meio. */
+.olho {
+  display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;
+  width:44px; height:44px; padding:0; border-radius:12px; color:var(--ambar); background:none;
+}
+.olho:active { background:rgba(255,197,49,.12); }
+.olho svg { display:block; width:24px; height:24px; }
+/* "Caixa [olho] ...... Voltar": o titulo e o olho juntos no lugar do h1. O
+   olho sobra para fora da linha do titulo (margem negativa), para o
+   cabecalho ficar da altura de antes. */
+.titulo-com-olho { display:flex; align-items:center; gap:.15rem; min-width:0; margin:.25rem 0 1rem; }
+.titulo-com-olho h1 { margin:0; }
+.titulo-com-olho .olho { margin:-6px 0; }
+
 /* Cartao do inicio: o primeiro bloco da tela, no tom do cartao de indicacao.
-   O "+ Lançamento" fica por cima, no canto, e as duas primeiras linhas deixam
-   espaco para ele. */
-.caixa-cartao { position:relative; margin-bottom:.8rem; }
-.caixa-cartao-abrir {
-  display:grid; gap:.1rem; width:100%; min-height:84px; text-align:left;
-  padding:.85rem 1.1rem .9rem; border-radius:16px; color:var(--paper);
-  background:rgba(247,245,242,.06); border:1px solid rgba(247,245,242,.14);
+   O botao de abrir o Caixa e o cartao inteiro, por baixo; o texto fica por
+   cima dele sem pegar o toque (que passa para o botao), e o olho e o
+   "+ Lançamento" pegam o seu. O "+ Lançamento" ocupa a coluna da direita das
+   duas primeiras linhas ("Caixa de hoje" e o liquido); as outras vao de
+   ponta a ponta. */
+.caixa-cartao {
+  position:relative; display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:.75rem; row-gap:.1rem;
+  align-content:start; min-height:84px; margin-bottom:.8rem; padding:.85rem 1.1rem .9rem; color:var(--paper);
+}
+.caixa-cartao > * { position:relative; z-index:1; grid-column:1 / -1; pointer-events:none; }
+/* Sem linha de grade (auto): com uma, o botao cobria so a area do texto, e
+   nao o cartao inteiro com a borda. */
+.caixa-cartao > .caixa-cartao-abrir {
+  position:absolute; inset:0; z-index:0; grid-area:auto; width:100%; padding:0; pointer-events:auto;
+  border-radius:16px; background:rgba(247,245,242,.06); border:1px solid rgba(247,245,242,.14);
 }
 .caixa-cartao-abrir:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
-.caixa-cartao-rotulo, .caixa-cartao-valor { padding-right:8.6rem; }
+.caixa-cartao > .caixa-cartao-topo { grid-column:1; grid-row:1; display:flex; align-items:center; gap:.3rem; min-width:0; }
+.caixa-cartao > .caixa-cartao-valor { grid-column:1; grid-row:2; }
+.caixa-cartao > .caixa-cartao-lancar { grid-column:2; grid-row:1 / span 2; align-self:start; z-index:2; pointer-events:auto; }
+/* O olho do cartao: o alvo de 44 px sai da linha do rotulo para cima e para
+   baixo, sem empurrar o liquido, e o desenho fica perto de "Caixa de hoje". */
+.caixa-cartao .olho { margin:-13px -12px -13px -8px; pointer-events:auto; }
+.caixa-cartao .olho svg { width:20px; height:20px; }
 .caixa-cartao-rotulo {
-  font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--texto-suave);
+  font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--texto-suave); white-space:nowrap;
 }
 .caixa-cartao-valor { font-size:1.3rem; font-weight:800; line-height:1.3; font-variant-numeric:tabular-nums; }
 .caixa-cartao-valor.vazio { font-size:1rem; font-weight:700; line-height:1.5; }
 .caixa-cartao-linha { font-size:.8rem; line-height:1.4; color:var(--texto-suave); font-variant-numeric:tabular-nums; }
 .caixa-cartao-confirmacao { margin-top:.2rem; font-size:.86rem; font-weight:800; color:var(--verde); font-variant-numeric:tabular-nums; }
 .caixa-cartao-lancar {
-  position:absolute; top:.75rem; right:.75rem; min-height:44px; padding:0 .95rem;
+  min-height:44px; padding:0 .95rem;
   font-size:.92rem; font-weight:800; color:var(--ambar); white-space:nowrap;
   background:var(--coal); border:1px solid rgba(255,197,49,.45); border-radius:12px;
 }
 .caixa-cartao-lancar:active { background:rgba(255,197,49,.14); }
+/* Sem lancamento ("Nenhum lançamento hoje"), a frase vai de ponta a ponta e
+   o "+ Lançamento" fica so na linha de cima: ao lado dele, a frase quebrava
+   em duas linhas (tres, em 320 px). */
+.caixa-cartao.vazio > .caixa-cartao-topo { align-self:center; }
+.caixa-cartao.vazio > .caixa-cartao-valor { grid-column:1 / -1; }
+.caixa-cartao.vazio > .caixa-cartao-lancar { grid-row:1; }
+/* Em 320 px (o primeiro iPhone SE, Android pequeno), "Caixa de hoje" com o
+   olho e o liquido nao cabiam ao lado do "+ Lançamento": o olho ia para
+   baixo do botao, e o liquido quebrava em "R$" / "188,40". Medido: assim o
+   alvo de 44 px do olho termina antes do botao. */
+@media (max-width: 359px) {
+  .caixa-cartao { column-gap:.5rem; padding-left:.8rem; padding-right:.8rem; }
+  .caixa-cartao-rotulo { font-size:.68rem; letter-spacing:.02em; }
+  .caixa-cartao-valor { font-size:1.15rem; }
+  .caixa-cartao-lancar { padding:0 .6rem; font-size:.86rem; }
+}
 
 /* ‹ dia › e ‹ mes ›: as setas do tamanho do polegar, o titulo no meio. */
 .caixa-navegar {

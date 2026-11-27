@@ -184,19 +184,23 @@
 
   <!-- Caixa de hoje (app 1.8): o primeiro bloco do inicio (pedido do Anderson,
        2026-11-27), logo abaixo da saudacao e do aviso da corrida aberta, que
-       fica em cima por ser a coisa por terminar. Tocar abre o Caixa;
-       "+ Lançamento" lanca direto (a corrida feita sem o app, o
-       abastecimento), e Receita ou Despesa se escolhe no formulario. Sao dois
-       botoes lado a lado, e nao um dentro do outro (botao dentro de botao nao
-       vale no HTML, e o toque iria para os dois). -->
-  <div id="caixa-inicio" class="caixa-cartao">
-    <button type="button" id="btn-abrir-caixa" class="caixa-cartao-abrir">
+       fica em cima por ser a coisa por terminar. Os valores abrem cobertos, e
+       o olho ao lado de "Caixa de hoje" os mostra (ver valoresVisiveis, no
+       app.js). Tocar no cartao abre o Caixa; "+ Lançamento" lanca direto (a
+       corrida feita sem o app, o abastecimento), e Receita ou Despesa se
+       escolhe no formulario. O botao de abrir e o cartao inteiro, por baixo
+       do texto, e o olho e o "+ Lançamento" sao botoes irmaos dele, por cima:
+       botao dentro de botao nao vale no HTML, e o toque iria para os dois. -->
+  <div id="caixa-inicio" class="caixa-cartao vazio">
+    <button type="button" id="btn-abrir-caixa" class="caixa-cartao-abrir" aria-label="Abrir o Caixa"></button>
+    <div class="caixa-cartao-topo">
       <span class="caixa-cartao-rotulo">Caixa de hoje</span>
-      <strong id="caixa-inicio-valor" class="caixa-cartao-valor vazio">Nenhum lançamento hoje</strong>
-      <small id="caixa-inicio-linha" class="caixa-cartao-linha" hidden></small>
-      <small id="caixa-inicio-confirmacao" class="caixa-cartao-confirmacao" hidden></small>
-    </button>
+      <button type="button" id="btn-olho-inicio" class="olho" hidden></button>
+    </div>
     <button type="button" id="btn-inicio-lancamento" class="caixa-cartao-lancar">+ Lançamento</button>
+    <strong id="caixa-inicio-valor" class="caixa-cartao-valor vazio">Nenhum lançamento hoje</strong>
+    <small id="caixa-inicio-linha" class="caixa-cartao-linha" hidden></small>
+    <small id="caixa-inicio-confirmacao" class="caixa-cartao-confirmacao" hidden></small>
   </div>
 
   <div class="caminhos">
@@ -789,8 +793,13 @@
      ela. No Gratis, dia de mes anterior mostra so o total do mes e o convite
      ao Pro, nunca os lancamentos (o dado continua guardado). -->
 <section id="tela-caixa" class="tela" hidden>
+  <!-- O olho logo depois do titulo, nas duas telas do Caixa: os valores abrem
+       cobertos ("R$ ••••") e ele os mostra; o mesmo estado do cartao do inicio. -->
   <div class="cabecalho-tela">
-    <h1>Caixa</h1>
+    <div class="titulo-com-olho">
+      <h1>Caixa</h1>
+      <button type="button" id="btn-olho-caixa" class="olho"></button>
+    </div>
     <button id="btn-fechar-caixa" class="texto texto-alvo">Voltar</button>
   </div>
 
@@ -870,7 +879,10 @@
 <!-- ── Caixa do mês ─────────────────────────────────────────────────────── -->
 <section id="tela-caixa-mes" class="tela" hidden>
   <div class="cabecalho-tela">
-    <h1>Caixa do mês</h1>
+    <div class="titulo-com-olho">
+      <h1>Caixa do mês</h1>
+      <button type="button" id="btn-olho-mes" class="olho"></button>
+    </div>
     <button id="btn-fechar-mes" class="texto texto-alvo">Voltar</button>
   </div>
 

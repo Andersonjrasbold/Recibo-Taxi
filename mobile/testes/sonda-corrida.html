@@ -1993,6 +1993,45 @@ window.addEventListener('load', async () => {
          && mesInativo.semDinheiro && mesInativo.olho === 'Mostrar valores', `${JSON.stringify({ caixaInativo, mesInativo })} ${dinheiroNaPagina().join(' | ')}`);
       if (valoresVisiveis) aplicarOlho(false);   // o que vem depois comeca coberto, de qualquer jeito
 
+      // A fonte do sistema aumentada (Android, "Tamanho da fonte"): o WebView
+      // aumenta o texto, e as caixas ficam do mesmo tamanho. Com "CAIXA DE HOJE"
+      // sem quebrar, 130% num Android de 360 px punha o olho embaixo do
+      // "+ Lançamento", e o toque nele abria o lancamento. Aqui, o inicio com
+      // 360 px e o texto de cada elemento 1,3 e 1,5 vez maior.
+      irParaInicio(); await espera(300);
+      const telaDoInicio = q('tela-inicio');
+      const doInicio = [telaDoInicio, ...telaDoInicio.querySelectorAll('*')];
+      const fonteDoInicio = doInicio.map((e) => parseFloat(getComputedStyle(e).fontSize));
+      const aumentarFonte = (f) => doInicio.forEach((e, i) => { e.style.fontSize = f === 1 ? '' : `${fonteDoInicio[i] * f}px`; });
+      const tocado = (x, y) => { const e = document.elementFromPoint(x, y); return e && (e.closest('button') || e); };
+      const olhoNoCartao = () => {
+        const olho = q('btn-olho-inicio');
+        const alvo = olho.getBoundingClientRect();
+        const desenho = olho.querySelector('svg').getBoundingClientRect();
+        const meio = (desenho.top + desenho.bottom) / 2;
+        let tapado = 0;   // pontos do desenho, na linha do meio, que o toque nao leva ao olho
+        for (let x = Math.ceil(desenho.left); x < desenho.right; x++) if (tocado(x, meio) !== olho) tapado++;
+        const faixa = document.createRange();
+        faixa.selectNodeContents(document.querySelector('.caixa-cartao-rotulo'));
+        const linhas = [...faixa.getClientRects()];
+        return { centro: tocado((alvo.left + alvo.right) / 2, (alvo.top + alvo.bottom) / 2) === olho, tapado,
+                 linhas: new Set(linhas.map((l) => Math.round(l.top))).size,
+                 rotuloSobOBotao: linhas.some((l) => tocado(l.right - 2, (l.top + l.bottom) / 2) === q('btn-inicio-lancamento')) };
+      };
+      const fonteNormal = olhoNoCartao();
+      const em360 = {};
+      telaDoInicio.style.maxWidth = '360px';
+      try {
+        for (const f of [1, 1.3, 1.5]) { aumentarFonte(f); em360[f] = olhoNoCartao(); }
+      } finally {
+        aumentarFonte(1);
+        telaDoInicio.style.maxWidth = '';
+      }
+      ok('com a fonte normal, "CAIXA DE HOJE" fica numa linha so, com o olho logo depois, inteiro (390 e 360 px)',
+         [fonteNormal, em360[1]].every((m) => m.linhas === 1 && m.centro && !m.tapado && !m.rotuloSobOBotao), JSON.stringify({ fonteNormal, f1: em360[1] }));
+      ok('com a fonte do sistema a 130% e a 150% (360 px), o olho fica inteiro a vista e pega o toque, e "CAIXA DE HOJE" (que quebra a linha) fora do "+ Lançamento"',
+         [1.3, 1.5].every((f) => em360[f].centro && !em360[f].tapado && !em360[f].rotuloSobOBotao), JSON.stringify(em360));
+
       // A meta batida no cartao: a barra cheia, em verde, e o que passou.
       guardarMetaDoDia(diaO.liquido - 1000);
       irParaInicio(); await espera(300);

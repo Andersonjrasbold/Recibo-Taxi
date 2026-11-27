@@ -31,9 +31,10 @@
               <div class="mb-2">
                 <strong>O que mudou em {{ updated_at }}:</strong> o app ganha o <strong>Caixa</strong>, onde
                 você lança receitas e despesas e vê quanto ganhou no dia e no mês. Os lançamentos ficam no
-                aparelho, e uma cópia fica guardada no nosso servidor para você não perder o que lançou; o
-                trajeto das corridas não sai do aparelho (seções 2.4, 3 e 6). O Caixa chega na versão 1.8 do
-                app, a partir de <strong>{{ caixa_a_partir }}</strong>.
+                aparelho, e uma cópia fica guardada no nosso servidor para você não perder o que lançou
+                (seções 2.4, 3 e 6). A origem e o destino das corridas lançadas no Caixa ficam só no
+                aparelho; o recibo continua levando os dois, como antes. O Caixa chega na versão 1.8 do app,
+                e a cópia no nosso servidor começa em <strong>{{ caixa_a_partir }}</strong>.
               </div>
               <div>
                 <strong>Em 21 de novembro de 2026:</strong> a nossa equipe pode criar a sua conta a seu
@@ -91,14 +92,16 @@
             <li>Quando você toca em "Estimar valor", a posição de partida (ou a origem digitada) e
               o destino vão para o nosso servidor, que consulta o Google para calcular a rota. Eles
               servem só para essa conta: não ficam guardados no nosso banco nem nos nossos registros.</li>
-            <li>A origem e o destino só ficam guardados se você emitir um recibo com eles, como em
-              qualquer recibo (seção 2.2).</li>
+            <li>A origem e o destino só ficam guardados no nosso servidor se você emitir um recibo com
+              eles, como em qualquer recibo (seção 2.2). Se você encerrar a corrida com "Só lançar no
+              caixa", eles ficam só no aparelho, no lançamento (seção 2.4).</li>
           </ul>
 
           <h3 class="legal-h3">2.4 Caixa: receitas e despesas, só no app</h3>
           <p>
-            A partir de {{ caixa_a_partir }}, na versão 1.8 do app, o Caixa mostra quanto você ganhou,
-            quanto gastou e o que sobrou no dia e no mês.
+            Na versão 1.8 do app, o Caixa mostra quanto você ganhou, quanto gastou e o que sobrou no dia
+            e no mês. A cópia dos lançamentos no nosso servidor começa em {{ caixa_a_partir }}; antes
+            disso, eles ficam só no aparelho.
           </p>
           <ul class="legal-list">
             <li><strong>O que é guardado:</strong> de cada lançamento, o tipo (receita ou despesa), a
@@ -108,7 +111,9 @@
             <li><strong>De onde vem:</strong> os recibos que você emite e as corridas que você encerra com
               "Só lançar no caixa" entram sozinhos. O resto só entra se você lançar.</li>
             <li><strong>Onde fica:</strong> no aparelho e, como cópia de segurança, no nosso servidor,
-              ligada à sua conta, para você não perder o que lançou.</li>
+              ligada à sua conta, para você não perder o que lançou. Por enquanto, o app não traz essa
+              cópia de volta sozinho para um aparelho novo ou para o app reinstalado: nesse caso, nós a
+              entregamos a seu pedido, sem custo (seção 7).</li>
             <li><strong>O trajeto fica só no aparelho:</strong> a origem e o destino da corrida lançada no
               Caixa não vão para o nosso servidor, e o Caixa não guarda dados do passageiro. O recibo que
               você emitir continua guardando o que a seção 2.2 descreve.</li>
@@ -157,9 +162,10 @@
                 <tr>
                   <td>Mostrar o caixa do dia e do mês e guardar uma cópia para você não perder o que lançou</td>
                   <td>Os lançamentos do Caixa (seção 2.4). Os valores não são usados para publicidade nem
-                    compartilhados: ficam só no nosso banco de dados (seção 4). A nossa equipe vê apenas
-                    contagens agregadas de uso, como quantos motoristas usam o Caixa, e nunca os valores de
-                    ninguém</td>
+                    vendidos ou repassados a terceiros, fora os casos da seção 4. No dia a dia, a nossa equipe
+                    vê só contagens agregadas de uso, como quantos motoristas usam o Caixa; os lançamentos de
+                    um motorista só são consultados a pedido dele (como a cópia dos lançamentos ou um
+                    problema que ele nos relatar) ou por ordem judicial ou requisição legal</td>
                   <td>Execução de contrato (art. 7º, V)</td>
                 </tr>
                 <tr>
@@ -259,7 +265,9 @@
             <li><strong>Conta ativa:</strong> enquanto você mantiver a conta.</li>
             <li><strong>Após a exclusão da conta:</strong> seus dados, todos os seus recibos e todos os lançamentos do Caixa são apagados imediatamente e de forma definitiva.</li>
             <li><strong>Lançamentos do Caixa:</strong> ficam guardados enquanto a conta existir. Um lançamento
-              que você apaga no app sai do nosso servidor em até 30 dias, e excluir a conta apaga todos na hora.</li>
+              que você apaga no app sai do nosso servidor em até 30 dias, contados de quando o app nos avisa
+              da exclusão (sem internet, o aviso vai quando o aparelho voltar a se conectar), e excluir a
+              conta apaga todos na hora.</li>
             <li><strong>Recibos emitidos sem conta (gerador desativado):</strong> mantidos por até
               12 meses a partir da emissão e depois removidos automaticamente por rotina diária.</li>
             <li><strong>Contadores antiabuso:</strong> guardamos por 7 dias contadores diários por

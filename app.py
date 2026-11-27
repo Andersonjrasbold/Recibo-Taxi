@@ -7757,8 +7757,8 @@ _SQL_ADMIN = {
           join public.drivers d on d.id::text = split_part(l.key, ':', 2)
          where l.key like 'estimativa:%%' and l.created_at >= %(ini_7d)s""",
     # Caixa do app 1.8 (migração 0022). SÓ contagens: nem valor, nem categoria,
-    # nem lista por motorista — a Política promete que a equipe vê quantos usam,
-    # nunca os valores de ninguém. As janelas contam pela chegada ao servidor;
+    # nem lista por motorista — a Política promete que, no dia a dia, a equipe
+    # vê só quantos usam. As janelas contam pela chegada ao servidor;
     # na primeira sincronização do 1.8 os recibos antigos entram de uma vez, e
     # "recibo" pula sem ser uso novo. Apagado fica fora das contagens por
     # origem e tipo. Conta interna conta, como no "Fazer corrida": ela só sai

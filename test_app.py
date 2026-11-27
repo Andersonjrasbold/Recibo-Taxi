@@ -4301,6 +4301,21 @@ _aviso_cx = _pol_cx[_pol_cx.find("O que mudou em"):_pol_cx.find("1. Quem somos")
 check("politica: o aviso do topo ganha o Caixa, com a data, e segue com as ligacoes de 21/11",
       "Caixa" in _aviso_cx and A.CAIXA_A_PARTIR in _aviso_cx and A.POLITICA_ATUALIZADA_EM in _aviso_cx
       and "Em 21 de novembro de 2026" in _aviso_cx and A.CONTATO_DE_VENDAS_A_PARTIR in _aviso_cx, _aviso_cx[:300])
+# O aviso e o trecho mais lido: nao pode dizer que o trajeto "nao sai do
+# aparelho", porque o recibo leva origem e destino ao servidor, e o "Estimar
+# valor", ao servidor e ao Google.
+check("politica: o aviso diz que a origem e o destino do Caixa ficam no aparelho, sem negar o que o recibo leva",
+      "o trajeto das corridas não sai do aparelho" not in _aviso_cx
+      and "A origem e o destino das corridas lançadas no Caixa ficam só no aparelho; o recibo continua levando os dois"
+      in _aviso_cx, _aviso_cx[:400])
+check("politica: 2.3 diz que so o recibo guarda origem e destino no servidor, e o lancamento so no aparelho",
+      "A origem e o destino só ficam guardados no nosso servidor se você emitir um recibo" in _pol_cx
+      and '"Só lançar no caixa", eles ficam só no aparelho, no lançamento (seção 2.4)' in _pol_cx)
+# O servidor so grava a partir de CAIXA_A_PARTIR (o app 1.8 pode chegar antes).
+check("politica: a copia no servidor comeca na data do Caixa, e antes os lancamentos ficam so no aparelho",
+      "a cópia no nosso servidor começa em" in _aviso_cx
+      and f"A cópia dos lançamentos no nosso servidor começa em {A.CAIXA_A_PARTIR}; antes disso, eles ficam só no aparelho"
+      in _pol_cx)
 check("politica: 2.4 do Caixa depois da localizacao, e as seguintes renumeradas",
       _pol_cx.find("2.3 Localização") < _pol_cx.find("2.4 Caixa: receitas e despesas, só no app")
       < _pol_cx.find("2.5 Recibos emitidos sem conta") < _pol_cx.find("2.6 Dados que"))
@@ -4311,13 +4326,27 @@ check("politica: o que o Caixa guarda, de onde vem e a versao do app",
 check("politica: o trajeto e o passageiro ficam fora do servidor",
       "a origem e o destino da corrida lançada no Caixa não vão para o nosso servidor" in _pol_cx
       and "o Caixa não guarda dados do passageiro" in _pol_cx)
-check("politica: finalidade do Caixa, sem publicidade e a equipe so ve contagens",
+check("politica: finalidade do Caixa, sem publicidade nem repasse, e no dia a dia a equipe so ve contagens",
       "Mostrar o caixa do dia e do mês e guardar uma cópia" in _pol_cx
-      and "não são usados para publicidade nem compartilhados" in _pol_cx
-      and "nunca os valores de ninguém" in _pol_cx)
+      and "não são usados para publicidade nem vendidos ou repassados a terceiros, fora os casos da seção 4" in _pol_cx
+      and "No dia a dia, a nossa equipe vê só contagens agregadas de uso" in _pol_cx)
+# "Nunca os valores de ninguem" o primeiro pedido de copia (Termos 4.2) quebraria:
+# nao ha rota que devolva os lancamentos, alguem da equipe consulta.
+check("politica: sem promessa absoluta que a copia a pedido quebraria; diz quando os lancamentos sao consultados",
+      "nunca os valores de ninguém" not in _pol_cx and "não são usados para publicidade nem compartilhados" not in _pol_cx
+      and "só são consultados a pedido dele (como a cópia dos lançamentos" in _pol_cx
+      and "ou por ordem judicial ou requisição legal" in _pol_cx)
+# Restaurar em aparelho novo e a fase 2: ate la, a copia do servidor nao volta
+# sozinha, e a Politica e os Termos nao podem prometer que volta.
+check("politica: a copia do Caixa ainda nao volta sozinha para aparelho novo e e entregue a pedido",
+      "o app não traz essa cópia de volta sozinho para um aparelho novo ou para o app reinstalado" in _pol_cx
+      and "nós a entregamos a seu pedido, sem custo (seção 7)" in _pol_cx)
 check("politica: retencao do Caixa com o prazo da limpeza e a exclusao da conta",
       f"sai do nosso servidor em até {A.LANCAMENTO_APAGADO_DIAS} dias" in _pol_cx
       and "excluir a conta apaga todos na hora" in _pol_cx and "lançamentos do Caixa ficam armazenados" in _pol_cx)
+check("politica: o prazo do lancamento apagado conta de quando o app avisa o servidor",
+      f"sai do nosso servidor em até {A.LANCAMENTO_APAGADO_DIAS} dias, contados de quando o app nos avisa da exclusão"
+      in _pol_cx)
 _ter_cx = " ".join(_ter.split())
 check("termos: o Caixa nao e contabilidade e o motorista responde pelos valores",
       "4.2 Caixa: receitas e despesas" in _ter_cx and "Não é contabilidade nem declaração de imposto" in _ter_cx
@@ -4326,6 +4355,10 @@ check("termos: Gratis ve o mes corrente e Pro os anteriores, que continuam guard
       "o Caixa mostra o mês corrente; no Pro, também os meses anteriores" in _ter_cx
       and "os meses anteriores continuam guardados" in _ter_cx
       and "o plano Grátis mostra o mês corrente, e o Pro também os meses anteriores" in _ter_cx)
+check("termos: sem a restauracao (fase 2), o historico aparece inteiro so no aparelho onde foi lancado; noutro, a copia e a pedido",
+      "no aparelho onde foram lançados, aparecem inteiros quando você assina" in _ter_cx
+      and "o app não traz a cópia do servidor para um aparelho novo nem para o app reinstalado" in _ter_cx
+      and "servidor, e aparecem inteiros quando você assina" not in _ter_cx)
 check("termos: copia de todos os lancamentos sem custo pelo canal de Seus direitos (a trava e so de exibicao)",
       "sem custo, uma cópia de todos os seus lançamentos" in _ter_cx and '"Seus direitos"' in _ter_cx
       and "LGPD, art. 18" in _ter_cx and "só de exibição" in _ter_cx and "7. Seus direitos" in _pol_cx)

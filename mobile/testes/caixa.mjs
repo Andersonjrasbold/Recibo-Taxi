@@ -176,6 +176,14 @@ try {
   igual('recibo com valor que nao da numero (ou zero) fica fora do caixa',
     ['abc', '', '0', '0,00', '12abc34'].map((valor) => C.lancamentoDoRecibo({ ...recibo, dados: { ...recibo.dados, valor } },
       { decimalDe: decimalDoValor, agora })), [null, null, null, null, null]);
+  // Antes do build 23 o app nao conferia o valor: "150000" (querendo dizer
+  // 1.500,00) foi recusado pelo servidor e ficou no aparelho. Nao vira receita.
+  const comValor = (valor, moeda) => C.lancamentoDoRecibo({ ...recibo, dados: { ...recibo.dados, valor, moeda } },
+    { decimalDe: decimalDoValor, agora });
+  igual('recibo antigo acima do teto da moeda fica fora do caixa; no teto, entra',
+    [comValor('150000', 'BRL'), comValor('100.000,00', 'BRL'), comValor('100000,00', 'BRL'), (comValor('99999,99', 'BRL') || {}).centavos,
+      comValor('100000000', 'CLP'), (comValor('99999999', 'CLP') || {}).centavos],
+    [null, null, null, 9999999, null, 99999999]);
   igual('sem recibo, sem rid ou sem o conversor do app: null',
     [C.lancamentoDoRecibo(null, { decimalDe: decimalDoValor }), C.lancamentoDoRecibo({ ...recibo, rid: '' }, { decimalDe: decimalDoValor }),
       C.lancamentoDoRecibo(recibo, {})], [null, null, null]);

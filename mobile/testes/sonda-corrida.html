@@ -1246,7 +1246,9 @@ window.addEventListener('load', async () => {
         const tx = bancoV1.transaction('recibos', 'readwrite');
         [reciboV1('A0000000000001', 'R$ 45'), reciboV1('A0000000000002', '1 500,00'), reciboV1('A0000000000003', '15 000', { moeda: 'CRC' }),
          reciboV1('A0000000000004', '12,50', { moeda: undefined }), reciboV1('A0000000000005', 'abc'),
-         reciboV1('A0000000000006', '30', {}, { dono: 'outro' }), reciboV1('A0000000000007', '40', {}, { recusado: 'limite_mensal' })]
+         reciboV1('A0000000000006', '30', {}, { dono: 'outro' }), reciboV1('A0000000000007', '40', {}, { recusado: 'limite_mensal' }),
+         // De antes do build 23, que nao conferia o valor: "150000" passa do teto e o servidor recusou.
+         reciboV1('A0000000000008', '150000', {}, { recusado: 'valor_invalido' })]
           .forEach((x) => tx.objectStore('recibos').put(x));
         tx.oncomplete = ok2;
       });
@@ -1255,7 +1257,7 @@ window.addEventListener('load', async () => {
       Guardado.set('motorista', retratoV);
       const recibosV1 = await todosOsRecibos();
       const bancoV2 = await abrirBanco();
-      ok('caixa: o banco da versao 1 sobe para a 2 sem perder recibo', recibosV1.length === 7 && bancoV2.version === 2
+      ok('caixa: o banco da versao 1 sobe para a 2 sem perder recibo', recibosV1.length === 8 && bancoV2.version === 2
          && bancoV2.objectStoreNames.contains('lancamentos'), `${recibosV1.length} recibos, versao ${bancoV2.version}`);
       // Os recibos antigos viram receitas, com o decimalDoValor de verdade.
       const criadosV1 = await completarCaixaComRecibos();
@@ -1267,6 +1269,8 @@ window.addEventListener('load', async () => {
          JSON.stringify(doCaixa.map((x) => [x.id, x.centavos, x.moeda])));
       ok('caixa: recibo sem moeda usa a moeda de agora', doRecibo('A0000000000004').moeda === 'BRL' && doRecibo('A0000000000004').centavos === 1250);
       ok('caixa: o recusado por cota tambem entra (a corrida aconteceu)', doRecibo('A0000000000007').centavos === 4000);
+      ok('caixa: recibo antigo acima do teto da moeda ("150000", recusado pelo servidor) fica fora do caixa',
+         !doRecibo('A0000000000008').id && !(await todosOsLancamentos()).some((x) => x.rid === 'A0000000000008'));
       ok('caixa: valor que nao e numero fica fora, e o recibo de outro motorista tambem', criadosV1 === 5 && !doRecibo('A0000000000005').id
          && !(await todosOsLancamentos()).some((x) => x.rid === 'A0000000000006'), String(criadosV1));
       ok('caixa: a receita do recibo e corrida, de origem recibo, com a rota so no aparelho, versao 1 e pendente',

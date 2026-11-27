@@ -319,7 +319,12 @@
     let decimal;
     try { decimal = decimalDe(String(d.valor == null ? '' : d.valor)); } catch { return null; }
     const centavos = centavosDe(decimal, casasDaMoeda(moeda));
-    if (!centavos) return null;
+    // Acima do teto da moeda: recibo de antes do build 23 (o app nao conferia
+    // o valor), que o servidor recusou ("150000" querendo dizer 1.500,00).
+    // Entraria no caixa com um valor que nunca foi cobrado, somado no dia e no
+    // mes, com a copia recusada e, num mes anterior do Gratis, sem como apagar.
+    // O recibo de hoje nem nasce assim (motivoValorInvalido).
+    if (!centavos || centavos > tetoEmCentavos(moeda)) return null;
     const quando = agora || new Date().toISOString();
     // Data que nao existe (recibo de versao antiga, sem a conferencia de hoje)
     // cai no dia em que o recibo nasceu, para nao sumir de todos os dias.

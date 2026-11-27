@@ -4582,6 +4582,421 @@ check("painel: visita a pagina entra no grafico como 'abriram' (robo fora), nao 
       and any(l["canal"] == f"teste-suite-pg-{_suf_g} · abriu a página" for l in _dd_pg["cliques_canal"] or []),
       str(_l_pg)[:300])
 
+# -- Caixa do app 1.8 (POST /api/lancamentos, migracao 0022) -----------------
+# Contrato no README ("Caixa (app 1.8)"). O app manda o valor em inteiro na
+# menor unidade ("centavos"); o banco guarda em reais, em ingles. Tudo aqui e
+# de contas @teste.invalid, que o cascade limpa no fim.
+print("\n-- Caixa: lancamentos do app --")
+from decimal import Decimal as _DecCx
+import logging as _logging_cx
+_suf_cx = os.urandom(3).hex()
+_hoje_cx = A.today_br()
+_dia_cx = A.datetime.now(A.BR_TZ).date()
+
+
+def _conta_app_cx(nome):
+    """Conta nova pelo /api/cadastro: (cliente, cabecalho Bearer, id)."""
+    _cli = A.app.test_client()
+    _email = f"{nome}-{_suf_cx}@teste.invalid"
+    _r = _cli.post("/api/cadastro", json={
+        "nome_completo": "Caixa Teste", "email": _email, "senha": "senha12345",
+        "whatsapp": "45998231111", "cpf": "52998224725", "cidade": "Cascavel", "placa": "CXA1234"})
+    _tk = _r.get_json().get("access_token", "") if _r.status_code == 201 else ""
+    return _cli, {"Authorization": f"Bearer {_tk}"}, (A.get_store().get_user_by_email(_email) or {}).get("_id", "")
+
+
+def _lanc(**campos):
+    """Um lancamento valido do contrato, com o que o teste quiser trocar."""
+    item = {"id": "l-" + os.urandom(8).hex(), "tipo": "despesa", "categoria": "combustivel",
+            "centavos": 8600, "moeda": "BRL", "data": _hoje_cx, "hora": "15:10", "forma": "Pix",
+            "origem": "manual", "rid": None, "obs": "", "km": None, "litros": "30,5",
+            "versao": 1, "apagado": False}
+    item.update(campos)
+    return item
+
+
+_ccx, _cabx, _uid_cx = _conta_app_cx("caixa")
+check("caixa: conta do app criada", bool(_uid_cx))
+
+
+def _enviar_cx(*itens, cab=None, cli=None):
+    return (cli or _ccx).post("/api/lancamentos", headers=_cabx if cab is None else cab,
+                              json={"lancamentos": list(itens)})
+
+
+def _linhas_cx(did=None):
+    return {l["id"]: l for l in A.get_store().list_ledger_entries_by_driver(did or _uid_cx)}
+
+
+def _n_lanc_cx(did):
+    with A.get_store().pool.connection() as _conn:
+        return _conn.execute("select count(*) as n from public.ledger_entries where driver_id = %s",
+                             (did,)).fetchone()["n"]
+
+
+def _contador_cx(did=None):
+    return A.get_store().get_counter(f"lancamentos:{did or _uid_cx}:{_hoje_cx}")
+
+
+_r = A.app.test_client().post("/api/lancamentos", json={"lancamentos": [_lanc()]})
+check("caixa: sem token devolve 401 nao_autenticado",
+      _r.status_code == 401 and (_r.get_json() or {}).get("erro") == "nao_autenticado", _r.status_code)
+_r = _ccx.options("/api/lancamentos", headers={
+    "Origin": "capacitor://localhost", "Access-Control-Request-Method": "POST"})
+check("caixa: o app passa pelo preflight",
+      _r.status_code in (200, 204) and _r.headers.get("Access-Control-Allow-Origin") == "capacitor://localhost",
+      f"{_r.status_code} {_r.headers.get('Access-Control-Allow-Origin')}")
+
+_l1 = _lanc(obs="  posto da avenida  ", km="12,4")
+_r = _enviar_cx(_l1)
+check("caixa: com token devolve 200 e o id em aceitos",
+      _r.status_code == 200 and _r.get_json() == {"aceitos": [_l1["id"]], "recusados": []},
+      f"{_r.status_code} {_r.get_json()}")
+_g = _linhas_cx().get(_l1["id"]) or {}
+check("caixa: grava em ingles, com o valor em reais (8600 centavos = 86,00)",
+      _g.get("kind") == "expense" and _g.get("category") == "combustivel" and _g.get("amount") == _DecCx("86.00")
+      and _g.get("currency") == "BRL" and str(_g.get("entry_date")) == _hoje_cx and _g.get("entry_time") == "15:10"
+      and _g.get("payment_method") == "Pix" and _g.get("source") == "manual" and _g.get("rid") is None
+      and _g.get("note") == "posto da avenida" and _g.get("distance_km") == _DecCx("12.4")
+      and _g.get("liters") == _DecCx("30.50") and _g.get("version") == 1 and _g.get("deleted_at") is None, str(_g))
+_r = _enviar_cx(_l1)
+check("caixa: reenvio identico volta em aceitos e nao duplica (uma linha)",
+      _r.status_code == 200 and _r.get_json()["aceitos"] == [_l1["id"]] and len(_linhas_cx()) == 1,
+      f"{_r.status_code} {len(_linhas_cx())}")
+
+_enviar_cx(dict(_l1, centavos=9000, versao=2))
+_g = _linhas_cx()[_l1["id"]]
+check("caixa: versao maior atualiza", _g["amount"] == _DecCx("90.00") and _g["version"] == 2, str(_g))
+_r = _enviar_cx(dict(_l1, centavos=100, versao=1))
+_g = _linhas_cx()[_l1["id"]]
+check("caixa: versao menor nao sobrescreve e volta em aceitos (o servidor ja tem algo mais novo)",
+      _r.status_code == 200 and _r.get_json()["aceitos"] == [_l1["id"]]
+      and _g["amount"] == _DecCx("90.00") and _g["version"] == 2, str(_g))
+
+_enviar_cx(dict(_l1, centavos=9000, versao=3, apagado=True))
+_g = _linhas_cx()[_l1["id"]]
+_apagado_em_cx = _g["deleted_at"]
+check("caixa: apagado=true vira tumulo (deleted_at), sem sumir a linha",
+      _apagado_em_cx is not None and _g["version"] == 3, str(_g))
+_enviar_cx(dict(_l1, centavos=9000, versao=3, apagado=True))
+check("caixa: reenviar o tumulo guarda a data da primeira vez (a limpeza conta dela)",
+      _linhas_cx()[_l1["id"]]["deleted_at"] == _apagado_em_cx)
+_enviar_cx(dict(_l1, versao=2, apagado=False))
+check("caixa: versao menor nao desapaga", _linhas_cx()[_l1["id"]]["deleted_at"] == _apagado_em_cx)
+_enviar_cx(dict(_l1, centavos=9100, versao=4, apagado=False))
+_g = _linhas_cx()[_l1["id"]]
+check("caixa: versao maior com apagado=false desapaga",
+      _g["deleted_at"] is None and _g["amount"] == _DecCx("91.00") and _g["version"] == 4, str(_g))
+_l2 = _lanc(apagado="true")
+_enviar_cx(_l2)
+check("caixa: so o booleano true apaga ('true' em texto nao)", _linhas_cx()[_l2["id"]]["deleted_at"] is None)
+
+# Um caso por campo da tabela do contrato, todos no mesmo lote com um item bom:
+# o errado vai para recusados com o codigo dele e o bom segue.
+_casos_cx = [
+    ("tipo fora da lista", _lanc(tipo="ganho"), "tipo_invalido"),
+    ("tipo que nao e texto", _lanc(tipo=["receita"]), "tipo_invalido"),
+    ("categoria com maiuscula e acento", _lanc(categoria="Combustível"), "categoria_invalida"),
+    ("categoria com 31 caracteres", _lanc(categoria="a" * 31), "categoria_invalida"),
+    ("centavos zero", _lanc(centavos=0), "valor_invalido"),
+    ("centavos negativos", _lanc(centavos=-500), "valor_invalido"),
+    ("centavos true", _lanc(centavos=True), "valor_invalido"),
+    ("centavos 45.0 (float)", _lanc(centavos=45.0), "valor_invalido"),
+    ("centavos em texto", _lanc(centavos="4500"), "valor_invalido"),
+    ("data que nao existe", _lanc(data="2026-02-30"), "data_invalida"),
+    ("data no formato do Brasil", _lanc(data="26/11/2026"), "data_invalida"),
+    ("data antes de 2000", _lanc(data="1999-12-31"), "data_invalida"),
+    ("data alem de hoje + 2 dias", _lanc(data=(_dia_cx + A.timedelta(days=3)).isoformat()), "data_invalida"),
+    ("forma com 41 caracteres", _lanc(forma="x" * 41), "campo_longo"),
+    ("origem fora da lista", _lanc(origem="banco"), "origem_invalida"),
+    ("rid em minusculas", _lanc(rid="0a1b2c3d4e5f60"), "rid_invalido"),
+    ("recibo sem rid", _lanc(origem="recibo", rid=None), "rid_invalido"),
+    ("recibo com id diferente de r-<rid>", _lanc(origem="recibo", rid="0A1B2C3D4E5F60"), "rid_invalido"),
+    ("obs com 121 caracteres", _lanc(obs="x" * 121), "campo_longo"),
+    ("km que nao e numero", _lanc(km="uns 12"), "km_invalido"),
+    ("litros zero", _lanc(litros="0"), "litros_invalido"),
+    ("litros acima de 999,99", _lanc(litros="1000"), "litros_invalido"),
+    ("litros com 3 casas", _lanc(litros="30,555"), "litros_invalido"),
+    ("litros booleano", _lanc(litros=True), "litros_invalido"),
+    ("versao zero", _lanc(versao=0), "versao_invalida"),
+    ("versao em texto", _lanc(versao="1"), "versao_invalida"),
+    ("versao acima do integer do banco", _lanc(versao=2**31), "versao_invalida"),
+]
+_bom_cx = _lanc()
+_r = _enviar_cx(*[c[1] for c in _casos_cx], _bom_cx)
+_resp_cx = _r.get_json() or {}
+_erros_cx = {x["id"]: x["erro"] for x in _resp_cx.get("recusados", [])}
+check("caixa: lote com itens errados responde 200 e grava so o certo",
+      _r.status_code == 200 and _resp_cx.get("aceitos") == [_bom_cx["id"]] and _bom_cx["id"] in _linhas_cx(),
+      f"{_r.status_code} {str(_resp_cx)[:200]}")
+for _nome_cx, _item_cx, _codigo_cx in _casos_cx:
+    check(f"caixa: {_nome_cx} -> {_codigo_cx}", _erros_cx.get(_item_cx["id"]) == _codigo_cx, _erros_cx.get(_item_cx["id"]))
+_gravados_cx = _linhas_cx()
+check("caixa: nada dos itens recusados foi gravado", not any(c[1]["id"] in _gravados_cx for c in _casos_cx))
+
+_r = _enviar_cx("texto", [1], None, _lanc(id="tem espaço"), _lanc(id="x" * 50), _lanc(id=123), _lanc(id="abc\n"))
+_rec_cx = (_r.get_json() or {}).get("recusados", [])
+check("caixa: item que nao e objeto -> item_invalido, com id null",
+      _r.status_code == 200 and [x for x in _rec_cx if x["erro"] == "item_invalido"] == [{"id": None, "erro": "item_invalido"}] * 3,
+      str(_rec_cx))
+check("caixa: id fora do formato -> id_invalido, devolvendo o id cortado em 40",
+      {"id": "tem espaço", "erro": "id_invalido"} in _rec_cx and {"id": "x" * 40, "erro": "id_invalido"} in _rec_cx
+      and {"id": None, "erro": "id_invalido"} in _rec_cx and {"id": "abc\n", "erro": "id_invalido"} in _rec_cx, str(_rec_cx))
+
+# Teto por moeda, na menor unidade: o real tem 2 casas; o peso chileno, 0.
+_brl_teto, _brl_acima = _lanc(centavos=9999999), _lanc(centavos=10000000)
+_clp_teto, _clp_acima = _lanc(moeda="CLP", centavos=99999999), _lanc(moeda="CLP", centavos=100000000)
+_r = _enviar_cx(_brl_teto, _brl_acima, _clp_teto, _clp_acima)
+_resp_cx = _r.get_json() or {}
+_g = _linhas_cx()
+check("caixa: teto do real (99.999,99) aceito, um centavo acima recusado",
+      _brl_teto["id"] in _resp_cx.get("aceitos", []) and {"id": _brl_acima["id"], "erro": "valor_invalido"} in _resp_cx.get("recusados", [])
+      and _g[_brl_teto["id"]]["amount"] == _DecCx("99999.99"), str(_resp_cx)[:300])
+check("caixa: peso chileno tem 0 casas: 99.999.999 pesos aceitos, um acima recusado",
+      _clp_teto["id"] in _resp_cx.get("aceitos", []) and {"id": _clp_acima["id"], "erro": "valor_invalido"} in _resp_cx.get("recusados", [])
+      and _g[_clp_teto["id"]]["amount"] == _DecCx("99999999") and _g[_clp_teto["id"]]["currency"] == "CLP", str(_g.get(_clp_teto["id"])))
+_xyz_cx = _lanc(moeda="XYZ", centavos=1234)
+_enviar_cx(_xyz_cx)
+_g = _linhas_cx()[_xyz_cx["id"]]
+check("caixa: moeda fora da lista vale a do cadastro", _g["currency"] == "BRL" and _g["amount"] == _DecCx("12.34"), str(_g))
+
+_varios_cx = [_lanc(hora="25:00"), _lanc(data=(_dia_cx + A.timedelta(days=2)).isoformat()), _lanc(data="2000-01-01"),
+              _lanc(km=12.4, litros=30.5), _lanc(forma=None, obs=None, km="", litros="")]
+_r = _enviar_cx(*_varios_cx)
+_g = _linhas_cx()
+check("caixa: hora invalida vira vazio, sem recusar o lancamento",
+      _r.status_code == 200 and len(_r.get_json()["aceitos"]) == 5 and _g[_varios_cx[0]["id"]]["entry_time"] == "",
+      f"{_r.status_code} {_r.get_json()}")
+check("caixa: data de hoje + 2 dias e 01/01/2000 sao aceitas",
+      _varios_cx[1]["id"] in _g and str(_g[_varios_cx[2]["id"]]["entry_date"]) == "2000-01-01")
+check("caixa: km e litros tambem como numero",
+      _g[_varios_cx[3]["id"]]["distance_km"] == _DecCx("12.4") and _g[_varios_cx[3]["id"]]["liters"] == _DecCx("30.50"))
+check("caixa: forma e obs nulas viram vazio; km e litros vazios ficam sem valor",
+      _g[_varios_cx[4]["id"]]["payment_method"] == "" and _g[_varios_cx[4]["id"]]["note"] == ""
+      and _g[_varios_cx[4]["id"]]["distance_km"] is None and _g[_varios_cx[4]["id"]]["liters"] is None)
+
+# O recibo de origem nao precisa existir no servidor (recusado por cota tambem vale).
+_rid_cx = os.urandom(7).hex().upper()
+_lr_cx = _lanc(id=f"r-{_rid_cx}", tipo="receita", categoria="corrida", centavos=4500, origem="recibo",
+               rid=_rid_cx, litros=None)
+_r = _enviar_cx(_lr_cx)
+_g = _linhas_cx().get(_lr_cx["id"]) or {}
+check("caixa: lancamento de recibo (r-<rid>) aceito sem o recibo existir no servidor",
+      _r.get_json() == {"aceitos": [_lr_cx["id"]], "recusados": []} and _g.get("source") == "receipt"
+      and _g.get("rid") == _rid_cx and _g.get("kind") == "income" and A.get_store().get_receipt(_rid_cx) is None, str(_g))
+
+# Mesmo id duas vezes no lote: sem isto o upsert estourava (500) com
+# "cannot affect row a second time".
+_idr_cx = "l-" + os.urandom(8).hex()
+_r = _enviar_cx(_lanc(id=_idr_cx, centavos=100, versao=2), _lanc(id=_idr_cx, centavos=300, versao=3),
+                _lanc(id=_idr_cx, centavos=200, versao=1))
+_g = _linhas_cx().get(_idr_cx) or {}
+check("caixa: id repetido no lote fica o de maior versao, numa linha so e sem 500",
+      _r.status_code == 200 and _r.get_json() == {"aceitos": [_idr_cx], "recusados": []}
+      and _g.get("amount") == _DecCx("3.00") and _g.get("version") == 3, f"{_r.status_code} {_r.get_json()} {_g}")
+_ide_cx = "l-" + os.urandom(8).hex()
+_enviar_cx(_lanc(id=_ide_cx, centavos=100), _lanc(id=_ide_cx, centavos=200))
+check("caixa: no empate de versao fica o ultimo", _linhas_cx()[_ide_cx]["amount"] == _DecCx("2.00"))
+_idv_cx = "l-" + os.urandom(8).hex()
+_r = _enviar_cx(_lanc(id=_idv_cx, centavos=100, versao=2), _lanc(id=_idv_cx, centavos=True, versao=5))
+check("caixa: se o repetido que ficou (maior versao) e invalido, o id e recusado e nada e gravado",
+      _r.get_json() == {"aceitos": [], "recusados": [{"id": _idv_cx, "erro": "valor_invalido"}]}
+      and _idv_cx not in _linhas_cx(), str(_r.get_json()))
+
+_antes_cx = _contador_cx()
+for _nome_cx, _corpo_cx in (("lote vazio", {"lancamentos": []}), ("corpo sem a lista", {}),
+                            ("lancamentos que nao e lista", {"lancamentos": {"id": "x"}}),
+                            ("lote de 101 itens", {"lancamentos": [_lanc() for _ in range(101)]}),
+                            ("lista no lugar do objeto", [_lanc()])):
+    _r = _ccx.post("/api/lancamentos", headers=_cabx, json=_corpo_cx)
+    check(f"caixa: {_nome_cx} devolve 400 lote_invalido",
+          _r.status_code == 400 and _r.get_json() == {"erro": "lote_invalido", "maximo": A.LANCAMENTOS_POR_LOTE},
+          f"{_r.status_code} {_r.get_json()}")
+check("caixa: lote invalido nao gasta o teto do dia", _contador_cx() == _antes_cx, f"{_antes_cx} -> {_contador_cx()}")
+_r = _enviar_cx(*[_lanc() for _ in range(A.LANCAMENTOS_POR_LOTE)])
+check("caixa: lote de 100 cabe", _r.status_code == 200 and len(_r.get_json()["aceitos"]) == A.LANCAMENTOS_POR_LOTE,
+      _r.status_code)
+_antes_cx = _contador_cx()
+_enviar_cx(_lanc(), _lanc(tipo="x"), "lixo")
+check("caixa: o teto conta os itens do lote, antes de conferir", _contador_cx() == _antes_cx + 3,
+      f"{_antes_cx} -> {_contador_cx()}")
+_teto_cx = A.LANCAMENTOS_DIARIOS
+A.LANCAMENTOS_DIARIOS = _contador_cx() + 1   # cabe 1; o lote de 2 passa do teto
+try:
+    _lt1_cx, _lt2_cx = _lanc(), _lanc()
+    _r = _enviar_cx(_lt1_cx, _lt2_cx)
+    check("caixa: teto diario devolve 429 muitos_lancamentos e nada e gravado",
+          _r.status_code == 429 and _r.get_json() == {"erro": "muitos_lancamentos", "limite": A.LANCAMENTOS_DIARIOS}
+          and _lt1_cx["id"] not in _linhas_cx() and _lt2_cx["id"] not in _linhas_cx(), f"{_r.status_code} {_r.get_json()}")
+finally:
+    A.LANCAMENTOS_DIARIOS = _teto_cx
+
+# Isolamento: o driver_id vem do token, nunca do corpo.
+_ccx_b, _cabx_b, _uid_cx_b = _conta_app_cx("caixa-b")
+_r = _enviar_cx(dict(_l1, centavos=55500, versao=99, driver_id=_uid_cx), cab=_cabx_b, cli=_ccx_b)
+_ga_cx, _gb_cx = _linhas_cx()[_l1["id"]], _linhas_cx(_uid_cx_b).get(_l1["id"]) or {}
+check("caixa: o mesmo id de outro motorista vira outra linha, e o driver_id do corpo e ignorado",
+      _r.status_code == 200 and _gb_cx.get("amount") == _DecCx("555.00") and _gb_cx.get("version") == 99
+      and len(_linhas_cx(_uid_cx_b)) == 1, str(_gb_cx))
+check("caixa: o segundo motorista nao altera a linha do primeiro",
+      _ga_cx["amount"] == _DecCx("91.00") and _ga_cx["version"] == 4, str(_ga_cx))
+
+# O trajeto e o passageiro ficam no aparelho: nem coluna para eles existe.
+_lt_cx = _lanc(origem_texto="Rua das Flores, 10", destino="Aeroporto Internacional", rota="Centro → Aeroporto",
+               passageiro="Maria Teste")
+_r = _enviar_cx(_lt_cx)
+with A.get_store().pool.connection() as _conn:
+    _colunas_cx = {l["column_name"] for l in _conn.execute(
+        """select column_name from information_schema.columns
+            where table_schema = 'public' and table_name = 'ledger_entries'""").fetchall()}
+    _crua_cx = _conn.execute("select row_to_json(l)::text as t from public.ledger_entries l where driver_id = %s and id = %s",
+                             (_uid_cx, _lt_cx["id"])).fetchone()
+check("caixa: trajeto e passageiro a mais no item nao quebram o envio",
+      _r.status_code == 200 and _r.get_json()["aceitos"] == [_lt_cx["id"]], f"{_r.status_code} {_r.get_json()}")
+check("caixa: a tabela nao tem coluna de trajeto nem de passageiro",
+      _colunas_cx and not _colunas_cx & {"origin", "destination", "route", "rota", "origem", "destino", "passenger"},
+      str(_colunas_cx))
+check("caixa: nada do trajeto nem do passageiro aparece na linha gravada",
+      _crua_cx is not None and not any(t in _crua_cx["t"] for t in ("Flores", "Aeroporto", "Maria")), str(_crua_cx))
+
+# Banco fora do ar: 503 e nada gravado; o log leva contagem e codigo, nunca
+# valor, observacao ou categoria (a mensagem do Postgres cita a linha).
+class _ColetorCx(_logging_cx.Handler):
+    def __init__(self):
+        super().__init__()
+        self.msgs = []
+
+    def emit(self, registro):
+        self.msgs.append(registro.getMessage())
+
+
+_coletor_cx = _ColetorCx()
+A.app.logger.addHandler(_coletor_cx)
+_upsert_real_cx = A.PostgresStore.upsert_ledger_entries
+
+
+def _upsert_quebrado_cx(self, driver_id, itens):
+    raise A.psycopg.errors.CheckViolation("Failing row contains (4321.00, aluguel_veiculo, obs-secreta-123)")
+
+
+A.PostgresStore.upsert_ledger_entries = _upsert_quebrado_cx
+try:
+    _r = _enviar_cx(_lanc(centavos=432100, obs="obs-secreta-123", categoria="aluguel_veiculo"), _lanc(tipo="x"))
+    _r2 = _enviar_cx(_lanc(tipo="x", obs="obs-secreta-456"))
+finally:
+    A.PostgresStore.upsert_ledger_entries = _upsert_real_cx
+    A.app.logger.removeHandler(_coletor_cx)
+_log_cx = " | ".join(_coletor_cx.msgs)
+check("caixa: banco fora do ar devolve 503 indisponivel", _r.status_code == 503 and _r.get_json() == {"erro": "indisponivel"},
+      f"{_r.status_code} {_r.get_json()}")
+check("caixa: o log do erro leva contagens e o codigo, nunca valor, observacao ou categoria",
+      "lote de 2" in _log_cx and "CheckViolation" in _log_cx and "tipo_invalido" in _log_cx
+      and not any(t in _log_cx for t in ("obs-secreta", "4321", "aluguel")), _log_cx)
+check("caixa: lote so com recusados responde 200 sem gravar", _r2.status_code == 200 and _r2.get_json()["aceitos"] == [])
+
+# Exclusao de conta: os tres caminhos deixam zero lancamentos (cascade).
+_email_site_cx = f"caixa-site-{_suf_cx}@teste.invalid"
+_cs_cx = novo_cliente(_email_site_cx)
+_uid_site_cx = A.get_store().get_user_by_email(_email_site_cx)["_id"]
+_r = _cs_cx.post("/api/lancamentos", json={"lancamentos": [_lanc(), _lanc(apagado=True)]})
+check("caixa: o cookie do site tambem passa", _r.status_code == 200 and len(_r.get_json()["aceitos"]) == 2,
+      f"{_r.status_code} {_r.get_json()}")
+_cs_cx.post("/excluir-conta", data={"senha": "senha12345", "confirmacao": "EXCLUIR"})
+check("caixa: excluir a conta pelo site apaga os lancamentos (o tumulo tambem)",
+      A.get_store().get_user_by_id(_uid_site_cx) is None and _n_lanc_cx(_uid_site_cx) == 0)
+_ca_cx, _caba_cx, _uida_cx = _conta_app_cx("caixa-api")
+_enviar_cx(_lanc(), _lanc(), cab=_caba_cx, cli=_ca_cx)
+_antes_exc_cx = _n_lanc_cx(_uida_cx)
+_r = _ca_cx.post("/api/excluir-conta", headers=_caba_cx, json={"senha": "senha12345"})
+check("caixa: excluir a conta pelo app apaga os lancamentos",
+      _antes_exc_cx == 2 and _r.status_code == 200 and _n_lanc_cx(_uida_cx) == 0, f"{_antes_exc_cx} {_r.status_code}")
+_email_adm_cx = f"admin-caixa-{_suf_cx}@teste.invalid"
+A.get_store().upsert_admin(_email_adm_cx, _gph("senha-da-suite-123"))
+_cadm_cx = A.app.test_client()
+_cadm_cx.post("/admin/login", data={"email": _email_adm_cx, "senha": "senha-da-suite-123"},
+              environ_base={"REMOTE_ADDR": "203.0.113.252"})
+with _cadm_cx.session_transaction() as _s_cx:
+    _csrf_cx = _s_cx.get("admin_csrf", "")
+_cv_cx, _cabv_cx, _uidv_cx = _conta_app_cx("caixa-painel-exc")
+_enviar_cx(_lanc(), cab=_cabv_cx, cli=_cv_cx)
+_antes_exc_cx = _n_lanc_cx(_uidv_cx)
+_r = _cadm_cx.post(f"/admin/motoristas/{_uidv_cx}/excluir", data={"csrf": _csrf_cx, "confirmacao": "EXCLUIR"})
+check("caixa: excluir o cadastro pelo painel apaga os lancamentos",
+      _antes_exc_cx == 1 and _r.status_code == 302 and A.get_store().get_user_by_id(_uidv_cx) is None
+      and _n_lanc_cx(_uidv_cx) == 0, f"{_antes_exc_cx} {_r.status_code}")
+
+# Painel: so contagens. Com a consulta apontando para uma tabela que nao
+# existe (o mesmo erro da migracao por aplicar), o bloco sai indisponivel.
+def _caixa_no_painel():
+    _dd = {"_tempos": {}}
+    with A.get_store().pool.connection() as _conn:
+        A._executar_secoes(_conn, ["caixa"], A._params_dashboard_admin(), _dd)
+    return _dd["caixa"] or {}
+
+
+_antes_p_cx = _caixa_no_painel()
+_cp_cx, _cabp_cx, _uidp_cx = _conta_app_cx("caixa-painel")
+_rid_p_cx = os.urandom(7).hex().upper()
+_enviar_cx(_lanc(), _lanc(tipo="receita", categoria="corrida", origem="corrida", litros=None),
+           _lanc(id=f"r-{_rid_p_cx}", tipo="receita", categoria="corrida", origem="recibo", rid=_rid_p_cx, litros=None),
+           _lanc(apagado=True), cab=_cabp_cx, cli=_cp_cx)
+_depois_p_cx = _caixa_no_painel()
+_dif_cx = {k: int(_depois_p_cx.get(k) or 0) - int(_antes_p_cx.get(k) or 0) for k in _depois_p_cx}
+check("painel: contagens do Caixa sobem com os lancamentos (apagado fica fora das contagens por tipo e origem)",
+      _dif_cx == {"motoristas": 1, "motoristas_7d": 1, "total_30d": 3, "receitas_30d": 2, "despesas_30d": 1,
+                  "recibo_30d": 1, "corrida_30d": 1, "manual_30d": 1}, str(_dif_cx))
+_html_cx = _cadm_cx.get("/admin?atualizar=1").get_data(as_text=True)
+_bloco_cx = _html_cx[_html_cx.find("Caixa (app 1.8)"):]
+_bloco_cx = _bloco_cx[:_bloco_cx.find("Ressalva:")]
+check("painel: bloco do Caixa logo depois do Fazer corrida, com as contagens",
+      0 < _html_cx.find("Fazer corrida (app 1.2)") < _html_cx.find("Caixa (app 1.8)")
+      and "Motoristas que já lançaram" in _bloco_cx and "Lançamentos que chegaram em 30 d" in _bloco_cx
+      and "Por origem em 30 d" in _bloco_cx and "Seção indisponível" not in _bloco_cx, _bloco_cx[:300])
+check("painel: o bloco do Caixa nao mostra dinheiro nem lista motorista",
+      "R$" not in _bloco_cx and "/admin/motoristas/" not in _bloco_cx)
+_sql_caixa_cx = A._SQL_ADMIN["caixa"]
+A._SQL_ADMIN["caixa"] = _sql_caixa_cx.replace("public.ledger_entries", "public.ledger_entries_sem_migracao")
+try:
+    _html_sem_cx = _cadm_cx.get("/admin?atualizar=1").get_data(as_text=True)
+finally:
+    A._SQL_ADMIN["caixa"] = _sql_caixa_cx
+    A._ADMIN_CACHE.pop("dashboard", None)
+_bloco_sem_cx = _html_sem_cx[_html_sem_cx.find("Caixa (app 1.8)"):]
+_bloco_sem_cx = _bloco_sem_cx[:_bloco_sem_cx.find("Ressalva:")]
+check("painel: sem a tabela (migracao 0022 por aplicar), o bloco do Caixa sai indisponivel e o painel abre",
+      "Seção indisponível" in _bloco_sem_cx and "Motoristas que já lançaram" not in _bloco_sem_cx
+      and "Fazer corrida (app 1.2)" in _html_sem_cx, _bloco_sem_cx[:300])
+
+# Limpeza: o tumulo sai de vez depois de LANCAMENTO_APAGADO_DIAS; o recente e o
+# lancamento antigo que nunca foi apagado ficam.
+_cl_cx, _cabl_cx, _uidl_cx = _conta_app_cx("caixa-limpeza")
+_velho_cx, _velho2_cx, _recente_cx, _vivo_cx = _lanc(apagado=True), _lanc(apagado=True), _lanc(apagado=True), _lanc()
+_enviar_cx(_velho_cx, _velho2_cx, _recente_cx, _vivo_cx, cab=_cabl_cx, cli=_cl_cx)
+with A.get_store().pool.connection() as _conn:
+    _conn.execute("""update public.ledger_entries set deleted_at = now() - make_interval(days => %s)
+                      where driver_id = %s and id = any(%s)""",
+                  (A.LANCAMENTO_APAGADO_DIAS + 1, _uidl_cx, [_velho_cx["id"], _velho2_cx["id"]]))
+    _conn.execute("""update public.ledger_entries set deleted_at = now() - make_interval(days => %s)
+                      where driver_id = %s and id = %s""", (A.LANCAMENTO_APAGADO_DIAS - 1, _uidl_cx, _recente_cx["id"]))
+    _conn.execute("""update public.ledger_entries set created_at = now() - interval '400 days'
+                      where driver_id = %s and id = %s""", (_uidl_cx, _vivo_cx["id"]))
+_corte_cx = A.to_utc_iso(A.datetime.now(A.timezone.utc) - A.timedelta(days=A.LANCAMENTO_APAGADO_DIAS))
+_n_purga_cx, _mais_cx = A.get_store().purge_deleted_ledger_before(_corte_cx, 1)
+check("limpeza do caixa: apaga em lotes e avisa que sobrou", _n_purga_cx == 1 and _mais_cx is True,
+      f"{_n_purga_cx} {_mais_cx}")
+os.environ["CRON_SECRET"] = "segredo-de-teste"
+try:
+    _r = c0.get("/tarefas/limpeza", headers={"Authorization": "Bearer segredo-de-teste"})
+finally:
+    os.environ.pop("CRON_SECRET", None)
+_d_cx = _r.get_json() or {}
+_ficou_cx = _linhas_cx(_uidl_cx)
+check("limpeza: apaga de vez o lancamento apagado ha mais de 30 dias e informa a contagem",
+      _r.status_code == 200 and _velho_cx["id"] not in _ficou_cx and _velho2_cx["id"] not in _ficou_cx
+      and _d_cx.get("lancamentos_removidos", 0) >= 1, str(_d_cx))
+check("limpeza: mantem o apagado ha menos de 30 dias e o antigo que nao foi apagado",
+      _recente_cx["id"] in _ficou_cx and _vivo_cx["id"] in _ficou_cx, str(list(_ficou_cx)))
+
 print("\n-- Data API fechada --")
 with A.get_store().pool.connection() as _conn:
     _sem_rls = [l["relname"] for l in _conn.execute(

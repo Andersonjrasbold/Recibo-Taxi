@@ -353,6 +353,17 @@ ESTIMATIVA_DIARIA_LIMITE = 40
 ESTIMATIVA_DIARIA_GLOBAL = 300
 ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 
+# Caixa do app 1.8 (POST /api/lancamentos, migração 0022). O teto diário conta
+# ITENS, não pedidos: um motorista real lança umas 40 por dia, e 500 segura um
+# aparelho em laço ou um token vazado. A primeira carga de quem já tem mais de
+# 500 recibos termina no dia seguinte, e isso é aceitável (o app reenvia).
+LANCAMENTOS_DIARIOS = 500
+LANCAMENTOS_POR_LOTE = 100
+# Lançamento apagado no app fica no servidor como túmulo (é ele que impede o
+# recibo apagado de voltar ao caixa) e sai de vez depois disto. A Política de
+# Privacidade promete "em até 30 dias".
+LANCAMENTO_APAGADO_DIAS = 30
+
 # Painel /admin. Tentativas de login por dia: o painel mostra CPF e telefone de
 # todos os motoristas, e a senha inicial e curta por decisao do dono — o teto
 # e o que impede um script de adivinhar. A sessao do admin morre sozinha em
@@ -1830,6 +1841,90 @@ class PostgresStore:
             ).fetchall()
             sobrou = conn.execute(
                 "select exists(select 1 from public.rate_limits where created_at < %s) as e",
+                (cutoff_iso,),
+            ).fetchone()["e"]
+        return len(apagados), bool(sobrou)
+
+    def bump_counter_by(self, key: str, n: int) -> int:
+        """Soma n ao contador numa ida só ao banco e devolve o total.
+
+        O bump_counter (função SQL da 0001) só soma 1 e fica como está para os
+        outros tetos. O de lançamentos conta itens do lote, e somar um por um
+        seriam até 100 idas ao banco por pedido.
+        """
+        with self.pool.connection() as conn:
+            return conn.execute(
+                """insert into public.rate_limits as r (key, count) values (%s, %s)
+                   on conflict (key) do update set count = r.count + excluded.count
+                   returning r.count""",
+                (key, n),
+            ).fetchone()["count"]
+
+    # ── caixa (migração 0022) ───────────────────────────────────────────────
+    def upsert_ledger_entries(self, driver_id: str, itens: list[dict]) -> None:
+        """Grava os lançamentos de um motorista num comando só (uma transação).
+
+        `itens` vem de ler_lote_de_lancamentos: já conferido e sem id repetido
+        (repetido no mesmo comando, o ON CONFLICT estoura com "cannot affect row
+        a second time"). A versão decide: a guardada só é trocada por uma igual
+        ou maior, então o reenvio atrasado de uma versão velha não desfaz uma
+        edição. O driver_id vem do token, nunca do corpo do pedido.
+        """
+        with self.pool.connection() as conn:
+            conn.execute(
+                """insert into public.ledger_entries
+                       (driver_id, id, kind, category, amount, currency, entry_date, entry_time,
+                        payment_method, source, rid, note, distance_km, liters, version, deleted_at)
+                   select %s::uuid, x.id, x.kind, x.category, x.amount, x.currency, x.entry_date,
+                          x.entry_time, x.payment_method, x.source, x.rid, x.note, x.distance_km,
+                          x.liters, x.version, case when x.apagado then now() end
+                     from jsonb_to_recordset(%s::jsonb) as x(
+                          id text, kind text, category text, amount numeric, currency text,
+                          entry_date date, entry_time text, payment_method text, source text,
+                          rid text, note text, distance_km numeric, liters numeric,
+                          version integer, apagado boolean)
+                   on conflict (driver_id, id) do update set
+                          kind = excluded.kind, category = excluded.category,
+                          amount = excluded.amount, currency = excluded.currency,
+                          entry_date = excluded.entry_date, entry_time = excluded.entry_time,
+                          payment_method = excluded.payment_method, source = excluded.source,
+                          rid = excluded.rid, note = excluded.note,
+                          distance_km = excluded.distance_km, liters = excluded.liters,
+                          version = excluded.version,
+                          -- Apagar de novo guarda a data da primeira vez: é dela que
+                          -- a limpeza conta os 30 dias. Desapagar (versão maior) zera.
+                          deleted_at = case when excluded.deleted_at is null then null
+                                            else coalesce(ledger_entries.deleted_at, excluded.deleted_at) end,
+                          updated_at = now()
+                    where ledger_entries.version <= excluded.version""",
+                (driver_id, Json(itens)),
+            )
+
+    def list_ledger_entries_by_driver(self, driver_id: str) -> list[dict]:
+        """Todos os lançamentos do motorista, apagados inclusive: o túmulo também
+        é dado. A suíte confere por aqui; o GET da fase 2 devolve isto ao app."""
+        with self.pool.connection() as conn:
+            return [dict(l) for l in conn.execute(
+                """select id, kind, category, amount, currency, entry_date, entry_time,
+                          payment_method, source, rid, note, distance_km, liters,
+                          version, deleted_at, created_at, updated_at
+                     from public.ledger_entries where driver_id = %s
+                    order by entry_date, created_at, id""",
+                (driver_id,),
+            ).fetchall()]
+
+    def purge_deleted_ledger_before(self, cutoff_iso: str, limit: int) -> tuple[int, bool]:
+        """Apaga de vez os lançamentos apagados no app antes do corte, em lotes."""
+        with self.pool.connection() as conn:
+            apagados = conn.execute(
+                """delete from public.ledger_entries where (driver_id, id) in (
+                     select driver_id, id from public.ledger_entries
+                      where deleted_at < %s limit %s)
+                   returning id""",
+                (cutoff_iso, limit),
+            ).fetchall()
+            sobrou = conn.execute(
+                "select exists(select 1 from public.ledger_entries where deleted_at < %s) as e",
                 (cutoff_iso,),
             ).fetchone()["e"]
         return len(apagados), bool(sobrou)
@@ -5109,6 +5204,253 @@ def api_criar_recibo():
     )
 
 
+# ── Caixa do motorista (app 1.8) ──────────────────────────────────────────────
+#
+# O Caixa mora no aparelho, offline como os recibos. O servidor guarda uma
+# cópia de cada lançamento (migração 0022) para o motorista não perder o que
+# lançou; restaurar em aparelho novo (GET) é a fase 2. Contrato no README,
+# seção "Caixa (app 1.8)". O trajeto e o passageiro nunca chegam aqui, e o log
+# leva só contagens e códigos: nada de valor, categoria ou observação.
+
+LANCAMENTO_TIPOS = {"receita": "income", "despesa": "expense"}
+LANCAMENTO_ORIGENS = {"recibo": "receipt", "corrida": "ride", "manual": "manual"}
+# fullmatch, e não ^...$: o $ do Python aceita um \n no fim, e o check do banco
+# recusaria a linha, derrubando o lote inteiro.
+_LANCAMENTO_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
+_LANCAMENTO_CATEGORIA_RE = re.compile(r"[a-z][a-z0-9_]{0,29}")
+_LANCAMENTO_DATA_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_LANCAMENTO_RID_RE = re.compile(r"[0-9A-F]{%d}" % RID_LENGTH)
+_LANCAMENTO_DATA_MINIMA = datetime(2000, 1, 1).date()
+_LANCAMENTO_VERSAO_MAXIMA = 2**31 - 1   # integer do Postgres
+_LITROS_MAXIMO = Decimal("999.99")
+
+
+class LancamentoRecusado(ValueError):
+    """Item do lote fora do contrato. O código vai para `recusados`."""
+
+
+def _versao_do_lancamento(valor) -> int | None:
+    """Inteiro de verdade de 1 a 2^31-1, ou None. bool fica de fora: para o
+    Python, True é 1."""
+    if type(valor) is int and 1 <= valor <= _LANCAMENTO_VERSAO_MAXIMA:
+        return valor
+    return None
+
+
+def _texto_do_lancamento(valor, maximo: int) -> str | None:
+    """Forma de pagamento ou observação pronta para o banco; None se passou do tamanho.
+
+    O que não é texto vira vazio. NUL e surrogate solto saem antes: o Postgres
+    recusa os dois, e um item assim derrubaria o lote inteiro (503), que o app
+    reenviaria para sempre.
+    """
+    if not isinstance(valor, str):
+        return ""
+    texto = valor.replace("\x00", "").encode("utf-8", "replace").decode("utf-8").strip()
+    return texto if len(texto) <= maximo else None
+
+
+def _litros_do_lancamento(valor) -> str | None:
+    """"30,5", "30.5" ou 30.5 → "30.50"; vazio → None. Fora de 0 < x ≤ 999,99
+    com até 2 casas levanta ValueError."""
+    if valor is None or (isinstance(valor, str) and not valor.strip()):
+        return None
+    if isinstance(valor, bool) or not isinstance(valor, (int, float, str)):
+        raise ValueError("litros")
+    texto = valor.strip().replace(",", ".") if isinstance(valor, str) else str(valor)
+    try:
+        litros = Decimal(texto)
+    except InvalidOperation as exc:
+        raise ValueError("litros") from exc
+    # A ordem importa: NaN e número enorme param antes do quantize, que estoura com eles.
+    if (not litros.is_finite() or litros <= 0 or litros > _LITROS_MAXIMO
+            or litros != litros.quantize(Decimal("0.01"))):
+        raise ValueError("litros")
+    return str(litros.quantize(Decimal("0.01")))
+
+
+def ler_lancamento(item: dict, moeda_do_cadastro: str, hoje) -> dict:
+    """Confere um item (já com id válido) do POST /api/lancamentos.
+
+    Devolve a linha pronta para upsert_ledger_entries ou levanta
+    LancamentoRecusado com o código do primeiro campo errado, na ordem da
+    tabela do contrato. Nada aqui pode estourar com tipo inesperado: lista no
+    lugar de texto vira código de erro, nunca 500.
+    """
+    lid = item["id"]
+    tipo = item.get("tipo")
+    if not isinstance(tipo, str) or tipo not in LANCAMENTO_TIPOS:
+        raise LancamentoRecusado("tipo_invalido")
+    categoria = item.get("categoria")
+    if not (isinstance(categoria, str) and _LANCAMENTO_CATEGORIA_RE.fullmatch(categoria)):
+        raise LancamentoRecusado("categoria_invalida")
+
+    # A moeda vem antes do valor porque o teto é dela. Fora da lista vale a do
+    # cadastro, como em /api/recibos.
+    moeda = str(item.get("moeda") or "").strip().upper()
+    if moeda not in MOEDAS:
+        moeda = moeda_do_cadastro
+    _, _, casas, teto = dados_da_moeda(moeda)
+    # Dinheiro chega em inteiro na menor unidade: 45.0 (float) e True (bool)
+    # ficam de fora, senão o arredondamento de float volta pela porta dos fundos.
+    centavos = item.get("centavos")
+    if type(centavos) is not int or not 1 <= centavos <= teto.scaleb(casas):
+        raise LancamentoRecusado("valor_invalido")
+
+    data = item.get("data")
+    if not (isinstance(data, str) and _LANCAMENTO_DATA_RE.fullmatch(data)):
+        raise LancamentoRecusado("data_invalida")
+    try:
+        dia = datetime.strptime(data, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise LancamentoRecusado("data_invalida") from exc
+    # Dois dias de folga: o relógio do aparelho e o fuso de quem roda fora do Brasil.
+    if not _LANCAMENTO_DATA_MINIMA <= dia <= hoje + timedelta(days=2):
+        raise LancamentoRecusado("data_invalida")
+
+    hora = item.get("hora")
+    hora = hora_valida(hora if isinstance(hora, str) else "")
+
+    forma = _texto_do_lancamento(item.get("forma"), 40)
+    if forma is None:
+        raise LancamentoRecusado("campo_longo")
+
+    origem = item.get("origem")
+    if not isinstance(origem, str) or origem not in LANCAMENTO_ORIGENS:
+        raise LancamentoRecusado("origem_invalida")
+
+    # O recibo de origem não precisa existir no servidor (ver a migração 0022),
+    # mas o lançamento do recibo tem id fixo, r-<rid>: é o que impede o mesmo
+    # recibo de entrar duas vezes no caixa.
+    rid = item.get("rid")
+    if rid is None or rid == "":
+        rid = None
+    elif not (isinstance(rid, str) and _LANCAMENTO_RID_RE.fullmatch(rid)):
+        raise LancamentoRecusado("rid_invalido")
+    if origem == "recibo" and (rid is None or lid != f"r-{rid}"):
+        raise LancamentoRecusado("rid_invalido")
+
+    obs = _texto_do_lancamento(item.get("obs"), 120)
+    if obs is None:
+        raise LancamentoRecusado("campo_longo")
+
+    try:
+        km = normalize_km(item.get("km"))
+    except ValueError as exc:
+        raise LancamentoRecusado("km_invalido") from exc
+    try:
+        litros = _litros_do_lancamento(item.get("litros"))
+    except ValueError as exc:
+        raise LancamentoRecusado("litros_invalido") from exc
+
+    versao = _versao_do_lancamento(item.get("versao"))
+    if versao is None:
+        raise LancamentoRecusado("versao_invalida")
+
+    return {
+        "id": lid, "kind": LANCAMENTO_TIPOS[tipo], "category": categoria,
+        "amount": str(Decimal(centavos).scaleb(-casas)), "currency": moeda,
+        "entry_date": data, "entry_time": hora, "payment_method": forma,
+        "source": LANCAMENTO_ORIGENS[origem], "rid": rid, "note": obs,
+        "distance_km": km, "liters": litros, "version": versao,
+        # Só o booleano true apaga: "true", 1 ou qualquer outra coisa não.
+        "apagado": item.get("apagado") is True,
+    }
+
+
+def ler_lote_de_lancamentos(itens: list, moeda_do_cadastro: str, hoje) -> tuple[list, list, list]:
+    """(aceitos, recusados, linhas) de um lote, na ordem em que os ids apareceram.
+
+    O mesmo id duas vezes no lote: fica o de maior versão (empate: o último),
+    e o id inteiro segue a sorte dele — aceito, com todos os repetidos, se ele
+    for válido; recusado com o erro dele, se não. Sem isso o upsert recebia o
+    id duas vezes e estourava com "cannot affect row a second time".
+    """
+    vencedor: dict[str, tuple] = {}   # id -> (versão para comparar, linha, erro)
+    vagas: list = []                  # id (str) ou recusa de item sem id que preste (dict)
+    for item in itens:
+        if not isinstance(item, dict):
+            vagas.append({"id": None, "erro": "item_invalido"})
+            continue
+        lid = item.get("id")
+        if not (isinstance(lid, str) and _LANCAMENTO_ID_RE.fullmatch(lid)):
+            vagas.append({"id": lid[:40] if isinstance(lid, str) else None, "erro": "id_invalido"})
+            continue
+        try:
+            linha, erro = ler_lancamento(item, moeda_do_cadastro, hoje), ""
+        except LancamentoRecusado as exc:
+            linha, erro = None, str(exc)
+        # Versão inválida perde de qualquer válida; >= faz o último vencer no empate.
+        versao = _versao_do_lancamento(item.get("versao")) or 0
+        if lid not in vencedor:
+            vagas.append(lid)
+            vencedor[lid] = (versao, linha, erro)
+        elif versao >= vencedor[lid][0]:
+            vencedor[lid] = (versao, linha, erro)
+
+    aceitos, recusados, linhas = [], [], []
+    for vaga in vagas:
+        if isinstance(vaga, dict):
+            recusados.append(vaga)
+            continue
+        _, linha, erro = vencedor[vaga]
+        if linha is not None:
+            aceitos.append(vaga)
+            linhas.append(linha)
+        else:
+            recusados.append({"id": vaga, "erro": erro})
+    return aceitos, recusados, linhas
+
+
+def _codigo_do_erro(exc: Exception) -> str:
+    """Classe e SQLSTATE do erro, sem a mensagem: a do Postgres pode citar a
+    linha que falhou ("Failing row contains ..."), com valor e observação."""
+    codigo = getattr(exc, "sqlstate", None)
+    return f"{type(exc).__name__} ({codigo})" if codigo else type(exc).__name__
+
+
+@app.post("/api/lancamentos")
+@api_login_required
+def api_lancamentos():
+    """Recebe a cópia dos lançamentos do Caixa (app 1.8+), em lotes de até 100.
+
+    Idempotente como /api/recibos: a fila do app reenvia o que ficou sem
+    resposta, e a versão de cada lançamento decide quem vale. O item errado vai
+    para `recusados` e os outros seguem; só lote malformado, teto do dia e
+    banco fora do ar recusam o pedido inteiro, e aí nada é gravado.
+    """
+    lista = corpo_json().get("lancamentos")
+    if not isinstance(lista, list) or not 1 <= len(lista) <= LANCAMENTOS_POR_LOTE:
+        return jsonify({"erro": "lote_invalido", "maximo": LANCAMENTOS_POR_LOTE}), 400
+
+    motorista = g.user["_id"]
+    store = get_store()
+    # O contador sobe pelo número de itens ANTES de conferir, como a estimativa
+    # conta pedidos: lote cheio de lixo também gasta o teto.
+    try:
+        usados = store.bump_counter_by(f"lancamentos:{motorista}:{today_br()}", len(lista))
+    except Exception as exc:
+        app.logger.error("Caixa: contador fora do ar (lote de %s): %s", len(lista), _codigo_do_erro(exc))
+        return jsonify({"erro": "indisponivel"}), 503
+    if usados > LANCAMENTOS_DIARIOS:
+        return jsonify({"erro": "muitos_lancamentos", "limite": LANCAMENTOS_DIARIOS}), 429
+
+    aceitos, recusados, linhas = ler_lote_de_lancamentos(
+        lista, g.user.get("currency") or MOEDA_PADRAO, datetime.now(BR_TZ).date())
+    if linhas:
+        try:
+            store.upsert_ledger_entries(motorista, linhas)
+        except Exception as exc:
+            # O app guarda o lote como pendente e tenta de novo mais tarde.
+            app.logger.error("Caixa: lote de %s não gravado (%s válidos): %s",
+                             len(lista), len(linhas), _codigo_do_erro(exc))
+            return jsonify({"erro": "indisponivel"}), 503
+    if recusados:
+        app.logger.warning("Caixa: %s aceito(s), %s recusado(s): %s", len(aceitos), len(recusados),
+                           ", ".join(sorted({r["erro"] for r in recusados})))
+    return jsonify({"aceitos": aceitos, "recusados": recusados})
+
+
 # ── Estimativa de corrida ─────────────────────────────────────────────────────
 #
 # O app mostra uma FAIXA de preco, nunca um valor a cobrar: na cidade grande
@@ -5682,7 +6024,8 @@ def exigir_cron() -> None:
 
 @app.get("/tarefas/limpeza")
 def tarefa_limpeza():
-    """Apaga recibos sem conta (do antigo gerador público) vencidos e contadores antigos.
+    """Apaga recibos sem conta (do antigo gerador público) vencidos, contadores antigos
+    e lançamentos do Caixa apagados há mais de LANCAMENTO_APAGADO_DIAS.
 
     Chamada pelo Cron da Vercel, que envia 'Authorization: Bearer $CRON_SECRET'.
     """
@@ -5702,6 +6045,14 @@ def tarefa_limpeza():
     except Exception as exc:  # migração 0016 ainda não aplicada
         app.logger.warning("limpeza de access_logs pulada: %s", exc)
         acessos_removidos = 0
+    # Caixa (migração 0022): o lançamento apagado no app fica como túmulo e sai
+    # de vez em 30 dias, como a Política de Privacidade promete.
+    try:
+        lancamentos_removidos, lancamentos_left = store.purge_deleted_ledger_before(
+            to_utc_iso(now - timedelta(days=LANCAMENTO_APAGADO_DIAS)), CLEANUP_BATCH_LIMIT)
+    except Exception as exc:  # migração 0022 ainda não aplicada
+        app.logger.warning("limpeza de lançamentos apagados pulada: %s", _codigo_do_erro(exc))
+        lancamentos_removidos, lancamentos_left = 0, False
     # Pro pré-pago (migração 0012): quem passou da data volta ao Grátis, e quem
     # pagou o anual recebe o aviso de renovação 15 dias antes. Falha aqui não
     # derruba a limpeza: vira log, e amanhã o cron tenta de novo.
@@ -5712,11 +6063,12 @@ def tarefa_limpeza():
     except Exception as exc:
         app.logger.error("Pro pré-pago: expiração/lembretes falharam: %s", exc)
 
-    incompleto = receipts_left or counters_left
+    incompleto = receipts_left or counters_left or lancamentos_left
     app.logger.info(
-        "Limpeza: %s recibos sem cadastro e %s contadores removidos.%s",
+        "Limpeza: %s recibos sem cadastro, %s contadores e %s lançamentos apagados removidos.%s",
         receipts_removed,
         counters_removed,
+        lancamentos_removidos,
         " Ainda há backlog — a próxima execução continua." if incompleto else "",
     )
     return jsonify(
@@ -5725,6 +6077,7 @@ def tarefa_limpeza():
             "recibos_removidos": receipts_removed,
             "contadores_removidos": counters_removed,
             "acessos_removidos": acessos_removidos,
+            "lancamentos_removidos": lancamentos_removidos,
             "pro_expirados": pro_expirados,
             "lembretes_enviados": lembretes,
             "backlog_restante": incompleto,
@@ -7357,6 +7710,23 @@ _SQL_ADMIN = {
           from public.rate_limits l
           join public.drivers d on d.id::text = split_part(l.key, ':', 2)
          where l.key like 'estimativa:%%' and l.created_at >= %(ini_7d)s""",
+    # Caixa do app 1.8 (migração 0022). SÓ contagens: nem valor, nem categoria,
+    # nem lista por motorista — a Política promete que a equipe vê quantos usam,
+    # nunca os valores de ninguém. As janelas contam pela chegada ao servidor;
+    # na primeira sincronização do 1.8 os recibos antigos entram de uma vez, e
+    # "recibo" pula sem ser uso novo. Apagado fica fora das contagens por
+    # origem e tipo. Conta interna conta, como no "Fazer corrida": ela só sai
+    # do faturamento.
+    "caixa": """
+        select (select count(distinct driver_id) from public.ledger_entries) as motoristas,
+               count(distinct driver_id) filter (where created_at >= %(ini_7d)s) as motoristas_7d,
+               count(*) filter (where deleted_at is null) as total_30d,
+               count(*) filter (where deleted_at is null and kind = 'income') as receitas_30d,
+               count(*) filter (where deleted_at is null and kind = 'expense') as despesas_30d,
+               count(*) filter (where deleted_at is null and source = 'receipt') as recibo_30d,
+               count(*) filter (where deleted_at is null and source = 'ride') as corrida_30d,
+               count(*) filter (where deleted_at is null and source = 'manual') as manual_30d
+          from public.ledger_entries where created_at >= %(ini_30d)s""",
     "pagantes_parados": """
         select d.id, d.full_name, d.email, d.whatsapp, d.plan,
                (select max(created_at) from public.receipts r where r.driver_id = d.id) as ultimo_recibo
@@ -7424,6 +7794,7 @@ _SQL_ADMIN = {
 _ADMIN_UMA_LINHA = {
     "geral", "recibos_mes", "recibos_estim", "ativacao", "funil", "ticket", "logins",
     "sessoes", "inativos_30d", "retencao", "ultimo_webhook", "corrida", "estimativas", "crm_fila",
+    "caixa",
 }
 
 

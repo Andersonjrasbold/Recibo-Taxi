@@ -237,6 +237,21 @@
               ' de ' ~ es.motoristas_7d ~ ' motorista(s)') }}
   </div>
   {% endif %}
+  <h3 class="adm-h3 mt-3">Caixa (app 1.8)</h3>
+  {# Só contagens, nunca valor lançado nem lista por motorista (a Política
+     promete). Sem a migração 0022 a consulta falha e o bloco sai indisponível. #}
+  {% if d.caixa is none %}{{ ui.indisponivel() }}{% else %}
+  {% set cx = d.caixa %}
+  <div class="db-stats adm-kpis">
+    {{ ui.kpi(cx.motoristas, 'Motoristas que já lançaram', 'wallet2', 'green',
+              ' · ' ~ cx.motoristas_7d ~ ' com lançamento novo em 7 d') }}
+    {{ ui.kpi(cx.total_30d, 'Lançamentos que chegaram em 30 d', 'journal-text', 'blue',
+              ' (' ~ cx.receitas_30d ~ ' receitas · ' ~ cx.despesas_30d ~ ' despesas)') }}
+    {{ ui.kpi(cx.recibo_30d, 'Por origem em 30 d: recibo', 'arrow-left-right', 'orange',
+              ' · ' ~ cx.corrida_30d ~ ' corrida · ' ~ cx.manual_30d ~ ' à mão') }}
+  </div>
+  <p class="adm-suave mt-2">Recibo e corrida entram sozinhos no caixa; "à mão" é o que o motorista lançou. Na primeira sincronização do 1.8, os recibos antigos chegam de uma vez.</p>
+  {% endif %}
   <p class="adm-suave mt-2">Ressalva: o último login só muda em login com senha. Quem fica logado no app renovando o token parece inativo. A melhor medida de atividade é recibo emitido.</p>
   <div class="row g-4">
     <div class="col-lg-6">

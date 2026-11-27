@@ -231,6 +231,13 @@ try {
     [erro({ data: '2026-02-31' }), erro({ data: '1999-12-31' }), erro({ data: '2000-01-01' }), erro({ data: '2026-11-26' }), erro({ data: '2026-11-27' }),
       erro({ data: '2026-11-28' }), erro({ data: '' })],
     ['data_invalida', 'data_invalida', '', '', 'data_invalida', 'data_invalida', 'data_invalida']);
+  // A receita do recibo leva a data do recibo, que nao tem teto (o servidor
+  // tambem a aceita): editar o valor dela nao pode exigir trocar a data.
+  const doReciboAdiante = (data) => C.erroDoLancamento({ ...doRecibo, data }, { hoje: '2026-11-26' });
+  igual('data da receita do recibo: sem teto, mas real e de 2000 em diante; a corrida e a manual continuam ate hoje',
+    [doReciboAdiante('2026-11-29'), doReciboAdiante('2027-03-01'), doReciboAdiante('1999-12-31'), doReciboAdiante('2026-11-31'),
+      erro({ origem: 'corrida', data: '2026-11-27' }), erro({ origem: 'manual', data: '2026-11-29' })],
+    ['', '', 'data_invalida', 'data_invalida', 'data_invalida', 'data_invalida']);
   igual('forma ate 40 e observacao ate 120 (sem contar espaco nas pontas)',
     [erro({ forma: 'x'.repeat(41) }), erro({ forma: 'x'.repeat(40) }), erro({ obs: 'x'.repeat(121) }), erro({ obs: ` ${'x'.repeat(120)} ` })],
     ['campo_longo', '', 'campo_longo', '']);

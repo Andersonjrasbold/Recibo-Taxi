@@ -2063,6 +2063,30 @@ window.addEventListener('load', async () => {
       await espera(300);
       ok('a linha do dia no mes abre aquele dia (e nao hoje), com o lancamento, e para ali', !q('tela-caixa').hidden
          && textoDe('caixa-dia-titulo') === tituloDoDia(adiante, hoje) && !!itemDa('l-adiante') && q('btn-dia-seguinte').disabled, textoDe('caixa-dia-titulo'));
+      // A receita de um recibo com a data adiante (o recibo nao tem teto, e o
+      // servidor tambem a aceita): corrigir o valor nao obriga a trocar o dia.
+      const diaDoReciboAdiante = Caixa.somarDias(hoje, 2);
+      const reciboAdiante = { rid: 'E0000000000001', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista', motorista: retrato,
+        dados: { rid: 'E0000000000001', origem: 'Centro', destino: 'Aeroporto', valor: '80,00', valor_exibido: '80,00', moeda: 'BRL',
+                 data: diaDoReciboAdiante, hora: '10:00', forma_pagamento: 'Pix' } };
+      await salvarRecibo(reciboAdiante);
+      await lancarReciboNoCaixa(reciboAdiante);
+      await abrirCaixa(diaDoReciboAdiante);
+      itemDa('r-E0000000000001').click(); await espera(300);
+      ok('a receita do recibo com data adiante abre com o calendario indo ate a data dela', q('l-data').value === diaDoReciboAdiante
+         && q('l-data').max === diaDoReciboAdiante, `${q('l-data').value} max ${q('l-data').max}`);
+      q('l-valor').value = '85,00';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const reciboAdianteSalvo = (await buscarLancamento('r-E0000000000001')) || {};
+      ok('e o Salvar guarda o valor novo no mesmo dia, sem erro, e volta para ele', reciboAdianteSalvo.centavos === 8500
+         && reciboAdianteSalvo.data === diaDoReciboAdiante && reciboAdianteSalvo.versao === 2 && !q('tela-caixa').hidden
+         && textoDe('caixa-dia-titulo') === tituloDoDia(diaDoReciboAdiante, hoje), `${JSON.stringify(reciboAdianteSalvo)} ${textoDe('erro-lancamento')}`);
+      clicar('btn-caixa-despesa'); await espera(100);
+      ok('a despesa a mao, aberta nesse dia adiante, continua indo so ate hoje', q('l-data').value === hoje && q('l-data').max === hoje,
+         `${q('l-data').value} max ${q('l-data').max}`);
+      clicar('btn-fechar-lancamento'); await espera(300);
+      await apagarLancamento('r-E0000000000001');
+      await naLoja('recibos', (tx) => tx.objectStore('recibos').delete('E0000000000001'));
       await apagarLancamento('l-adiante');
       await abrirCaixa();
       ok('sem lancamento adiante, a seta da direita de hoje desliga de novo', q('btn-dia-seguinte').disabled);

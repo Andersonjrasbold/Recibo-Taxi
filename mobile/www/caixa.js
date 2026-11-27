@@ -369,11 +369,16 @@
   // um toque errado no calendario, tirava o lancamento do dia que ele olhava.
   // O servidor aceita ate hoje + 2 dias no fuso de Brasilia, folga que cobre
   // qualquer fuso e o relogio um pouco adiantado.
+  // A receita de um recibo nao tem teto: leva a data do recibo, que nao tem
+  // (corrida agendada e paga antes, dia errado no calendario do recibo), e o
+  // servidor tambem a aceita assim. Com o teto, corrigir o valor ou a forma
+  // dessa receita obrigava a trocar a data dela para hoje.
   function erroDoLancamento(l, { hoje = diaLocal() } = {}) {
     if (!l || !TIPOS.includes(l.tipo)) return 'tipo_invalido';
     if (!/^[a-z][a-z0-9_]{0,29}$/.test(String(l.categoria || ''))) return 'categoria_invalida';
     if (!Number.isInteger(l.centavos) || l.centavos < 1 || l.centavos > tetoEmCentavos(l.moeda)) return 'valor_invalido';
-    if (!dataReal(l.data) || l.data < '2000-01-01' || l.data > hoje) return 'data_invalida';
+    const semTeto = l.origem === 'recibo';
+    if (!dataReal(l.data) || l.data < '2000-01-01' || (!semTeto && l.data > hoje)) return 'data_invalida';
     if (String(l.forma || '').length > 40 || String(l.obs || '').trim().length > 120) return 'campo_longo';
     if (l.km != null && kmDe(l.km) === null) return 'km_invalido';
     if (l.litros != null && litrosDe(l.litros) === null) return 'litros_invalido';

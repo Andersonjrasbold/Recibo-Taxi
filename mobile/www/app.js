@@ -3875,12 +3875,16 @@ function prepararLancamento() {
 // anterior e do Pro, e o lancamento posto la sumia no bloqueio, sem como
 // corrigir nem apagar. E a regra que ja esconde os botoes de lancar no dia
 // bloqueado; o submit confere de novo (o seletor do sistema pode deixar passar).
+// A receita de um recibo com data adiante vai ate a data dela: o recibo nao tem
+// teto, e corrigir o valor nao pode obrigar a trocar o dia.
 // Sempre pelo relogio de agora, e nao so ao abrir: o formulario aberto antes
 // da meia-noite do dia 30 ficava com o calendario preso em novembro, e no
 // Gratis o Salvar pedia um dia de dezembro que o calendario nao oferecia.
 function limitarDataDoLancamento() {
   const hoje = Caixa.diaLocal();
-  $('l-data').max = hoje;
+  const l = lancamentoAberto;
+  const adiante = l && l.origem === 'recibo' && Caixa.dataReal(l.data) && l.data > hoje ? l.data : '';
+  $('l-data').max = adiante || hoje;
   $('l-data').min = ehPro() ? '2000-01-01' : `${Caixa.mesDe(hoje)}-01`;
 }
 

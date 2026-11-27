@@ -1089,8 +1089,12 @@ window.addEventListener('load', async () => {
          vRec.textContent.includes('3 de 6 recibos') && Guardado.get('usados') === 3, `${vRec.textContent} / ${Guardado.get('usados')}`);
       // Sessao que chega com o envio em voo ja traz este recibo: o 201 nao
       // soma de novo (senao a faixa mostraria um recibo a mais).
-      window.__regra = (c) => (c.origem === 'Vitrine guarda' ? { atraso: 900 } : {});
-      await emitir('Vitrine guarda', '15'); await espera(250);
+      // Espera o POST chegar ao servidor simulado, e nao um tempo fixo: com a
+      // maquina carregada, ele saia depois da sessao, e ai o 201 somar e o certo.
+      let guardaEmVoo = false;
+      window.__regra = (c) => (c.origem === 'Vitrine guarda' ? (guardaEmVoo = true, { atraso: 900 }) : {});
+      await emitir('Vitrine guarda', '15');
+      for (let i = 0; i < 60 && !guardaEmVoo; i++) await espera(50);
       window.__sessao = { ...window.__sessao, usados_no_mes: 4 };   // o servidor ja contou este
       await atualizarSessao();
       await espera(1300);

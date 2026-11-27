@@ -1680,11 +1680,33 @@ window.addEventListener('load', async () => {
     try {
       // Do zero: o banco tem o que as outras partes deixaram. A sessao entra
       // so agora, e o app comeca como numa abertura.
-      await naLoja(['recibos', 'lancamentos'], (tx) => { tx.objectStore('recibos').clear(); tx.objectStore('lancamentos').clear(); });
+      const limparCaixa = () => naLoja(['recibos', 'lancamentos'], (tx) => { tx.objectStore('recibos').clear(); tx.objectStore('lancamentos').clear(); });
+      await limparCaixa();
       localStorage.setItem('access_token', JSON.stringify('token-caixa'));
       localStorage.setItem('refresh_token', JSON.stringify('refresh-caixa'));
       window.__sessao = sessaoGratis;
-      await iniciar();
+      let cartaoComSessaoLenta = null;
+      if (H.has('passo')) {
+        await iniciar();
+      } else {
+        // Primeira abertura da 1.8 com sinal fraco: o recibo de hoje, emitido
+        // na 1.7, ainda sem receita, e a /api/sessao demorando. O cartao do
+        // inicio tem de conta-lo antes de ela chegar (o Caixa, aberto por ele,
+        // ja contava). Depois, o caixa volta a ficar vazio para o resto.
+        await salvarRecibo({ rid: 'F0000000000017', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista',
+          motorista: retrato, dados: { rid: 'F0000000000017', origem: 'Rodoviária', destino: 'Centro', valor: '45,00', valor_exibido: '45,00',
+                                       moeda: 'BRL', data: hoje, hora: '07:10', forma_pagamento: 'Pix' } });
+        window.__sessaoAtraso = 4000;
+        const abertura = iniciar();
+        await espera(1500);
+        cartaoComSessaoLenta = { cartao: textoDe('caixa-inicio-valor'), semSessao: Guardado.get('plano') == null };
+        await abertura;
+        window.__sessaoAtraso = 0;
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        if (passadaDoCaixa) await passadaDoCaixa;
+        await limparCaixa();
+        irParaInicio(); await espera(300);
+      }
 
       if (H.has('passo')) {
         // Fotos: monta a tela e para ali.
@@ -1734,6 +1756,8 @@ window.addEventListener('load', async () => {
       }
 
       // ── Menu e cartao do inicio ──
+      ok('primeira abertura da 1.8 com a sessao demorando: o cartao do inicio ja conta o recibo de hoje, antes de ela chegar',
+         !!cartaoComSessaoLenta && cartaoComSessaoLenta.semSessao && cartaoComSessaoLenta.cartao === 'R$ 45,00', JSON.stringify(cartaoComSessaoLenta));
       ok('"Meu caixa" no menu, logo depois de "Meus dados"', q('btn-meus-dados').nextElementSibling === q('btn-caixa') && textoDe('btn-caixa') === 'Meu caixa');
       const depois = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
       ok('o inicio mostra o cartao "Caixa de hoje" depois dos dois caminhos e antes da vitrine e da indicacao',

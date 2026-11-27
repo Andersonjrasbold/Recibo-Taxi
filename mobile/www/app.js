@@ -4752,12 +4752,17 @@ async function iniciar() {
   // Se o banco local falhar, o app segue (a corrida ja vive sem ele).
   try { await marcarDonoDosRecibos(); } catch { /* fica para a proxima */ }
   try { await marcarDonoDosLancamentos(); } catch { /* fica para a proxima */ }
+  // Os recibos que o caixa ainda nao tem (na primeira abertura da 1.8, todos)
+  // viram receitas antes de pedir a sessao: com sinal fraco ela demora (o
+  // pedido nao tem prazo), e o cartao dizia "Nenhum lançamento hoje" enquanto
+  // o Caixa, aberto por ele, ja mostrava a receita. A receita leva o dono do
+  // recibo, marcado logo acima; a sessao so troca e-mail por id depois.
+  try { if (await completarCaixaComRecibos()) desenharCaixaDoInicio(); } catch { /* fica para a proxima abertura */ }
   await atualizarSessao();
   // O nome da saudacao e o dono da corrida aberta chegam com a sessao.
   if (!$('tela-inicio').hidden) irParaInicio();
-  // Os recibos que o caixa ainda nao tem (na primeira abertura da 1.8, todos)
-  // viram receitas, ja com o dono que a sessao confirmou. O cartao do inicio,
-  // desenhado antes, passa a conta-los.
+  // De novo com a sessao: o recibo antigo sem dono, que so ganha o dono quando
+  // o id chega com ela, tambem entra. O que ja entrou fica como esta.
   try { if (await completarCaixaComRecibos()) desenharCaixaDoInicio(); } catch { /* fica para a proxima abertura */ }
   await iniciarCompras();
   carregarLojaParaVitrine();   // precos da vitrine e "ja assina?", sem esperar

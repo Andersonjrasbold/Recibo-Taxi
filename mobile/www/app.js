@@ -298,7 +298,7 @@ async function mudarLancamentos(ids, muda) {
 // dizer o que corrigir: o lancamento que ele recusaria nem e guardado.
 const erroDoCaixa = (codigo) => Object.assign(new Error(codigo), { codigo });
 
-// Lancamento a mao ("+ Receita", "+ Despesa") ou da corrida sem recibo.
+// Lancamento a mao ("+ Lançamento") ou da corrida sem recibo.
 // Campos: tipo, categoria, centavos, data, hora, forma, obs, litros (e, da
 // corrida, origem, km e rota). Devolve o que foi guardado.
 async function criarLancamento(campos = {}) {
@@ -3445,6 +3445,10 @@ const linhaSemQuebra = (pedacos) => pedacos.map((p) => p.replace(/ /g, ' ')).jo
 
 // "Corrida lançada: R$ 58,00" depois do "Só lançar no caixa", por ~5 s: e o
 // recibo que ele nao tirou, a prova de que a corrida nao se perdeu.
+// Com o cartao no topo do inicio, a linha que some encolhia o cartao e puxava
+// "Emitir recibo" e "Fazer corrida" para cima, embaixo do dedo de quem ia
+// tocar neles. Some so o texto; o espaco fica ate o proximo desenho do
+// cartao (a proxima volta ao inicio).
 function mostrarConfirmacaoDoInicio() {
   const linha = $('caixa-inicio-confirmacao');
   const resta = confirmacaoDoInicio ? confirmacaoDoInicio.ate - Date.now() : 0;
@@ -3452,7 +3456,7 @@ function mostrarConfirmacaoDoInicio() {
   if (resta <= 0) { confirmacaoDoInicio = null; return; }
   linha.textContent = confirmacaoDoInicio.texto;
   clearTimeout(apagaConfirmacao);
-  apagaConfirmacao = setTimeout(() => { confirmacaoDoInicio = null; linha.hidden = true; }, resta);
+  apagaConfirmacao = setTimeout(() => { confirmacaoDoInicio = null; linha.textContent = '\u00a0'; }, resta);
 }
 
 // Com a confirmacao da corrida a vista, o toque abre o dia em que ela entrou
@@ -3461,7 +3465,7 @@ $('btn-abrir-caixa').addEventListener('click', () => {
   vibrar('LIGHT');
   abrirCaixa(confirmacaoDoInicio && confirmacaoDoInicio.ate > Date.now() ? confirmacaoDoInicio.dia : undefined);
 });
-$('btn-inicio-despesa').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'despesa' }); });
+$('btn-inicio-lancamento').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento(); });
 $('btn-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); });
 
 // ── Caixa do dia ───────────────────────────────────────────────────────────
@@ -3470,7 +3474,7 @@ $('btn-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); 
 // tem viram receitas (o recibo recusado por cota tambem).
 // Hoje fica guardado como '' (o hoje do relogio), e nao com a data: o Caixa
 // aberto as 23h59 e deixado na tela (ou no fundo) seguia no dia que passou,
-// e o "+ Despesa" de depois da meia-noite lancava nele, sem hora e calado (no
+// e o "+ Lançamento" de depois da meia-noite lancava nele, sem hora e calado (no
 // Gratis, na virada do mes, o Salvar ainda era recusado).
 function abrirCaixa(dia) {
   diaDoCaixa = dia && dia !== Caixa.diaLocal() ? dia : '';
@@ -3674,9 +3678,9 @@ $('btn-dia-anterior').addEventListener('click', () => mudarDiaDoCaixa(-1));
 $('btn-dia-seguinte').addEventListener('click', () => mudarDiaDoCaixa(1));
 $('btn-fechar-caixa').addEventListener('click', () => irParaInicio());
 $('btn-abrir-mes').addEventListener('click', () => { vibrar('LIGHT'); abrirMesDoCaixa(); });
-// Em hoje (''), o lancamento abre no dia do toque, com a hora de agora.
-$('btn-caixa-despesa').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'despesa', dia: diaDoCaixa || undefined }); });
-$('btn-caixa-receita').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ tipo: 'receita', dia: diaDoCaixa || undefined }); });
+// O lancamento vai para o dia da tela. Em hoje (''), abre no dia do toque,
+// com a hora de agora.
+$('btn-caixa-lancamento').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ dia: diaDoCaixa || undefined }); });
 $('caixa-lista').addEventListener('click', (ev) => {
   const item = ev.target.closest('.caixa-item[data-id]');
   if (!item) return;
@@ -3849,7 +3853,9 @@ function escolherTipo(tipo, categoria) {
   categoriaNaTela = categoria !== undefined ? categoria : tipo === 'receita' ? 'corrida' : '';
   desenharCategorias();
   posicionarForma();
-  $('titulo-lancamento').textContent = `${lancamentoAberto ? 'Editar' : 'Nova'} ${tipo}`;
+  // O novo e "Novo lançamento" nos dois tipos: o tipo esta no segmento logo
+  // abaixo, e o titulo nao muda com o toque nele.
+  $('titulo-lancamento').textContent = lancamentoAberto ? `Editar ${tipo}` : 'Novo lançamento';
 }
 
 function trocarTipo(tipo) {
@@ -3862,6 +3868,11 @@ function trocarTipo(tipo) {
   escolherTipo(tipo, categoriaDoTipo[tipo]);
   if (!lancamentoAberto) $('l-forma').value = tipo === 'receita' ? ultimaForma() : '';
   $('erro-lancamento').hidden = true;
+  // A despesa nova e o "+ Lançamento" e um toque em "Despesa". No Android o
+  // botao tocado fica com o foco, e o teclado que o "+ Lançamento" abriu
+  // descia: sem valor digitado, o foco volta ao valor no mesmo toque (no
+  // iPhone, so assim o teclado sobe), como no "+ Despesa" de antes.
+  if (!lancamentoAberto && !$('l-valor').value) $('l-valor').focus();
 }
 
 // O que veio de recibo ou de corrida nao troca de tipo: o outro segmento fica
@@ -3918,10 +3929,11 @@ function mostrarMoedaDoLancamento() {
   $('l-simbolo').textContent = l && l.moeda && l.moeda !== m.codigo ? l.moeda : m.simbolo;
 }
 
-// Novo lancamento, com o tipo do botao. O foco vai para o valor no mesmo
-// toque do "+ Despesa": no iPhone, um focus() depois de um await nao sobe o
-// teclado. Por isso nada aqui espera o banco.
-function abrirLancamento({ tipo = 'despesa', dia } = {}) {
+// Novo lancamento. Abre em Receita, com "Corrida": e a corrida feita sem o
+// app, o lancamento a mao mais comum; a despesa e um toque em "Despesa". O
+// foco vai para o valor no mesmo toque do "+ Lançamento": no iPhone, um
+// focus() depois de um await nao sobe o teclado. Por isso nada aqui espera o banco.
+function abrirLancamento({ tipo = 'receita', dia } = {}) {
   lancamentoAberto = null;
   categoriaDoTipo = {};
   prepararLancamento();

@@ -1623,6 +1623,9 @@ window.addEventListener('load', async () => {
     const lanc = (id, campos, extra = {}) => ({ ...Caixa.novoLancamento(campos, { id, dono: 'web-motorista', moeda: 'BRL' }), pendente: false, ...extra });
     const categoria = (id) => q('l-categorias').querySelector(`[data-categoria="${id}"]`);
     const itemDa = (id) => q('caixa-lista').querySelector(`.caixa-item[data-id="${id}"]`);
+    // A despesa a mao, como o motorista faz: "+ Lançamento" no Caixa (que abre
+    // em Receita) e o toque em "Despesa".
+    const lancarDespesa = () => { clicar('btn-caixa-lancamento'); clicar('tipo-despesa'); };
     const hoje = Caixa.diaLocal();
     const ontem = Caixa.somarDias(hoje, -1);
     const mesAtual = Caixa.mesDe(hoje);
@@ -1764,31 +1767,51 @@ window.addEventListener('load', async () => {
          !!cartaoComSessaoLenta && cartaoComSessaoLenta.semSessao && cartaoComSessaoLenta.cartao === 'R$ 45,00', JSON.stringify(cartaoComSessaoLenta));
       ok('"Meu caixa" no menu, logo depois de "Meus dados"', q('btn-meus-dados').nextElementSibling === q('btn-caixa') && textoDe('btn-caixa') === 'Meu caixa');
       const depois = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-      ok('o inicio mostra o cartao "Caixa de hoje" depois dos dois caminhos e antes da vitrine e da indicacao',
-         !q('tela-inicio').hidden && visivel('caixa-inicio') && textoDe('caixa-inicio').includes('Caixa de hoje')
-         && depois(document.querySelector('.caminhos'), q('caixa-inicio')) && depois(q('caixa-inicio'), q('vitrine-inicio'))
-         && depois(q('caixa-inicio'), q('btn-ir-indicar'))
-         && document.querySelector('.caminhos').getBoundingClientRect().bottom <= q('caixa-inicio').getBoundingClientRect().top);
-      ok('sem lancamento: "Nenhum lançamento hoje" e o "+ Despesa"', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje'
-         && visivel('btn-inicio-despesa') && textoDe('btn-inicio-despesa') === '+ Despesa' && q('caixa-inicio-linha').hidden);
+      // O primeiro bloco do inicio (pedido do Anderson, 2026-11-27): depois da
+      // saudacao e do aviso da corrida aberta, antes dos dois caminhos.
+      const cartaoEmPrimeiro = () => {
+        const caminhos = document.querySelector('.caminhos');
+        const blocos = [...q('tela-inicio').children].filter((e) => !e.hidden);
+        return blocos.indexOf(q('caixa-inicio')) === blocos.indexOf(q('titulo-inicio')) + (visivel('btn-continuar-corrida') ? 2 : 1)
+          && blocos.indexOf(caminhos) === blocos.indexOf(q('caixa-inicio')) + 1
+          && q('titulo-inicio').getBoundingClientRect().bottom <= q('caixa-inicio').getBoundingClientRect().top
+          && (!visivel('btn-continuar-corrida') || q('btn-continuar-corrida').getBoundingClientRect().bottom <= q('caixa-inicio').getBoundingClientRect().top)
+          && q('caixa-inicio').getBoundingClientRect().bottom <= caminhos.getBoundingClientRect().top;
+      };
+      ok('o inicio mostra o cartao "Caixa de hoje" em primeiro: logo depois da saudacao e antes dos dois caminhos, da vitrine e da indicacao',
+         !q('tela-inicio').hidden && visivel('caixa-inicio') && textoDe('caixa-inicio').includes('Caixa de hoje') && cartaoEmPrimeiro()
+         && depois(q('caixa-inicio'), q('vitrine-inicio')) && depois(q('caixa-inicio'), q('btn-ir-indicar')));
+      ok('sem lancamento: "Nenhum lançamento hoje" e o "+ Lançamento"', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje'
+         && visivel('btn-inicio-lancamento') && textoDe('btn-inicio-lancamento') === '+ Lançamento' && q('caixa-inicio-linha').hidden);
 
       clicar('btn-perfil'); await espera(100);
       clicar('btn-caixa'); await espera(400);
       ok('"Meu caixa" abre o Caixa de hoje e fecha o menu', !q('tela-caixa').hidden && q('menu-perfil').hidden
          && textoDe('caixa-dia-titulo') === `Hoje, ${Caixa.dataCurta(hoje).replace(', ', ' ')}`, textoDe('caixa-dia-titulo'));
       ok('em hoje, a seta da direita fica desligada', q('btn-dia-seguinte').disabled && !q('btn-dia-anterior').disabled);
-      ok('caixa vazio: a frase de que os recibos entram sozinhos', visivel('caixa-vazio') && !q('caixa-lista').children.length
-         && textoDe('caixa-vazio') === 'Nenhum lançamento neste dia. Os recibos que você emitir entram aqui sozinhos.');
+      ok('caixa vazio: a frase de que os recibos entram sozinhos, e a corrida sem recibo pelo "+ Lançamento"', visivel('caixa-vazio') && !q('caixa-lista').children.length
+         && textoDe('caixa-vazio') === 'Nenhum lançamento neste dia. Os recibos que você emitir entram aqui sozinhos; a corrida sem recibo entra pelo "+ Lançamento".',
+         textoDe('caixa-vazio'));
+      ok('o Caixa tem um "+ Lançamento" so, de largura inteira, no lugar de "+ Despesa" e "+ Receita"', visivel('btn-caixa-lancamento')
+         && textoDe('btn-caixa-lancamento') === '+ Lançamento' && !q('btn-caixa-despesa') && !q('btn-caixa-receita')
+         && Math.abs(q('btn-caixa-lancamento').getBoundingClientRect().width - q('caixa-dia').getBoundingClientRect().width) < 1);
       ok('vazio: liquido zero, "líquido de hoje" e "Definir meta do dia"', textoDe('caixa-liquido') === 'R$ 0,00'
          && textoDe('caixa-liquido-rotulo') === 'líquido de hoje' && visivel('btn-definir-meta') && !visivel('meta-com'));
       ok('vazio: os zeros vao sem sinal e sem cor (nao parecem dinheiro que entrou ou saiu)', textoDe('caixa-receitas') === 'R$ 0,00'
          && !q('caixa-receitas').className && !q('caixa-despesas').className && !q('caixa-liquido').classList.contains('valor-receita'));
 
       // ── Lancamento: despesa ──
-      clicar('btn-caixa-despesa'); await espera(100);
-      ok('"+ Despesa" abre a despesa com o foco no valor, no mesmo toque (o teclado do iPhone sobe)',
-         !q('tela-lancamento').hidden && document.activeElement === q('l-valor') && q('tipo-despesa').getAttribute('aria-checked') === 'true'
-         && textoDe('titulo-lancamento') === 'Nova despesa' && q('l-valor').inputMode === 'decimal', document.activeElement && document.activeElement.id);
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('"+ Lançamento" abre "Novo lançamento" em Receita, com "Corrida" marcada e o foco no valor, no mesmo toque (o teclado do iPhone sobe)',
+         !q('tela-lancamento').hidden && document.activeElement === q('l-valor') && q('tipo-receita').getAttribute('aria-checked') === 'true'
+         && q('tipo-despesa').getAttribute('aria-checked') === 'false' && categoria('corrida').getAttribute('aria-pressed') === 'true'
+         && textoDe('titulo-lancamento') === 'Novo lançamento' && q('l-valor').inputMode === 'decimal', document.activeElement && document.activeElement.id);
+      // No Android o botao tocado fica com o foco (e o teclado desce): aqui, o
+      // foco vai para ele antes do clique, como la.
+      q('tipo-despesa').focus(); clicar('tipo-despesa'); await espera(50);
+      ok('o toque em "Despesa" troca para a despesa, o titulo continua "Novo lançamento" e o foco volta ao valor (o teclado nao desce)',
+         q('tipo-despesa').getAttribute('aria-checked') === 'true' && q('tipo-receita').getAttribute('aria-checked') === 'false'
+         && textoDe('titulo-lancamento') === 'Novo lançamento' && document.activeElement === q('l-valor'), document.activeElement && document.activeElement.id);
       ok('a despesa comeca sem categoria, e a forma fica em "Mais detalhes", fechado',
          !q('l-categorias').querySelector('[aria-pressed="true"]') && q('l-mais').contains(q('l-forma')) && !q('l-mais').open && q('l-forma').value === '');
       ok('as categorias de despesa, com "Aluguel do veículo", sao botoes com aria-pressed',
@@ -1834,11 +1857,11 @@ window.addEventListener('load', async () => {
          && textoDe('caixa-despesas') === '− R$ 86,00' && textoDe('caixa-n-despesas') === '1 lançamento', textoDe('caixa-liquido'));
 
       // ── Lancamento: receita ──
-      clicar('btn-caixa-receita'); await espera(100);
-      ok('"+ Receita" abre com "Corrida" marcada, o foco no valor e a forma a vista (Pix na primeira vez)',
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('"+ Lançamento" abre a receita com "Corrida" marcada, o foco no valor e a forma a vista (Pix na primeira vez)',
          q('tipo-receita').getAttribute('aria-checked') === 'true' && categoria('corrida').getAttribute('aria-pressed') === 'true'
          && q('lugar-forma-receita').contains(q('l-forma')) && visivel('l-forma') && q('l-forma').value === 'Pix'
-         && document.activeElement === q('l-valor') && textoDe('titulo-lancamento') === 'Nova receita');
+         && document.activeElement === q('l-valor') && textoDe('titulo-lancamento') === 'Novo lançamento');
       ok('as categorias de receita', [...q('l-categorias').querySelectorAll('.categoria')].map((b) => b.textContent).join('|') === 'Corrida|Aplicativo|Gorjeta|Outra');
       categoria('aplicativo').click(); q('l-forma').value = 'Aplicativo'; q('l-valor').value = '9,00';
       q('form-lancamento').requestSubmit(); await espera(400);
@@ -1846,17 +1869,17 @@ window.addEventListener('load', async () => {
       ok('a forma igual a categoria nao se repete na lista ("Aplicativo", e nao "Aplicativo · Aplicativo")',
          !!itemDa(doApp.id) && itemDa(doApp.id).querySelector('.caixa-item-titulo').textContent === 'Aplicativo');
       await apagarLancamento(doApp.id); await abrirCaixa();
-      clicar('btn-caixa-receita'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       q('l-valor').value = '58'; q('l-forma').value = 'Dinheiro';
       q('form-lancamento').requestSubmit(); await espera(400);
       ok('a receita entra com "+", em verde, e o liquido muda', textoDe('caixa-lista').includes('Corrida · Dinheiro') && textoDe('caixa-lista').includes('+ 58,00')
          && textoDe('caixa-receitas') === '+ R$ 58,00' && textoDe('caixa-liquido') === '−R$ 28,00'
          && q('caixa-lista').querySelector('.caixa-item-valor.valor-receita') !== null, textoDe('caixa-liquido'));
-      clicar('btn-caixa-receita'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       ok('a receita seguinte comeca com a ultima forma usada', q('l-forma').value === 'Dinheiro');
       clicar('tipo-despesa'); await espera(50);
-      ok('trocar para despesa: categoria limpa e a forma vai para "Mais detalhes"', !q('l-categorias').querySelector('[aria-pressed="true"]')
-         && q('l-mais').contains(q('l-forma')) && textoDe('titulo-lancamento') === 'Nova despesa');
+      ok('trocar para despesa: categoria limpa e a forma vai para "Mais detalhes" (o titulo continua "Novo lançamento")', !q('l-categorias').querySelector('[aria-pressed="true"]')
+         && q('l-mais').contains(q('l-forma')) && textoDe('titulo-lancamento') === 'Novo lançamento');
       clicar('btn-fechar-lancamento'); await espera(300);
       ok('Cancelar volta ao Caixa sem guardar nada', !q('tela-caixa').hidden && (await listarLancamentos()).filter((x) => !x.apagado).length === 2);
 
@@ -1954,7 +1977,7 @@ window.addEventListener('load', async () => {
       const gorjetaSalva = await buscarLancamento('l-gorjeta');
       ok('e o Salvar guarda a gorjeta como gorjeta', gorjetaSalva.categoria === 'gorjeta' && gorjetaSalva.tipo === 'receita' && gorjetaSalva.versao === 2,
          JSON.stringify(gorjetaSalva));
-      clicar('btn-caixa-receita'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       categoria('gorjeta').click(); clicar('tipo-despesa'); await espera(50);
       categoria('combustivel').click(); clicar('tipo-receita'); await espera(50);
       const naReceita = categoria('gorjeta').getAttribute('aria-pressed') === 'true';
@@ -1997,7 +2020,7 @@ window.addEventListener('load', async () => {
       if (!ontemTravado) {
         ok('ontem: "líquido de ontem" e o lancamento de ontem', textoDe('caixa-liquido-rotulo') === 'líquido de ontem' && !!itemDa('l-ontem')
            && textoDe('caixa-liquido') === 'R$ 30,00');
-        clicar('btn-caixa-despesa'); await espera(100);
+        clicar('btn-caixa-lancamento'); await espera(100);
         ok('lancar a partir de ontem: a data e ontem e a hora fica vazia', q('l-data').value === ontem && q('l-hora').value === '');
         clicar('btn-fechar-lancamento'); await espera(300);
         ok('Cancelar volta para o mesmo dia', textoDe('caixa-dia-titulo').startsWith('Ontem, '));
@@ -2065,7 +2088,7 @@ window.addEventListener('load', async () => {
       // ── Data adiante ──
       // O formulario vai so ate hoje: amanha sumia do dia que ele olhava.
       await abrirCaixa();
-      clicar('btn-caixa-despesa'); await espera(100);
+      lancarDespesa(); await espera(100);
       ok('a data do lancamento vai ate hoje (o calendario nao oferece amanha)', q('l-data').max === hoje);
       q('l-valor').value = '10,00'; categoria('pedagio').click(); q('l-data').value = Caixa.somarDias(hoje, 1);
       q('form-lancamento').requestSubmit(); await espera(300);
@@ -2110,7 +2133,7 @@ window.addEventListener('load', async () => {
       ok('e o Salvar guarda o valor novo no mesmo dia, sem erro, e volta para ele', reciboAdianteSalvo.centavos === 8500
          && reciboAdianteSalvo.data === diaDoReciboAdiante && reciboAdianteSalvo.versao === 2 && !q('tela-caixa').hidden
          && textoDe('caixa-dia-titulo') === tituloDoDia(diaDoReciboAdiante, hoje), `${JSON.stringify(reciboAdianteSalvo)} ${textoDe('erro-lancamento')}`);
-      clicar('btn-caixa-despesa'); await espera(100);
+      lancarDespesa(); await espera(100);
       ok('a despesa a mao, aberta nesse dia adiante, continua indo so ate hoje', q('l-data').value === hoje && q('l-data').max === hoje,
          `${q('l-data').value} max ${q('l-data').max}`);
       clicar('btn-fechar-lancamento'); await espera(300);
@@ -2148,7 +2171,7 @@ window.addEventListener('load', async () => {
       // O formulario do Gratis nao lanca em mes anterior: o lancamento ia direto
       // para o bloqueio, sem como corrigir nem apagar.
       await abrirCaixa();
-      clicar('btn-caixa-despesa'); await espera(100);
+      lancarDespesa(); await espera(100);
       ok('Gratis: a data do lancamento vai do dia 1 deste mes ate hoje', q('l-data').min === `${mesAtual}-01` && q('l-data').max === hoje,
          `${q('l-data').min} ${q('l-data').max}`);
       q('l-valor').value = '12,00'; categoria('pedagio').click(); q('l-data').value = `${mesPassado}-28`;
@@ -2181,7 +2204,7 @@ window.addEventListener('load', async () => {
          && !!q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${diaPassado}"]`), textoDe('mes-liquido'));
       await abrirCaixa(diaPassado);
       ok('Pro: o dia do mes anterior mostra os lancamentos', !visivel('caixa-bloqueio') && !!itemDa('l-passado1') && visivel('btn-abrir-mes'));
-      clicar('btn-caixa-despesa'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       ok('Pro: o lancamento pode ter data de mes anterior', q('l-data').min === '2000-01-01' && q('l-data').value === diaPassado);
       clicar('btn-fechar-lancamento'); await espera(300);
       window.__sessao = sessaoGratis;
@@ -2205,13 +2228,13 @@ window.addEventListener('load', async () => {
       const doValor = async (centavos) => (await listarLancamentos()).find((x) => x.centavos === centavos && !x.apagado) || null;
       const dataNaTela = () => `${q('l-data').value} ${q('l-data').min}..${q('l-data').max}`;
       try {
-        // Tela acesa: o Caixa aberto em hoje as 23h59, e o "+ Despesa" tocado
+        // Tela acesa: o Caixa aberto em hoje as 23h59, e o "+ Lançamento" tocado
         // depois da meia-noite (antes, ia para o dia que passou, sem hora).
         relogioEm(`${fimDoMes}T23:59:50`);
         await abrirCaixa();
         relogioEm(`${diaUm}T00:00:10`);
-        clicar('btn-caixa-despesa'); await espera(100);
-        ok('Caixa aberto em hoje antes da meia-noite: o "+ Despesa" de depois dela vem no dia novo, com a hora de agora',
+        clicar('btn-caixa-lancamento'); await espera(100);
+        ok('Caixa aberto em hoje antes da meia-noite: o "+ Lançamento" de depois dela vem no dia novo, com a hora de agora',
            q('l-data').value === diaUm && /^00:0\d$/.test(q('l-hora').value) && dataNaTela() === `${diaUm} ${diaUm}..${diaUm}`,
            `${dataNaTela()} ${q('l-hora').value}`);
         clicar('btn-fechar-lancamento'); await espera(300);
@@ -2237,7 +2260,7 @@ window.addEventListener('load', async () => {
         // Salvar depois dela: no Gratis, o dia 30 ja e do mes travado.
         relogioEm(`${fimDoMes}T23:59:50`);
         await abrirCaixa();
-        clicar('btn-caixa-despesa'); await espera(100);
+        lancarDespesa(); await espera(100);
         const aoAbrir = dataNaTela();
         q('l-valor').value = '23,00'; categoria('estacionamento').click();
         relogioEm(`${diaUm}T00:00:10`);
@@ -2259,7 +2282,7 @@ window.addEventListener('load', async () => {
         // calendario do sistema le o min e o max nessa hora.
         relogioEm(`${fimDoMes}T23:59:50`);
         await abrirCaixa();
-        clicar('btn-caixa-despesa'); await espera(100);
+        clicar('btn-caixa-lancamento'); await espera(100);
         relogioEm(`${diaUm}T00:00:10`);
         q('l-mais').open = true; await espera(50);
         clicar('l-data');
@@ -2275,7 +2298,7 @@ window.addEventListener('load', async () => {
         redesenharCaixaAberto(); await espera(300);
         ok('Gratis, Caixa em hoje redesenhado depois da virada do mes: e o hoje novo, e nao o dia 30 travado como "Ontem"',
            textoDe('caixa-dia-titulo') === tituloDoDia(diaUm, diaUm) && visivel('caixa-dia') && !visivel('caixa-bloqueio'), textoDe('caixa-dia-titulo'));
-        clicar('btn-caixa-despesa'); await espera(100);
+        lancarDespesa(); await espera(100);
         q('l-valor').value = '24,00'; categoria('estacionamento').click();
         q('form-lancamento').requestSubmit(); await espera(400);
         const depoisDaVolta = await doValor(2400);
@@ -2318,7 +2341,7 @@ window.addEventListener('load', async () => {
         ok('outra moeda: o lancamento em reais e editado em reais, com o codigo da moeda no rotulo (o "$" serve a cinco moedas)',
            naEdicao === 'Valor (BRL)' && rotuloDoValor() === 'Valor (BRL)' && q('l-valor').value === '10,00', `${naEdicao} | ${rotuloDoValor()}`);
         clicar('btn-fechar-lancamento'); await espera(300);
-        clicar('btn-caixa-despesa'); await espera(100);
+        clicar('btn-caixa-lancamento'); await espera(100);
         ok('outra moeda: o lancamento novo e na moeda de agora', rotuloDoValor() === 'Valor ($)', rotuloDoValor());
         clicar('btn-fechar-lancamento'); await espera(300);
       } finally {
@@ -2326,7 +2349,7 @@ window.addEventListener('load', async () => {
         await atualizarSessao();
         window.__sessao = sessaoGratis;
       }
-      clicar('btn-caixa-despesa'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       ok('de volta ao real, o lancamento novo e em reais de novo', moedaAtual().codigo === 'BRL' && rotuloDoValor() === 'Valor (R$)', rotuloDoValor());
       clicar('btn-fechar-lancamento'); await espera(300);
 
@@ -2356,7 +2379,10 @@ window.addEventListener('load', async () => {
       q('fim-forma').value = 'Dinheiro'; q('fim-forma').dispatchEvent(new Event('change'));
       ok('o valor e a forma ficam guardados na corrida (o app pode morrer no meio)', corridaAtual().valor_cobrado === '58,00'
          && corridaAtual().forma === 'Dinheiro' && !visivel('erro-fim'));
-      irParaInicio(); await abrirCorrida(); await espera(150);
+      irParaInicio(); await espera(300);
+      ok('com a corrida aberta, o aviso dela fica em cima do cartao do Caixa, e o cartao antes dos dois caminhos',
+         visivel('btn-continuar-corrida') && cartaoEmPrimeiro());
+      await abrirCorrida(); await espera(150);
       ok('reabrir a corrida traz o valor e a forma de volta', q('fim-valor').value === '58,00' && q('fim-forma').value === 'Dinheiro');
       const saida = agoraLocal(new Date(corridaAtual().inicio));
       clicar('btn-lancar-corrida'); clicar('btn-lancar-corrida'); await espera(600);
@@ -2374,8 +2400,16 @@ window.addEventListener('load', async () => {
         ...(diaComCorrida.nCorridas ? [plural(diaComCorrida.nCorridas, 'corrida', 'corridas')] : [])].join(' · ');
       ok('o cartao do inicio ja conta: liquido, receitas, despesas e corridas', textoDe('caixa-inicio-valor') === reais(diaComCorrida.liquido)
          && textoDe('caixa-inicio-linha') === linhaEsperada, `${textoDe('caixa-inicio-linha')} x ${linhaEsperada}`);
+      const caminhosAntes = document.querySelector('.caminhos').getBoundingClientRect().top;
       await espera(5200);
-      ok('a confirmacao some sozinha depois de ~5 s', !visivel('caixa-inicio-confirmacao'));
+      // Com o cartao no topo, a linha que sumisse puxava os dois caminhos para
+      // cima, embaixo do dedo: some o texto, e o espaco fica ate a proxima volta ao inicio.
+      ok('a confirmacao some sozinha depois de ~5 s, sem puxar "Emitir recibo" e "Fazer corrida" para cima',
+         textoDe('caixa-inicio-confirmacao') === '' && !confirmacaoDoInicio
+         && document.querySelector('.caminhos').getBoundingClientRect().top === caminhosAntes,
+         `${textoDe('caixa-inicio-confirmacao')} ${caminhosAntes} ${document.querySelector('.caminhos').getBoundingClientRect().top}`);
+      irParaInicio(); await espera(300);
+      ok('e na volta seguinte ao inicio a linha sai de vez', !visivel('caixa-inicio-confirmacao'));
       await abrirCaixa(lancada.data);
       itemDa(lancada.id).click(); await espera(300);
       ok('a receita do "Só lançar" tambem nao vira despesa (segmento desligado)', q('tipo-despesa').disabled
@@ -2453,7 +2487,7 @@ window.addEventListener('load', async () => {
            textoDe('erro-fim') === 'Não deu para lançar no caixa. Tente de novo.' && !lancandoCorrida && !!corridaAtual(), textoDe('erro-fim'));
         apagarCorrida();
         await abrirCaixa();
-        clicar('btn-caixa-despesa'); await espera(100);
+        lancarDespesa(); await espera(100);
         q('l-valor').value = '11,00'; categoria('lavagem').click();
         q('form-lancamento').requestSubmit(); await espera(600);
         ok('gravacao abortada: o Salvar avisa e volta a funcionar', textoDe('erro-lancamento') === 'Não deu para guardar o lançamento. Tente de novo.'
@@ -2465,7 +2499,7 @@ window.addEventListener('load', async () => {
 
       // ── Navegacao e voltar do Android ──
       await abrirCaixa();
-      clicar('btn-caixa-despesa'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       ok('voltar do Android: lancamento -> Caixa', voltarUmNivel() === true && !q('tela-caixa').hidden);
       await espera(300);
       clicar('btn-abrir-mes'); await espera(300);
@@ -2475,9 +2509,13 @@ window.addEventListener('load', async () => {
       ok('voltar do Android com o campo da meta aberto: so fecha o campo', voltarUmNivel() === true && !q('tela-caixa').hidden && !visivel('form-meta'));
       await espera(200);
       ok('voltar do Android: Caixa -> inicio', voltarUmNivel() === true && !q('tela-inicio').hidden);
-      clicar('btn-inicio-despesa'); await espera(100);
-      ok('"+ Despesa" do cartao do inicio abre a despesa de hoje com o foco no valor', !q('tela-lancamento').hidden
-         && document.activeElement === q('l-valor') && q('tipo-despesa').getAttribute('aria-checked') === 'true' && q('l-data').value === hoje);
+      clicar('btn-inicio-lancamento'); await espera(100);
+      ok('"+ Lançamento" do cartao do inicio abre "Novo lançamento" de hoje, em Receita com "Corrida", com o foco no valor', !q('tela-lancamento').hidden
+         && document.activeElement === q('l-valor') && q('tipo-receita').getAttribute('aria-checked') === 'true'
+         && categoria('corrida').getAttribute('aria-pressed') === 'true' && textoDe('titulo-lancamento') === 'Novo lançamento' && q('l-data').value === hoje);
+      q('tipo-despesa').focus(); clicar('tipo-despesa'); await espera(50);
+      ok('e o toque em "Despesa" troca para a despesa de hoje, com o foco de volta no valor', q('tipo-despesa').getAttribute('aria-checked') === 'true'
+         && !q('l-categorias').querySelector('[aria-pressed="true"]') && document.activeElement === q('l-valor') && q('l-data').value === hoje);
       ok('voltar do Android: o lancamento aberto pelo inicio volta ao inicio', voltarUmNivel() === true && !q('tela-inicio').hidden);
       clicar('btn-abrir-caixa'); await espera(400);
       ok('tocar no cartao do inicio abre o Caixa', !q('tela-caixa').hidden);
@@ -2491,7 +2529,7 @@ window.addEventListener('load', async () => {
       // ── Envio do que foi lancado pela tela ──
       __lotes.length = 0;
       await abrirCaixa();
-      clicar('btn-caixa-receita'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       q('l-valor').value = '12,00'; q('l-obs').value = 'envio pela tela';
       q('form-lancamento').requestSubmit(); await espera(2900);
       const subiu = __lotes.flatMap((c) => c.lancamentos).find((x) => x.obs === 'envio pela tela');
@@ -2521,7 +2559,7 @@ window.addEventListener('load', async () => {
          && getComputedStyle(q('caixa-lista').querySelector('.caixa-item-valor')).fontVariantNumeric.includes('tabular-nums'));
       // Os erros das telas do caixa no coral de texto (6,8:1), e nao no --coral
       // do .erro (4,35:1): e a frase que ele precisa ler para o Salvar funcionar.
-      clicar('btn-caixa-despesa'); await espera(100);
+      clicar('btn-caixa-lancamento'); await espera(100);
       q('form-lancamento').requestSubmit(); await espera(150);
       const corDoErroLancamento = visivel('erro-lancamento') && cor(q('erro-lancamento'));
       clicar('btn-fechar-lancamento'); await espera(300);
@@ -2546,7 +2584,7 @@ window.addEventListener('load', async () => {
       medir(q('tela-caixa'));
       await abrirMesDoCaixa(mesAtual); medir(q('tela-caixa-mes'));
       clicar('btn-fechar-mes'); await espera(300);
-      clicar('btn-caixa-despesa'); await espera(100);
+      lancarDespesa(); await espera(100);
       categoria('combustivel').click(); q('l-mais').open = true; await espera(50);
       medir(q('tela-lancamento'));
       clicar('btn-fechar-lancamento'); await espera(300);

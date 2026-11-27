@@ -182,6 +182,23 @@
     <small id="corrida-aberta-desde"></small>
   </button>
 
+  <!-- Caixa de hoje (app 1.8): o primeiro bloco do inicio (pedido do Anderson,
+       2026-11-27), logo abaixo da saudacao e do aviso da corrida aberta, que
+       fica em cima por ser a coisa por terminar. Tocar abre o Caixa;
+       "+ Lançamento" lanca direto (a corrida feita sem o app, o
+       abastecimento), e Receita ou Despesa se escolhe no formulario. Sao dois
+       botoes lado a lado, e nao um dentro do outro (botao dentro de botao nao
+       vale no HTML, e o toque iria para os dois). -->
+  <div id="caixa-inicio" class="caixa-cartao">
+    <button type="button" id="btn-abrir-caixa" class="caixa-cartao-abrir">
+      <span class="caixa-cartao-rotulo">Caixa de hoje</span>
+      <strong id="caixa-inicio-valor" class="caixa-cartao-valor vazio">Nenhum lançamento hoje</strong>
+      <small id="caixa-inicio-linha" class="caixa-cartao-linha" hidden></small>
+      <small id="caixa-inicio-confirmacao" class="caixa-cartao-confirmacao" hidden></small>
+    </button>
+    <button type="button" id="btn-inicio-lancamento" class="caixa-cartao-lancar">+ Lançamento</button>
+  </div>
+
   <div class="caminhos">
     <button id="btn-ir-emitir" class="caminho">
       <span class="caminho-icone" aria-hidden="true">
@@ -207,22 +224,6 @@
         <small>Abra o destino no Waze e termine com o recibo preenchido</small>
       </span>
     </button>
-  </div>
-
-  <!-- Caixa de hoje (app 1.8): depois dos dois caminhos e antes da vitrine.
-       Discreto de proposito: o trabalho do dia continua sendo emitir e fazer
-       corrida, e o cartao e para conferir de relance. Tocar abre o Caixa;
-       "+ Despesa" lanca direto (o abastecimento no meio do dia). Sao dois
-       botoes lado a lado, e nao um dentro do outro (botao dentro de botao nao
-       vale no HTML, e o toque iria para os dois). -->
-  <div id="caixa-inicio" class="caixa-cartao">
-    <button type="button" id="btn-abrir-caixa" class="caixa-cartao-abrir">
-      <span class="caixa-cartao-rotulo">Caixa de hoje</span>
-      <strong id="caixa-inicio-valor" class="caixa-cartao-valor vazio">Nenhum lançamento hoje</strong>
-      <small id="caixa-inicio-linha" class="caixa-cartao-linha" hidden></small>
-      <small id="caixa-inicio-confirmacao" class="caixa-cartao-confirmacao" hidden></small>
-    </button>
-    <button type="button" id="btn-inicio-despesa" class="caixa-cartao-despesa">+ Despesa</button>
   </div>
 
   <!-- Vitrine dos planos para quem esta no Gratis (pedido do Anderson,
@@ -842,13 +843,14 @@
     </div>
     <p id="caixa-outras-moedas" class="caixa-nota" hidden></p>
 
+    <!-- Um botao so (pedido do Anderson, 2026-11-27): Receita ou Despesa se
+         escolhe no formulario, e o lancamento vai para o dia da tela. -->
     <div class="caixa-acoes">
-      <button type="button" id="btn-caixa-despesa" class="secundario caixa-mais">+ Despesa</button>
-      <button type="button" id="btn-caixa-receita" class="secundario caixa-mais">+ Receita</button>
+      <button type="button" id="btn-caixa-lancamento" class="secundario caixa-mais">+ Lançamento</button>
     </div>
 
     <div id="caixa-lista" class="caixa-lista"></div>
-    <p id="caixa-vazio" class="caixa-vazio" hidden>Nenhum lançamento neste dia. Os recibos que você emitir entram aqui sozinhos.</p>
+    <p id="caixa-vazio" class="caixa-vazio" hidden>Nenhum lançamento neste dia. Os recibos que você emitir entram aqui sozinhos; a corrida sem recibo entra pelo "+ Lançamento".</p>
   </div>
 
   <div id="caixa-bloqueio" class="caixa-bloqueio" hidden>
@@ -921,19 +923,21 @@
 </section>
 
 <!-- ── Lançamento do caixa ──────────────────────────────────────────────── -->
-<!-- Receita ou despesa, nova ou editada. O valor vem primeiro e abre o
-     teclado (o foco e dado no mesmo toque do "+ Despesa"). O resto, que quase
-     nunca muda (data, hora, observacao), fica recolhido em "Mais detalhes". -->
+<!-- Receita ou despesa, nova ou editada. O novo abre em Receita, com
+     "Corrida" (a corrida feita sem o app), e a despesa e um toque em
+     "Despesa". O valor vem primeiro e abre o teclado (o foco e dado no mesmo
+     toque do "+ Lançamento"). O resto, que quase nunca muda (data, hora,
+     observacao), fica recolhido em "Mais detalhes". -->
 <section id="tela-lancamento" class="tela" hidden>
   <div class="cabecalho-tela">
-    <h1 id="titulo-lancamento">Nova despesa</h1>
+    <h1 id="titulo-lancamento">Novo lançamento</h1>
     <button id="btn-fechar-lancamento" class="texto texto-alvo">Cancelar</button>
   </div>
 
   <form id="form-lancamento" novalidate>
     <div class="segmentos" role="radiogroup" aria-label="Tipo de lançamento">
-      <button type="button" id="tipo-receita" class="segmento" role="radio" aria-checked="false">Receita</button>
-      <button type="button" id="tipo-despesa" class="segmento" role="radio" aria-checked="true">Despesa</button>
+      <button type="button" id="tipo-receita" class="segmento" role="radio" aria-checked="true">Receita</button>
+      <button type="button" id="tipo-despesa" class="segmento" role="radio" aria-checked="false">Despesa</button>
     </div>
 
     <!-- O simbolo e o da moeda do lancamento (ver mostrarMoedaDoLancamento),

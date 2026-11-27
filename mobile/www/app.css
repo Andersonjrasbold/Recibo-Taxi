@@ -403,16 +403,17 @@ button:disabled { opacity:.5; }
    meta no "Remover meta". */
 #erro-lancamento, #erro-fim, #erro-meta { color:var(--coral-texto); }
 
-/* Cartao do inicio: secundario, no tom do cartao de indicacao. O "+ Despesa"
-   fica por cima, no canto, e as duas primeiras linhas deixam espaco para ele. */
-.caixa-cartao { position:relative; margin-top:1rem; }
+/* Cartao do inicio: o primeiro bloco da tela, no tom do cartao de indicacao.
+   O "+ Lançamento" fica por cima, no canto, e as duas primeiras linhas deixam
+   espaco para ele. */
+.caixa-cartao { position:relative; margin-bottom:.8rem; }
 .caixa-cartao-abrir {
   display:grid; gap:.1rem; width:100%; min-height:84px; text-align:left;
   padding:.85rem 1.1rem .9rem; border-radius:16px; color:var(--paper);
   background:rgba(247,245,242,.06); border:1px solid rgba(247,245,242,.14);
 }
 .caixa-cartao-abrir:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
-.caixa-cartao-rotulo, .caixa-cartao-valor { padding-right:7.4rem; }
+.caixa-cartao-rotulo, .caixa-cartao-valor { padding-right:8.6rem; }
 .caixa-cartao-rotulo {
   font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--texto-suave);
 }
@@ -420,12 +421,12 @@ button:disabled { opacity:.5; }
 .caixa-cartao-valor.vazio { font-size:1rem; font-weight:700; line-height:1.5; }
 .caixa-cartao-linha { font-size:.8rem; line-height:1.4; color:var(--texto-suave); font-variant-numeric:tabular-nums; }
 .caixa-cartao-confirmacao { margin-top:.2rem; font-size:.86rem; font-weight:800; color:var(--verde); font-variant-numeric:tabular-nums; }
-.caixa-cartao-despesa {
+.caixa-cartao-lancar {
   position:absolute; top:.75rem; right:.75rem; min-height:44px; padding:0 .95rem;
-  font-size:.92rem; font-weight:800; color:var(--ambar);
+  font-size:.92rem; font-weight:800; color:var(--ambar); white-space:nowrap;
   background:var(--coal); border:1px solid rgba(255,197,49,.45); border-radius:12px;
 }
-.caixa-cartao-despesa:active { background:rgba(255,197,49,.14); }
+.caixa-cartao-lancar:active { background:rgba(255,197,49,.14); }
 
 /* ‹ dia › e ‹ mes ›: as setas do tamanho do polegar, o titulo no meio. */
 .caixa-navegar {
@@ -478,7 +479,7 @@ button:disabled { opacity:.5; }
 .caixa-total-nome small { font-size:.78rem; font-weight:600; color:var(--texto-suave); }
 .caixa-total strong { font-size:1.12rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
 
-.caixa-acoes { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; margin:1rem 0 .3rem; }
+.caixa-acoes { margin:1rem 0 .3rem; }
 .caixa-acoes .secundario { margin-top:0; font-weight:800; }
 .caixa-mais:active { background:rgba(255,197,49,.1); border-color:rgba(255,197,49,.4); }
 

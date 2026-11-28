@@ -113,6 +113,8 @@ Schema em `supabase/migrations/`. Tabelas principais:
   que o servidor fez com cada um (migração 0011; ver "Planos")
 - `referrals` — quem indicou quem e quando o indicado emitiu o 1º recibo
   (migração 0012; ver "Planos")
+- `ledger_entries` — cópia dos lançamentos do Caixa do app (migração 0022; ver
+  "Caixa (app 1.8)")
 
 **Toda tabela de `public` tem RLS ligado e nenhuma policy** (migração 0006). O
 app conecta como `postgres`, dono das tabelas, e não é afetado; o que o RLS
@@ -122,7 +124,9 @@ falha se alguma ficar sem.
 
 Duas funções carregam a lógica que precisa ser atômica:
 
-- `bump_counter(key)` — incremento do rate limit numa ida só ao banco
+- `bump_counter(key)` — incremento do rate limit numa ida só ao banco. Só soma
+  1; o teto do Caixa, que conta itens do lote, soma N direto na tabela
+  (`PostgresStore.bump_counter_by`)
 - `consume_receipt_quota(driver, limite)` — consome a cota com `where used < limite`.
   É o que fecha a corrida: sem ela, duas emissões simultâneas furavam o teto.
 
@@ -376,10 +380,83 @@ derruba o webhook. O painel mostra assinaturas novas por mês (loja × site,
 mensal × anual, sem sandbox) e os últimos eventos; a ficha do motorista, os
 dele.
 
+## Caixa (app 1.8)
+
+O Caixa é o controle de receitas e despesas do motorista, **dentro do app** e
+offline como os recibos. O aparelho é a fonte da verdade; o servidor guarda uma
+cópia de cada lançamento (`ledger_entries`, migração 0022, rodar ANTES do
+deploy) para ele não perder o que lançou. Restaurar num aparelho novo (GET) é a
+fase 2. Recibo emitido e corrida encerrada com "Só lançar no caixa" entram
+sozinhos como receita; o resto é lançado à mão.
+
+`POST /api/lancamentos` (Bearer do app ou cookie do site, como `/api/recibos`):
+
+```json
+{"lancamentos": [
+  {"id": "r-0A1B2C3D4E5F60", "tipo": "receita", "categoria": "corrida",
+   "centavos": 4500, "moeda": "BRL", "data": "2026-11-26", "hora": "18:42",
+   "forma": "Pix", "origem": "recibo", "rid": "0A1B2C3D4E5F60", "obs": "",
+   "km": "12.4", "litros": null, "versao": 1, "apagado": false}
+]}
+```
+
+- Responde 200 mesmo com item recusado:
+  `{"aceitos": ["r-..."], "recusados": [{"id": "l-...", "erro": "valor_invalido"}]}`.
+  O item errado vai para `recusados` e os outros seguem. Códigos: `item_invalido`
+  (com `id` nulo), `id_invalido` (com o id cortado em 40), `tipo_invalido`,
+  `categoria_invalida`, `valor_invalido`, `data_invalida`, `campo_longo`,
+  `origem_invalida`, `rid_invalido`, `km_invalido`, `litros_invalido` e
+  `versao_invalida`.
+- O pedido inteiro é recusado, sem gravar nada, só em: 400 `lote_invalido` (sem
+  a lista, vazia ou com mais de `LANCAMENTOS_POR_LOTE` = 100), 401
+  `nao_autenticado`, 429 `muitos_lancamentos` (teto de `LANCAMENTOS_DIARIOS` =
+  500 itens por motorista por dia, no fuso de Brasília, contado antes de conferir)
+  e 503 `indisponivel` (banco fora do ar, ou antes de `CAIXA_A_PARTIR`, a data
+  que a Política anuncia; o app guarda e tenta de novo).
+- O portão da data (`CAIXA_A_PARTIR_DATA`, tirada do mesmo texto da Política)
+  deixa o app 1.8 ir às lojas antes da data: o Caixa funciona no aparelho, e a
+  cópia só sobe a partir dela, sozinha. Ao acertar a data no dia do merge, o
+  portão anda junto. Digitada fora do formato DD/MM/AAAA, o portão fica fechado
+  (o site não cai) e a suíte acusa.
+- Dinheiro em inteiro na menor unidade (`centavos`; peso chileno e guarani têm 0
+  casas), de 1 até o teto da moeda em `MOEDAS`; `float` e `bool` são recusados. O
+  banco guarda o valor em `amount`. Moeda fora da lista vale a do cadastro.
+- `data` de 2000-01-01 até hoje + 2 dias no fuso de Brasília (folga para o
+  relógio do aparelho). O lançamento de um recibo (`origem: "recibo"`) não tem
+  teto: leva a data do recibo, que o `/api/recibos` aceita sem teto, e o app não
+  reenvia o recusado.
+- Idempotente: a chave é `(driver_id, id)`, com o `driver_id` sempre do token, e
+  dois motoristas com o mesmo id são linhas diferentes. Só uma `versao` igual ou
+  maior troca a guardada; a mais velha não sobrescreve, mas volta em `aceitos` (o
+  servidor já tem algo igual ou mais novo). O mesmo id duas vezes no lote: fica o
+  de maior versão (empate: o último). `apagado: true` vira túmulo
+  (`deleted_at`), que a limpeza tira de vez em até `LANCAMENTO_APAGADO_DIAS` =
+  30 dias depois de chegar; versão maior com `apagado: false` desapaga. O
+  túmulo não guarda texto livre: `obs` e `forma` são gravadas vazias, sem
+  conferir o tamanho.
+- Nunca chegam ao servidor: origem e destino (o trajeto fica no aparelho), o
+  passageiro, nada além dos campos acima. O log leva só contagens e códigos de
+  erro, nunca valor, categoria ou observação.
+
+**`rid` sem chave estrangeira, de propósito.** O lançamento de um recibo
+(`origem: "recibo"`, id `r-<rid>`) vale mesmo que o recibo nunca tenha chegado ao
+servidor (recusado por cota), e a fila de lançamentos do app pode chegar antes da
+de recibos. Como o `rid` vem do aparelho, quem um dia juntar
+`ledger_entries.rid` com `receipts` **tem de conferir o `driver_id` dos dois**:
+senão um motorista lê o recibo de outro.
+
+O painel tem o bloco "Caixa (app 1.8)", ao lado do "Fazer corrida", só com
+contagens (quem já lançou, quem lançou em 7 dias, lançamentos de 30 dias por
+tipo e por origem): nunca valores nem lista por motorista, como a Política
+promete. Sem a migração, o bloco aparece como indisponível.
+
 ## Rotina de limpeza
 
 `GET /tarefas/limpeza` apaga recibos sem conta (do antigo gerador público) com mais de 12 meses
-(o que a Política de Privacidade promete) e contadores de rate limit antigos.
+(o que a Política de Privacidade promete), contadores de rate limit antigos e os
+túmulos do Caixa (lançamentos apagados no app) há mais de 29 dias: como a limpeza
+roda uma vez por dia, o corte um dia antes faz nenhum túmulo passar dos 30 dias
+que a Política promete. Com backlog, o túmulo mais velho sai primeiro.
 
 Protegida por `Authorization: Bearer $CRON_SECRET`. O `vercel.json` agenda a
 chamada diária às 04:00 UTC. Sem `CRON_SECRET` a rota fica fechada.

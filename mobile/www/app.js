@@ -48,25 +48,55 @@ const Guardado = {
   del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 
+// Versao 2 (app 1.8): a loja dos lancamentos do caixa. Quem vem da 1 ganha a
+// loja nova e fica com os recibos como estavam.
 function abrirBanco() {
   return new Promise((ok, falha) => {
-    const req = indexedDB.open('recibo-taxi', 1);
+    const req = indexedDB.open('recibo-taxi', 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('recibos')) {
         const loja = db.createObjectStore('recibos', { keyPath: 'rid' });
         loja.createIndex('pendente', 'pendente');
       }
+      // Sem indice: booleano nao e chave valida no IndexedDB (um indice de
+      // "pendente" nao acharia nada). Le tudo e filtra; o volume e pequeno.
+      if (!db.objectStoreNames.contains('lancamentos')) {
+        db.createObjectStore('lancamentos', { keyPath: 'id' });
+      }
     };
-    req.onsuccess = () => ok(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Cada chamada abre uma conexao, que fecha quando a transacao dela acaba
+      // (ver transacao). A que ainda estiver aberta (uma leitura em voo) fecha
+      // aqui quando alguem pede a subida de versao (ou o deleteDatabase dos
+      // testes): sem isto, a subida esperaria por ela para sempre.
+      db.onversionchange = () => db.close();
+      ok(db);
+    };
     req.onerror = () => falha(req.error);
   });
+}
+
+// A transacao de cada operacao, numa conexao que fecha quando ela acaba (bem
+// ou mal). Com o ouvinte de versionchange (acima), o navegador deixa de
+// recolher a conexao esquecida: sem fechar, cada leitura e gravacao deixava
+// uma aberta ate o app morrer — centenas num dia de trabalho, uns 10 KB cada
+// no WebView do Android. Fecha no fim, e nao logo depois de criar: o get que
+// grava no proprio onsuccess (mudarLancamentos) segue na mesma transacao.
+function transacao(db, lojas, modo) {
+  let tx;
+  try { tx = db.transaction(lojas, modo); } catch (e) { db.close(); throw e; }
+  const fechar = () => db.close();
+  tx.addEventListener('complete', fechar);
+  tx.addEventListener('abort', fechar);
+  return tx;
 }
 
 async function salvarRecibo(recibo) {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const tx = db.transaction('recibos', 'readwrite');
+    const tx = transacao(db, 'recibos', 'readwrite');
     tx.objectStore('recibos').put(recibo);
     tx.oncomplete = () => ok(recibo);
     tx.onerror = () => falha(tx.error);
@@ -76,7 +106,7 @@ async function salvarRecibo(recibo) {
 async function todosOsRecibos() {
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const req = db.transaction('recibos', 'readonly').objectStore('recibos').getAll();
+    const req = transacao(db, 'recibos', 'readonly').objectStore('recibos').getAll();
     req.onsuccess = () => ok(req.result.sort((a, b) => b.criado_em.localeCompare(a.criado_em)));
     req.onerror = () => falha(req.error);
   });
@@ -171,12 +201,238 @@ async function limparRecibosLocais() {
   const meus = await listarRecibos();
   const db = await abrirBanco();
   return new Promise((ok, falha) => {
-    const tx = db.transaction('recibos', 'readwrite');
+    const tx = transacao(db, 'recibos', 'readwrite');
     const loja = tx.objectStore('recibos');
     meus.forEach((r) => loja.delete(r.rid));
     tx.oncomplete = () => ok();
     tx.onerror = () => falha(tx.error);
   });
+}
+
+// ── Caixa: lançamentos no aparelho ─────────────────────────────────────────
+//
+// Receitas e despesas do motorista (app 1.8). As contas sao do caixa.js; aqui
+// fica o que e guardado, de quem e e como sobe. A regra e a dos recibos: o
+// lancamento nasce e vive no aparelho, e a copia no servidor vem depois
+// (POST /api/lancamentos), sem duplicar: o servidor guarda por id e so troca
+// a copia pela versao maior. As telas usam:
+//   listarLancamentos, buscarLancamento, criarLancamento, editarLancamento,
+//   apagarLancamento, lancarCorridaNoCaixa, completarCaixaComRecibos,
+//   metaDoDia / guardarMetaDoDia / removerMetaDoDia e ehPro.
+
+async function todosOsLancamentos() {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const req = transacao(db, 'lancamentos', 'readonly').objectStore('lancamentos').getAll();
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => falha(req.error);
+  });
+}
+
+// Mesmo criterio dos recibos (identidades): em aparelho dividido, o segundo
+// motorista nao ve nem envia o caixa do primeiro. Todo lancamento nasce com
+// dono; sem dono, nao e de ninguem.
+const ehMeuLancamento = (l) => !!(l && l.dono) && identidades().includes(String(l.dono));
+
+// Os meus, inclusive os apagados (o envio precisa deles; os resumos e o
+// Caixa.doDia os ignoram). As identidades sao lidas uma vez: o mes de um
+// motorista tem centenas de lancamentos.
+async function listarLancamentos() {
+  const eu = identidades();
+  return (await todosOsLancamentos()).filter((l) => !!(l && l.dono) && eu.includes(String(l.dono)));
+}
+
+async function buscarLancamento(id) {
+  const db = await abrirBanco();
+  const l = await new Promise((ok, falha) => {
+    const req = transacao(db, 'lancamentos', 'readonly').objectStore('lancamentos').get(String(id));
+    req.onsuccess = () => ok(req.result || null);
+    req.onerror = () => falha(req.error);
+  });
+  return ehMeuLancamento(l) ? l : null;
+}
+
+// O abort tambem e falha: no Android sem espaco, o put da certo e o commit
+// falha so com "abort" (QuotaExceededError), sem nenhum "error". Sem ouvir o
+// abort, a promessa nunca acabava, e o Salvar e o "Só lançar no caixa"
+// ficavam travados, sem a frase de erro, ate o motorista fechar o app.
+const abortada = (tx) => tx.error || new DOMException('Transação abortada', 'AbortError');
+
+async function salvarLancamento(l) {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const tx = transacao(db, 'lancamentos', 'readwrite');
+    tx.objectStore('lancamentos').put(l);
+    tx.oncomplete = () => ok(l);
+    tx.onerror = () => falha(tx.error);
+    tx.onabort = () => falha(abortada(tx));
+  });
+}
+
+// Le e grava na mesma transacao: o que o envio ou uma edicao gravou no meio
+// nao se perde, porque nada entra entre a leitura e a escrita (o envio que
+// termina enquanto o motorista edita nao marca a versao nova como enviada).
+// `muda(atual, id)` devolve o lancamento novo, ou null para deixar como esta.
+// Sem await la dentro: a transacao do IndexedDB fecha sozinha quando fica sem
+// pedido pendente, e uma promessa no meio a encontraria fechada.
+async function mudarLancamentos(ids, muda) {
+  const db = await abrirBanco();
+  return new Promise((ok, falha) => {
+    const tx = transacao(db, 'lancamentos', 'readwrite');
+    const loja = tx.objectStore('lancamentos');
+    const gravados = [];
+    for (const id of ids) {
+      const req = loja.get(id);
+      req.onsuccess = () => {
+        const novo = muda(req.result || null, id);
+        if (novo) { loja.put(novo); gravados.push(novo); }
+      };
+    }
+    tx.oncomplete = () => ok(gravados);
+    tx.onerror = () => falha(tx.error);
+    tx.onabort = () => falha(abortada(tx));
+  });
+}
+
+// A tela recebe o codigo do servidor (valor_invalido, data_invalida...) para
+// dizer o que corrigir: o lancamento que ele recusaria nem e guardado.
+const erroDoCaixa = (codigo) => Object.assign(new Error(codigo), { codigo });
+
+// Lancamento a mao ("+ Lançamento") ou da corrida sem recibo.
+// Campos: tipo, categoria, centavos, data, hora, forma, obs, litros (e, da
+// corrida, origem, km e rota). Devolve o que foi guardado.
+async function criarLancamento(campos = {}) {
+  const dono = donoAtual();
+  if (!dono) throw erroDoCaixa('sem_sessao');
+  // O lancamento de recibo so nasce do recibo (lancarReciboNoCaixa): e la que
+  // o id r-<rid> amarra os dois.
+  const origem = campos.origem === 'corrida' ? 'corrida' : 'manual';
+  const l = Caixa.novoLancamento({ ...campos, origem, rid: null },
+    { id: novoIdDeLancamento(), dono, moeda: moedaAtual().codigo });
+  const erro = Caixa.erroDoLancamento(l);
+  if (erro) throw erroDoCaixa(erro);
+  await salvarLancamento(l);
+  agendarEnvioDoCaixa();
+  return l;
+}
+
+// Editar sobe a versao e devolve o lancamento a fila: o servidor troca a
+// copia pela versao maior. Null se nao existe, e de outro ou ja foi apagado.
+async function editarLancamento(id, mudancas = {}) {
+  let erro = '';
+  const [salvo] = await mudarLancamentos([String(id)], (atual) => {
+    if (!ehMeuLancamento(atual) || atual.apagado) return null;
+    const novo = Caixa.editado(atual, mudancas);
+    erro = Caixa.erroDoLancamento(novo);
+    return erro ? null : novo;
+  });
+  if (erro) throw erroDoCaixa(erro);
+  if (salvo) agendarEnvioDoCaixa();
+  return salvo || null;
+}
+
+// Fica guardado como apagado (o tumulo): e ele que avisa o servidor e que
+// impede o recibo de voltar ao caixa na proxima abertura.
+async function apagarLancamento(id) {
+  const [salvo] = await mudarLancamentos([String(id)], (atual) => (
+    ehMeuLancamento(atual) && !atual.apagado ? Caixa.apagado(atual) : null));
+  if (salvo) agendarEnvioDoCaixa();
+  return salvo || null;
+}
+
+// O recibo emitido entra sozinho como receita (r-<rid>). Nao recria o que ja
+// existe, nem o apagado: o motorista tirou do caixa, e o recibo continua valendo.
+async function lancarReciboNoCaixa(recibo) {
+  const l = Caixa.lancamentoDoRecibo(recibo, { decimalDe: decimalDoValor, moedaPadrao: moedaAtual().codigo });
+  if (!l || !l.dono) return null;
+  const [criado] = await mudarLancamentos([l.id], (atual) => (atual ? null : l));
+  if (criado) agendarEnvioDoCaixa();
+  return criado || null;
+}
+
+// Os recibos que o caixa ainda nao tem viram receitas: os de antes da 1.8 e
+// os recusados por cota (a corrida aconteceu e o dinheiro entrou). Roda a cada
+// abertura do app e ao abrir o Caixa; o que ja existe, apagado ou nao, fica.
+// Recibo sem dono fica de fora: e o antigo com um e-mail que este aparelho nao
+// conhece (ver marcarDonoDosRecibos), que pode ser de outro motorista, e a
+// receita teria de escolher um dono para sempre. Quando o dono de verdade
+// entrar, o recibo ganha a marca e a receita vem para ele.
+async function completarCaixaComRecibos() {
+  const moeda = moedaAtual().codigo;
+  const faltam = new Map();
+  for (const r of await listarRecibos()) {
+    if (!r.dono) continue;
+    const l = Caixa.lancamentoDoRecibo(r, { decimalDe: decimalDoValor, moedaPadrao: moeda });
+    if (l) faltam.set(l.id, l);
+  }
+  if (!faltam.size) return 0;
+  const criados = await mudarLancamentos([...faltam.keys()], (atual, id) => (atual ? null : faltam.get(id)));
+  if (criados.length) agendarEnvioDoCaixa();
+  return criados.length;
+}
+
+// "Só lançar no caixa", no fim da corrida: a receita sem recibo, com a data e
+// a hora da saida. Quem chama confere o valor (motivoValorInvalido) e apaga a
+// corrida depois.
+async function lancarCorridaNoCaixa(c, { centavos, forma = '' } = {}) {
+  const campos = Caixa.camposDaCorrida(c, { centavos, forma });
+  if (!campos) throw erroDoCaixa('corrida_invalida');
+  return criarLancamento(campos);
+}
+
+// Lancamento feito antes da primeira /api/sessao leva o e-mail como dono;
+// quando o id chega, passa a levar o id (o e-mail muda, o id nao). Mesma
+// regra dos recibos. O dono nao vai ao servidor: a versao nao muda.
+async function marcarDonoDosLancamentos() {
+  const id = Guardado.get('motorista_id');
+  if (!id) return;
+  const trocar = (await listarLancamentos()).filter((l) => l.dono !== String(id)).map((l) => l.id);
+  if (!trocar.length) return;
+  const eu = identidades();
+  await mudarLancamentos(trocar, (atual) => (
+    atual && eu.includes(String(atual.dono)) && atual.dono !== String(id) ? { ...atual, dono: String(id) } : null));
+}
+
+// So na exclusao da conta, e so os de quem esta excluindo (o outro motorista
+// do aparelho fica com os dele). "Sair" nao apaga nada, pelo mesmo motivo dos
+// recibos: o logout tambem acontece sozinho, e o caixa por subir se perderia.
+async function limparLancamentosLocais() {
+  const meus = await listarLancamentos();
+  const db = await abrirBanco();
+  await new Promise((ok, falha) => {
+    const tx = transacao(db, 'lancamentos', 'readwrite');
+    const loja = tx.objectStore('lancamentos');
+    meus.forEach((l) => loja.delete(l.id));
+    tx.oncomplete = () => ok();
+    tx.onerror = () => falha(tx.error);
+    tx.onabort = () => falha(abortada(tx));
+  });
+  removerMetaDoDia();
+}
+
+// Meta do dia (do liquido), em centavos: so neste aparelho e por motorista.
+// Procura em todas as identidades dele: a meta posta antes de a sessao chegar
+// ficou com o e-mail como dono.
+const chaveDaMeta = (dono) => `caixa_meta:${dono}`;
+
+function metaDoDia() {
+  for (const quem of [donoAtual(), ...identidades()]) {
+    const meta = quem ? Guardado.get(chaveDaMeta(quem)) : null;
+    if (Number.isInteger(meta) && meta > 0) return meta;
+  }
+  return null;
+}
+
+function guardarMetaDoDia(centavos) {
+  const dono = donoAtual();
+  if (!dono || !Number.isInteger(centavos) || centavos < 1) return false;
+  removerMetaDoDia();
+  Guardado.set(chaveDaMeta(dono), centavos);
+  return true;
+}
+
+function removerMetaDoDia() {
+  new Set([donoAtual(), ...identidades()].filter(Boolean)).forEach((quem) => Guardado.del(chaveDaMeta(quem)));
 }
 
 // ── Identificador ──────────────────────────────────────────────────────────
@@ -186,6 +442,15 @@ function novoRid() {
   const bytes = new Uint8Array(7);
   crypto.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+// Lancamento do caixa: "l-" e 16 hex, nascido aqui pelo mesmo motivo do rid
+// (lancar sem sinal e reenviar sem duplicar). O de um recibo e "r-" e o rid:
+// um recibo, uma receita, por mais que o caixa seja completado de novo.
+function novoIdDeLancamento() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return 'l-' + [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ── Rede ───────────────────────────────────────────────────────────────────
@@ -408,8 +673,123 @@ async function sincronizar({ semTelaDoPro = false, contador = null } = {}) {
   }
   const restantes = (await pendentes()).length;
   if (adiada && restantes && geracao === geracaoDaSessao) reagendarSincronizacao();
-  else if (!adiada) tentativasAdiadas = 0;
+  else if (!adiada) tentativasAdiadas = 0;   // o caixa tem a espera dele (reagendarCaixa)
+  // O caixa sobe depois dos recibos, e o sincronizar nao espera por ele: quem
+  // espera esta passada (o botao do WhatsApp, que fica travado ate ela acabar,
+  // e o Salvar de Meus dados) espera o recibo, nao a copia do caixa. A passada
+  // do caixa reagenda sozinha se o servidor nao respondeu.
+  if (geracao === geracaoDaSessao) enviarCaixa();
   return { enviados, restantes, semCota };
+}
+
+// ── Envio do caixa ─────────────────────────────────────────────────────────
+// Os lancamentos pendentes DESTE motorista, do mais antigo para o mais novo,
+// em lotes de 100 (o teto do servidor por pedido). Entra no fim de cada
+// sincronizar, e cada lancamento guardado agenda uma passada ~2 s depois.
+const LANCAMENTOS_POR_LOTE = 100;
+let passadaDoCaixa = null;       // uma passada por vez; quem chama no meio recebe a mesma
+let envioDoCaixaAgendado = null;
+
+// O caixa que parou (servidor fora, 429, sem a rota ou rede caida) tenta de
+// novo sozinho, na mesma curva dos recibos (30 s, 1 min, 2, ate 5 min), mas
+// com temporizador e contador so dele. Quando usava os dos recibos, o caixa
+// recusado por muito tempo (servidor sem o caixa, a 0022 nao aplicada, o teto
+// do dia) deixava o temporizador comum em 5 min: o recibo que caia esperava
+// por ele, e nao 30 s, e o passageiro abria o QR num 404 por mais tempo.
+let tentativasDoCaixa = 0;
+let caixaReagendado = null;
+
+// `tetoDoDia`: o 429 do teto diario (muitos_lancamentos). O servidor recusa
+// ate a virada do dia em Brasilia, e cada lote recusado ainda soma no
+// contador: insistir de 5 em 5 min so gastava pedido. Espera uma hora, e nao
+// ate a meia-noite exata: com o relogio do aparelho adiantado, a tentativa
+// cairia antes da virada, e a seguinte so no outro dia.
+function reagendarCaixa({ tetoDoDia = false } = {}) {
+  if (caixaReagendado) return;
+  const atraso = tetoDoDia ? 60 * 60e3 : Math.min(30e3 * 2 ** tentativasDoCaixa, 5 * 60e3);
+  tentativasDoCaixa++;
+  caixaReagendado = setTimeout(() => { caixaReagendado = null; enviarCaixa(); }, atraso);
+}
+
+// Devolve { enviados, recusados, restantes, adiada } e nunca falha: chamada
+// sem esperar (no fim do sincronizar), um erro viraria rejeicao solta.
+function enviarCaixa() {
+  if (!passadaDoCaixa) passadaDoCaixa = passarCaixa().finally(() => { passadaDoCaixa = null; });
+  return passadaDoCaixa;
+}
+
+async function passarCaixa() {
+  const resultado = { enviados: 0, recusados: 0, restantes: 0, adiada: false };
+  if (!token() || !(await temRede())) return resultado;
+  const geracao = geracaoDaSessao;   // a passada e desta sessao, como a da fila dos recibos
+  let tetoDoDia = false;             // 429 do teto diario: espera mais (ver reagendarCaixa)
+  try {
+    const fila = (await listarLancamentos()).filter((l) => l.pendente).sort((a, b) =>
+      String(a.criado_em).localeCompare(String(b.criado_em)) || String(a.id).localeCompare(String(b.id)));
+    for (let i = 0; i < fila.length && geracao === geracaoDaSessao; i += LANCAMENTOS_POR_LOTE) {
+      const lote = fila.slice(i, i + LANCAMENTOS_POR_LOTE);
+      const versoes = new Map(lote.map((l) => [l.id, l.versao]));
+      let resp, corpo = {};
+      try {
+        resp = await api('/api/lancamentos', {
+          method: 'POST',
+          body: JSON.stringify({ lancamentos: lote.map(Caixa.paraEnvio) }),
+        });
+        // Um 200 que nao e do servidor (o portal do wi-fi do hotel devolve a
+        // pagina dele) nao e JSON: vale como rede caida.
+        if (geracao === geracaoDaSessao && resp.status === 200) corpo = (await resp.json()) || {};
+      } catch {
+        resultado.adiada = true;   // sem rede de verdade: tenta na proxima
+        break;
+      }
+      if (geracao !== geracaoDaSessao) break;
+      if (resp.status === 200) {
+        const aceitos = new Set(Array.isArray(corpo.aceitos) ? corpo.aceitos : []);
+        const erros = new Map((Array.isArray(corpo.recusados) ? corpo.recusados : [])
+          .filter((x) => x && x.id).map((x) => [x.id, String(x.erro || 'recusado')]));
+        // Sai da fila so a versao que subiu: se ele editou enquanto o lote
+        // viajava, o lancamento continua pendente, com a versao nova.
+        const marcados = await mudarLancamentos([...versoes.keys()], (atual, id) => {
+          if (!atual || !atual.pendente || atual.versao !== versoes.get(id)) return null;
+          if (aceitos.has(id)) return { ...atual, pendente: false, recusado: '' };
+          if (erros.has(id)) return { ...atual, pendente: false, recusado: erros.get(id) };
+          return null;
+        });
+        marcados.forEach((l) => { if (l.recusado) resultado.recusados++; else resultado.enviados++; });
+      } else if (resp.status === 401) {
+        // O api() ja tentou renovar: sessao morta de verdade, como na fila dos recibos.
+        encerrarSessao();
+        break;
+      } else if (resp.status === 429 || resp.status === 404 || resp.status === 405 || resp.status >= 500) {
+        // Fora do ar, pedindo calma, ou sem a rota: o servidor anterior ao caixa
+        // responde 405 (e nao 404) ao POST, por causa da rota de OPTIONS. Os
+        // outros lotes levariam a mesma resposta; fica tudo para a proxima.
+        resultado.adiada = true;
+        if (resp.status === 429) tetoDoDia = ((await resp.json().catch(() => null)) || {}).erro === 'muitos_lancamentos';
+        break;
+      } else {
+        break;   // inesperado: fica pendente, sem marcar recusado nem insistir agora
+      }
+    }
+    if (geracao !== geracaoDaSessao) return resultado;
+    resultado.restantes = (await listarLancamentos()).filter((l) => l.pendente).length;
+    if (resultado.adiada && resultado.restantes) reagendarCaixa({ tetoDoDia });
+    else if (!resultado.adiada) tentativasDoCaixa = 0;
+  } catch { /* banco local com defeito: o caixa fica para a proxima passada */ }
+  return resultado;
+}
+
+// Varios lancamentos seguidos (a carga dos recibos antigos, uma despesa atras
+// da outra) sobem juntos, numa passada ~2 s depois do ultimo.
+function agendarEnvioDoCaixa() {
+  clearTimeout(envioDoCaixaAgendado);
+  envioDoCaixaAgendado = setTimeout(async () => {
+    envioDoCaixaAgendado = null;
+    // A passada em curso pode ter lido a fila antes deste lancamento: espera
+    // ela acabar e faz outra.
+    if (passadaDoCaixa) await passadaDoCaixa;
+    enviarCaixa();
+  }, 2000);
 }
 
 // ── Telas ──────────────────────────────────────────────────────────────────
@@ -417,12 +797,13 @@ const $ = (id) => document.getElementById(id);
 const telas = ['tela-login', 'tela-cadastro', 'tela-recuperar', 'tela-inicio',
                'tela-corrida', 'tela-tarifa', 'tela-emitir', 'tela-recibo',
                'tela-assinatura', 'tela-indicar', 'tela-historico', 'tela-excluir',
-               'tela-perfil', 'tela-vitrine'];
+               'tela-perfil', 'tela-vitrine', 'tela-caixa', 'tela-caixa-mes', 'tela-lancamento'];
 
 // Telas de onde o motorista sai para o menu. Fechar o historico, a assinatura,
 // a exclusao ou a tarifa volta para a ultima delas, e nao sempre para o
-// formulario: o formulario deixou de ser a unica tela de trabalho.
-const TELAS_BASE = ['tela-inicio', 'tela-corrida', 'tela-emitir'];
+// formulario: o formulario deixou de ser a unica tela de trabalho. O Caixa
+// tambem e uma: quem abre os planos pelo bloqueio do mes volta para ele.
+const TELAS_BASE = ['tela-inicio', 'tela-corrida', 'tela-emitir', 'tela-caixa'];
 let telaBase = 'tela-inicio';
 
 // Quantas vezes a assinatura saiu da tela. Uma compra que espera a sessao ou a
@@ -446,6 +827,9 @@ function mostrar(qual) {
 // corrida aberta pode ter mudado.
 function voltarParaBase() {
   if (telaBase === 'tela-inicio') { irParaInicio(); return; }
+  // O Caixa tambem se redesenha: o lancamento que ele acabou de fazer, ou o
+  // Pro que acabou de assinar pelo bloqueio, tem de aparecer na volta.
+  if (telaBase === 'tela-caixa') { abrirCaixa(diaDoCaixa); return; }
   if (telaBase === 'tela-corrida') desenharCorrida();
   mostrar(telaBase);
 }
@@ -577,9 +961,23 @@ function separadoresDoValor(bruto) {
   return bruto;
 }
 
+// O valor digitado sem o que nao e numero: espaco de qualquer tipo ("1 500,00",
+// "15 000", que o teclado poe sozinho) e o simbolo nas pontas ("R$ 45"). Uma
+// limpeza so para validar, mostrar e converter: o recibo aceitava "R$ 45", e
+// converter sem ela (separadoresDoValor no texto cru) dava NaN no mesmo valor.
+function valorLimpo(texto) {
+  return String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
+}
+
+// Texto digitado -> decimal com ponto ("R$ 1.500,50" -> "1500.50"), pela regra
+// que aceitou o recibo (motivoValorInvalido). E o que vai para o Caixa.centavosDe.
+function decimalDoValor(texto) {
+  return separadoresDoValor(valorLimpo(texto));
+}
+
 // "1500" ou "1.500" → "1.500,00"; "15000" em guarani (0 casas) → "15.000".
 function valorExibido(texto, casas = moedaAtual().casas) {
-  const bruto = String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
+  const bruto = valorLimpo(texto);
   const n = Number(separadoresDoValor(bruto));
   if (!Number.isFinite(n)) return String(texto || '').replace('.', ',');
   return n.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
@@ -588,6 +986,7 @@ function valorExibido(texto, casas = moedaAtual().casas) {
 function aplicarMoedaNaTela() {
   const m = moedaAtual();
   document.querySelectorAll('.simbolo-moeda').forEach((el) => { el.textContent = m.simbolo; });
+  mostrarMoedaDoLancamento();   // o do lancamento e o da moeda dele, nao o da sessao
   $('valor').placeholder = (45).toLocaleString('pt-BR', { minimumFractionDigits: m.casas, maximumFractionDigits: m.casas });
   $('rotulo-documento').textContent = paisAtual() === 'BR'
     ? 'CPF ou CNPJ do passageiro (opcional)' : 'Documento do passageiro (opcional)';
@@ -737,10 +1136,12 @@ function mostrarRecibo(recibo) {
   }
 }
 
-// Leva para a tela do recibo, venha ele de ser emitido ou do historico.
-function abrirRecibo(recibo, { doHistorico = false, recemGerado = false } = {}) {
+// Leva para a tela do recibo, venha ele de ser emitido, do historico ou do
+// lancamento do caixa (`doCaixa`: a volta e para o caixa).
+function abrirRecibo(recibo, { doHistorico = false, recemGerado = false, doCaixa = false } = {}) {
   $('btn-compartilhar').dataset.rid = recibo.rid;
   $('btn-voltar-historico').hidden = !doHistorico;
+  $('btn-voltar-caixa').hidden = !doCaixa;
   // A vitrine dos planos e so do recibo que acabou de ser gerado: o mesmo
   // recibo reaberto pelo historico nao a mostra de novo.
   vitrineReciboRid = recemGerado ? recibo.rid : '';
@@ -1208,10 +1609,11 @@ const tetoDoValor = (moeda) => (MOEDAS_GRANDES.includes(moeda) ? 99999999.99 : 9
 // O recibo nasce no aparelho, com QR, e ia para a fila como estava: um valor
 // que o servidor recusa ficava recusado para sempre, sem como editar, com o
 // passageiro ja de posse de um link que nunca abriria. Devolve o motivo em
-// palavras, ou '' quando o valor serve.
-function motivoValorInvalido(texto, moeda = moedaAtual().codigo, casas = moedaAtual().casas) {
-  const bruto = String(texto || '').replace(/\s/g, '').replace(/^[^\d,.-]+/, '').replace(/[^\d,.-]+$/, '');
-  if (!bruto) return 'Informe o valor da corrida.';
+// palavras, ou '' quando o valor serve. `doCaixa`: o lancamento do caixa pode
+// ser despesa, e a frase fala de valor, nao de corrida.
+function motivoValorInvalido(texto, moeda = moedaAtual().codigo, casas = moedaAtual().casas, { doCaixa = false } = {}) {
+  const bruto = valorLimpo(texto);
+  if (!bruto) return doCaixa ? 'Informe o valor.' : 'Informe o valor da corrida.';
   const limpo = separadoresDoValor(bruto);
   if (!/^\d+(\.\d+)?$/.test(limpo)) return 'Valor: só o número, ex.: 45,00.';
   // Mais casas do que a moeda tem: o servidor arredonda antes de conferir
@@ -1224,7 +1626,7 @@ function motivoValorInvalido(texto, moeda = moedaAtual().codigo, casas = moedaAt
   }
   const n = Number(limpo);
   if (!(n > 0)) return 'O valor precisa ser maior que zero.';
-  if (n > tetoDoValor(moeda)) return 'Valor acima do limite para um recibo de corrida.';
+  if (n > tetoDoValor(moeda)) return doCaixa ? 'Valor acima do limite.' : 'Valor acima do limite para um recibo de corrida.';
   return '';
 }
 
@@ -1306,6 +1708,9 @@ $('form-recibo').addEventListener('submit', async (ev) => {
       erroRecibo.hidden = false;
       return;
     }
+    // A receita do recibo entra no caixa, sem esperar e sem deixar uma falha
+    // chegar aqui: o recibo e o que importa, com o passageiro esperando.
+    lancarReciboNoCaixa(recibo).catch(() => {});
     vibrar('HEAVY');
     $('form-recibo').reset();
     atualizarCampoRazaoSocial();   // o reset limpa o valor, nao o que eu escondi
@@ -1608,6 +2013,11 @@ function usadosDoMes() {
 // abertura) nao ha limite guardado, e a vitrine nao aparece.
 const noGratis = () => !!token() && !assinaPeloServidor() && !proPelaLoja && limiteDoGratis() > 0;
 
+// Pro para o caixa (os meses anteriores): o mesmo criterio da vitrine e da
+// tela de assinatura. O servidor diz Pro (loja, site, pre-pago, cortesia, mes
+// de indicacao), ou a loja ja disse que ele assina e o servidor ainda nao soube.
+const ehPro = () => assinaPeloServidor() || proPelaLoja;
+
 async function desenharVitrine(caixa) {
   const limite = limiteDoGratis();
   // O servidor conta o que ja subiu; o que esta na fila ainda vai contar.
@@ -1693,6 +2103,9 @@ function atualizarVitrines() {
   if (!$('tela-vitrine').hidden && !noGratis()) fecharVitrineCheia();
   mostrarVitrineDoInicio();
   mostrarVitrineDoRecibo();
+  // E o mesmo momento em que o plano muda: o Caixa aberto destrava (ou
+  // trava) os meses anteriores sem esperar ele sair e voltar.
+  redesenharCaixaAberto();
 }
 
 // Precos da loja e "ja assina?", em segundo plano, para a vitrine nao esperar
@@ -2259,6 +2672,8 @@ function encerrarSessao() {
   tentativasAdiadas = 0;
   limparPerfil();
   if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+  clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+  clearTimeout(caixaReagendado); caixaReagendado = null; tentativasDoCaixa = 0;
   Guardado.del('access_token'); Guardado.del('refresh_token');
   Guardado.del('motorista'); Guardado.del('motorista_id');
   Guardado.del('plano'); Guardado.del('limite'); Guardado.del('usados');
@@ -2273,6 +2688,14 @@ function encerrarSessao() {
   sessaoRelidaEm = 0; vitrineCheiaNestaAbertura = false; vitrineCheiaOrigem = '';
   vitrineInicioFechada = false; vitrineReciboRid = ''; voltarDaAssinaturaParaRecibo = false;
   $('vitrine-inicio').hidden = true; $('vitrine-recibo').hidden = true; $('vitrine-recibo-atalho').hidden = true;
+  // O Caixa da tela era de quem saiu: o proximo abre no dia de hoje, sem o
+  // lancamento aberto nem a confirmacao da corrida do outro.
+  diaDoCaixa = ''; diaDesenhado = ''; mesDoCaixa = ''; ultimoDiaDoCaixa = ''; lancamentoAberto = null; confirmacaoDoInicio = null;
+  // Os valores voltam a se cobrir, nas telas escondidas tambem (quem entrar,
+  // ou ele mesmo de novo, abre o olho), e as leituras guardadas para o olho
+  // eram de quem saiu.
+  aplicarOlho(false);
+  cartaoDoInicio = null; caixaNaTela = null; mesNaTela = null;
   // A corrida aberta FICA. Esta funcao tambem roda sozinha quando a sessao
   // morre (401 no meio da corrida), e apagar aqui perdia a corrida do
   // motorista que so precisava entrar de novo. Quem protege o aparelho
@@ -2356,6 +2779,7 @@ async function atualizarSessao() {
     // motorista, inclusive os de antes desta versao, passam a levar o dono.
     // Banco local com defeito nao pode derrubar o resto da sessao.
     try { await marcarDonoDosRecibos(); } catch { /* fica para a proxima */ }
+    try { await marcarDonoDosLancamentos(); } catch { /* fica para a proxima */ }
     if (s.moeda) {
       Guardado.set('moeda', s.moeda);
       Guardado.set('moeda_simbolo', s.moeda_simbolo || 'R$');
@@ -2388,9 +2812,10 @@ async function irParaEmitir({ comHoraDeAgora = true, daCorrida = null } = {}) {
   mostrar('tela-emitir');
 }
 
-// O valor fica vazio de proposito: o recibo diz o que o passageiro pagou, e na
-// cidade grande quem diz isso e o taximetro. A estimativa aparece embaixo do
-// campo, para conferir — nunca dentro dele.
+// O valor e o que ele digitou no "Quanto cobrou?" do fim da corrida, ou
+// vazio: o recibo diz o que o passageiro pagou, e na cidade grande quem diz
+// isso e o taximetro. A estimativa aparece embaixo do campo, para conferir —
+// nunca dentro dele.
 let reciboDaCorrida = false;
 
 function preencherComCorrida(c) {
@@ -2403,7 +2828,8 @@ function preencherComCorrida(c) {
   $('km').value = c.estimativa && typeof c.estimativa.km === 'number' ? kmNormalizado(String(c.estimativa.km)) || '' : '';
   $('origem').value = c.origem || '';
   $('destino').value = c.destino || '';
-  $('valor').value = '';
+  $('valor').value = c.valor_cobrado || '';
+  if (FORMAS_DE_PAGAMENTO.includes(c.forma)) $('forma').value = c.forma;
   // O exemplo "45,00" do campo, logo acima da faixa, pareceria um valor sugerido.
   $('valor').placeholder = '0,00';
   const faixa = faixaDaCorrida(c);
@@ -2416,6 +2842,7 @@ function preencherComCorrida(c) {
 
 function limparCorridaDoFormulario() {
   ['origem', 'destino', 'valor', 'hora-fim', 'km'].forEach((id) => { $(id).value = ''; });
+  $('forma').selectedIndex = 0;   // a forma tambem pode ter vindo do fim da corrida
   $('valor').placeholder = '45,00';
   $('dica-estimativa').hidden = true;
   $('titulo-emitir').textContent = 'Novo recibo';
@@ -2439,8 +2866,10 @@ function voltarUmNivel() {
 
   if (!$('tela-recibo').hidden) {
     // Veio do histórico volta para o histórico; recém-emitido volta para o
-    // formulário. É o mesmo destino do botão que está na tela.
-    if ($('btn-voltar-historico').hidden) irParaEmitir({ comHoraDeAgora: false });
+    // formulário; aberto pelo lançamento do caixa volta para o caixa. É o
+    // mesmo destino do botão que está na tela.
+    if (!$('btn-voltar-caixa').hidden) abrirCaixa(diaDoCaixa);
+    else if ($('btn-voltar-historico').hidden) irParaEmitir({ comHoraDeAgora: false });
     else mostrarHistorico();
     return true;
   }
@@ -2450,6 +2879,17 @@ function voltarUmNivel() {
   if (!$('tela-assinatura').hidden) { sairDaAssinatura(); return true; }
   // A vitrine em tela cheia: o voltar e o "Agora não".
   if (!$('tela-vitrine').hidden) { fecharVitrineCheia(); return true; }
+
+  // Caixa: o lançamento volta para onde abriu (o Caixa ou o início), o mês
+  // volta para o dia que estava aberto, e o Caixa, para o início. O campo da
+  // meta aberto fecha antes, como um menu.
+  if (!$('tela-lancamento').hidden) { voltarParaBase(); return true; }
+  if (!$('tela-caixa-mes').hidden) { abrirCaixa(diaDoCaixa); return true; }
+  if (!$('tela-caixa').hidden) {
+    if (!$('form-meta').hidden) { fecharFormularioDaMeta(); desenharCaixa(); }
+    else irParaInicio();
+    return true;
+  }
 
   if (!$('tela-historico').hidden || !$('tela-perfil').hidden
       || !$('tela-excluir').hidden || !$('tela-tarifa').hidden || !$('tela-indicar').hidden) {
@@ -2734,6 +3174,9 @@ $('form-excluir').addEventListener('submit', async (ev) => {
     });
     if (resp.ok) {
       await limparRecibosLocais();
+      // A conta ja saiu do servidor (com a copia do caixa). O caixa local sai
+      // junto, e um defeito no banco local nao prende ninguem na conta apagada.
+      try { await limparLancamentosLocais(); } catch { /* fica no aparelho, sem conta */ }
       vibrar('HEAVY');
       encerrarSessao();
       return;
@@ -2863,6 +3306,7 @@ function irParaInicio() {
   atualizarSaudacao();
   mostrarCorridaAberta();
   mostrar('tela-inicio');
+  desenharCaixaDoInicio();
   mostrarVitrineDoInicio();
 }
 
@@ -2870,6 +3314,1012 @@ $('btn-ir-emitir').addEventListener('click', () => { vibrar('LIGHT'); irParaEmit
 // Uma corrida por vez: com uma aberta, "Fazer corrida" volta para ela.
 $('btn-ir-corrida').addEventListener('click', () => { vibrar('LIGHT'); abrirCorrida(); });
 $('btn-continuar-corrida').addEventListener('click', () => { vibrar('LIGHT'); abrirCorrida(); });
+
+// ── Caixa: telas ───────────────────────────────────────────────────────────
+//
+// O cartao do inicio, o dia (tela-caixa, tela de base), o mes (tela-caixa-mes)
+// e o lancamento (tela-lancamento). O que e guardado e como sobe esta em
+// "Caixa: lançamentos no aparelho"; as contas, no caixa.js. Tudo o que o
+// motorista escreveu (rota, observacao, forma) entra por textContent, nunca
+// cru no innerHTML: a observacao "<img onerror=...>" viraria codigo rodando.
+
+let diaDoCaixa = '';             // o dia aberto no Caixa ('' = hoje)
+let diaDesenhado = '';           // o dia que a tela mostra, ou o que a seta acabou de pedir (ver mudarDiaDoCaixa)
+let mesDoCaixa = '';             // o mes aberto na tela do mes
+let ultimoDiaDoCaixa = '';       // ate onde as setas vao, da ultima leitura (ver diaFinalDoCaixa)
+// Cada desenho ganha um numero e so o ultimo escreve: dois toques rapidos na
+// seta leem o banco duas vezes, e a leitura do dia anterior podia chegar
+// depois e pintar a tela com o dia errado.
+let desenhosDoCaixa = 0;
+let desenhosDoMes = 0;
+let desenhosDoInicio = 0;
+let confirmacaoDoInicio = null;  // { texto, dia, ate }: "Corrida lançada: R$ 58,00" por ~5 s
+let apagaConfirmacao = null;
+
+// As mesmas do recibo.
+const FORMAS_DE_PAGAMENTO = ['Pix', 'Dinheiro', 'Cartão', 'Aplicativo'];
+
+// O codigo que criarLancamento/editarLancamento recusam, em palavras.
+const MENSAGENS_DO_CAIXA = {
+  valor_invalido: 'Confira o valor.',
+  data_invalida: 'Confira a data: vale de 2000 até hoje.',
+  tipo_invalido: 'Escolha receita ou despesa.',
+  categoria_invalida: 'Escolha a categoria.',
+  campo_longo: 'A observação passou de 120 letras.',
+  km_invalido: 'O km desta corrida não serve. Lance sem ele, pelo Caixa.',
+  litros_invalido: 'Litros: só o número, ex.: 30,5. Ou deixe em branco.',
+  corrida_invalida: 'Esta corrida está sem a hora de saída. Gere o recibo ou lance pelo Caixa.',
+  sem_sessao: 'Entre na sua conta para lançar no caixa.',
+};
+
+const MOTIVO_DO_CAIXA_NO_PRO = 'O Pro mostra os meses anteriores do seu caixa.';
+
+// A moeda dos totais e a de agora (a do cadastro). As casas sao as do
+// caixa.js, a mesma tabela do servidor; o simbolo, o que veio com a sessao.
+function moedaDoCaixa() {
+  const m = moedaAtual();
+  return { codigo: m.codigo, simbolo: m.simbolo, casas: Caixa.casasDaMoeda(m.codigo) };
+}
+
+// Os valores do Caixa abrem cobertos (pedido do Anderson, 2026-11-27): o
+// motorista abre o app com o passageiro no carro, ou passa o celular a
+// alguem, e quanto ele ganhou no dia nao e da conta de ninguem. O olho mostra
+// os numeros. Um estado so para o cartao do inicio e as duas telas do Caixa,
+// e nao guardado: toda abertura do app comeca coberta, e a ida ao fundo (o
+// Waze da corrida, o WhatsApp do recibo, a tela bloqueada) e o Sair cobrem de
+// novo (ver aplicarOlho). Os formularios (o lancamento editado, a meta)
+// mostram o valor de verdade: editar e ato dele.
+let valoresVisiveis = false;
+// A mesma para qualquer valor, e nunca tirada do numero: com o tamanho dele,
+// "R$ ••••••" diria que o dia passou de mil.
+const MASCARA = '••••';
+
+const dinheiro = (centavos, m = moedaDoCaixa()) => Caixa.formatar(centavos, m.casas, m.simbolo);
+// Todo valor em dinheiro das telas do Caixa passa por aqui: o numero, ou
+// "R$ ••••". Coberto, sem o sinal: o "−" diria que o dia fechou no vermelho.
+const valorNaTela = (centavos, m) => (valoresVisiveis ? dinheiro(centavos, m) : `${m.simbolo} ${MASCARA}`);
+const exemploDoValor = (casas) => (0).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
+const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+// A cor do liquido. Coberto, nenhuma: o verde ou o coral entregaria o sinal.
+const corDoValor = (centavos) => (!valoresVisiveis ? '' : centavos > 0 ? 'valor-receita' : centavos < 0 ? 'valor-despesa' : '');
+// "+ R$ 398,40" e "− R$ 86,00" (coberto, "+ R$ ••••"); o zero vai sem sinal.
+// O sinal aqui e o do tipo, e nao o do numero, e o zero ja esta no
+// "0 lançamentos" ao lado: coberto, nada disso diz quanto foi.
+const comSinal = (tipo, centavos, m) => `${centavos ? `${tipo === 'despesa' ? '−' : '+'} ` : ''}${valorNaTela(centavos, m)}`;
+const ultimaForma = () => (FORMAS_DE_PAGAMENTO.includes(Guardado.get('caixa_forma')) ? Guardado.get('caixa_forma') : 'Pix');
+
+function nomeDoMesComMaiuscula(mes) {
+  const nome = Caixa.nomeDoMes(mes);
+  return nome.charAt(0).toUpperCase() + nome.slice(1);
+}
+
+// "Outubro" no ano corrente; "Dezembro de 2025" em outro ano.
+function nomeCurtoDoMes(mes, mesAtual) {
+  const nome = nomeDoMesComMaiuscula(mes);
+  return String(mes).slice(0, 4) === String(mesAtual).slice(0, 4) ? nome.replace(/ de \d{4}$/, '') : nome;
+}
+
+// "Hoje, qui 26/11", "Ontem, qua 25/11" ou "ter, 24/11".
+function tituloDoDia(dia, hoje) {
+  const curta = Caixa.dataCurta(dia, hoje);
+  if (dia === hoje) return `Hoje, ${curta.replace(', ', ' ')}`;
+  if (dia === Caixa.somarDias(hoje, -1)) return `Ontem, ${curta.replace(', ', ' ')}`;
+  return curta;
+}
+
+// Elemento com texto, sem innerHTML (ver o comeco da secao).
+function el(tag, classe, texto) {
+  const e = document.createElement(tag);
+  if (classe) e.className = classe;
+  if (texto != null) e.textContent = texto;
+  return e;
+}
+
+// Sem replaceChildren: o Android 7 (minSdk 24) pode estar com um WebView
+// anterior a ele.
+function trocarFilhos(pai, filhos) {
+  pai.textContent = '';
+  filhos.forEach((f) => pai.appendChild(f));
+}
+
+// Total de receitas ou de despesas: com sinal e na cor do tipo; o zero, sem
+// sinal e sem cor (um "R$ 0,00" verde parecia dinheiro que entrou).
+function desenharTotal(campo, tipo, centavos, m) {
+  campo.textContent = comSinal(tipo, centavos, m);
+  campo.className = centavos ? (tipo === 'despesa' ? 'valor-despesa' : 'valor-receita') : '';
+}
+
+function notaDeOutrasMoedas(nota, n) {
+  nota.hidden = !n;
+  nota.textContent = n ? `${plural(n, 'lançamento', 'lançamentos')} em outra moeda ${n === 1 ? 'fica' : 'ficam'} fora desta conta.` : '';
+}
+
+// ── Olho ───────────────────────────────────────────────────────────────────
+// Cada tela guarda a ultima leitura (cartaoDoInicio, caixaNaTela, mesNaTela)
+// e se pinta a partir dela numa funcao sem espera (pintarCaixaDoInicio,
+// pintarCaixa, pintarMesDoCaixa): o olho redesenha na hora, sem ler o banco.
+//
+// O desenho do olho e o do Lucide (licenca ISC): aberto com os valores
+// cobertos (o toque mostra), riscado com eles a mostra (o toque cobre).
+const svgDoOlho = (tracos) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+  + `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${tracos}</svg>`;
+const OLHO_ABERTO = svgDoOlho('<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/>'
+  + '<circle cx="12" cy="12" r="3"/>');
+const OLHO_RISCADO = svgDoOlho('<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/>'
+  + '<path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/>'
+  + '<path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/>'
+  + '<path d="m2 2 20 20"/>');
+
+function desenharOlhos() {
+  document.querySelectorAll('.olho').forEach((botao) => {
+    botao.innerHTML = valoresVisiveis ? OLHO_RISCADO : OLHO_ABERTO;
+    botao.setAttribute('aria-label', valoresVisiveis ? 'Esconder valores' : 'Mostrar valores');
+  });
+}
+
+// Troca o estado e repinta, na mesma hora, o cartao e as duas telas do
+// Caixa, abertos ou nao: o que ficou desenhado numa tela escondida tambem se
+// cobre. Nada de esperar o banco aqui: com uma leitura no meio, o numero
+// ficaria na tela ate ela terminar, e e nesse meio-tempo que o sistema tira
+// a foto do app para a lista de apps abertos.
+function aplicarOlho(visiveis) {
+  valoresVisiveis = !!visiveis;
+  desenharOlhos();
+  pintarCaixaDoInicio();
+  pintarCaixa();
+  pintarMesDoCaixa();
+}
+
+const cobrirValores = () => { if (valoresVisiveis) aplicarOlho(false); };
+
+document.querySelectorAll('.olho').forEach((botao) => botao.addEventListener('click', () => {
+  vibrar('LIGHT');
+  aplicarOlho(!valoresVisiveis);
+}));
+// Ao ir para o fundo: o 'pause' do Capacitor e, no WebView, a pagina que fica
+// escondida. O que chegar primeiro cobre; o outro nao acha nada a cobrir.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') cobrirValores(); });
+if (P().App) P().App.addListener('pause', cobrirValores);
+// No iPhone, os dois chegam tarde: o WebKit congela a tela antes de avisar a
+// pagina, e a foto do app para a lista de apps abertos saia com os numeros; o
+// seletor de apps, aberto de dentro do app, nem os manda. O que chega antes,
+// com a tela ainda desenhando, e o appStateChange com isActive false (o
+// willResignActive do sistema): cobre ali. Cobre tambem ao puxar a Central de
+// Controle ou a de Notificacoes, numa ligacao e num aviso do sistema (compra,
+// localizacao), e ele toca no olho de novo. No Android esse aviso vem depois
+// do 'pause', que ja cobriu.
+if (P().App) P().App.addListener('appStateChange', ({ isActive } = {}) => { if (!isActive) cobrirValores(); });
+desenharOlhos();
+
+// ── Cartao do inicio ───────────────────────────────────────────────────────
+let cartaoDoInicio = null;       // { r, m }: o resumo de hoje da ultima leitura
+
+async function desenharCaixaDoInicio() {
+  const vez = ++desenhosDoInicio;
+  const m = moedaDoCaixa();
+  let r;
+  try {
+    r = Caixa.resumoDoDia(await listarLancamentos(), Caixa.diaLocal(), m.codigo);
+  } catch {
+    // Banco local com defeito: sem cartao, e o inicio segue de pe. O que ele
+    // tinha sai junto, para o olho fechado nao deixar numero escondido ali.
+    if (vez === desenhosDoInicio) {
+      cartaoDoInicio = null;
+      $('caixa-inicio').hidden = true;
+      ['caixa-inicio-valor', 'caixa-inicio-linha', 'inicio-meta-texto'].forEach((id) => { $(id).textContent = ''; });
+    }
+    return;
+  }
+  if (vez !== desenhosDoInicio) return;
+  cartaoDoInicio = { r, m };
+  $('caixa-inicio').hidden = false;
+  pintarCaixaDoInicio();
+  mostrarConfirmacaoDoInicio();
+}
+
+function pintarCaixaDoInicio() {
+  if (!cartaoDoInicio) return;
+  const { r, m } = cartaoDoInicio;
+  const vazio = !r.nReceitas && !r.nDespesas;
+  const valor = $('caixa-inicio-valor');
+  // So lancamentos de outra moeda (os recibos de antes de ele trocar a moeda
+  // no site): ficam fora da conta, mas existem, e o Caixa aberto pelo cartao
+  // os lista. "Nenhum lançamento hoje" desmentia a tela seguinte.
+  valor.textContent = !vazio ? valorNaTela(r.liquido, m)
+    : r.outrasMoedas ? `${plural(r.outrasMoedas, 'lançamento', 'lançamentos')} em outra moeda` : 'Nenhum lançamento hoje';
+  valor.className = `caixa-cartao-valor ${vazio ? 'vazio' : corDoValor(r.liquido)}`;
+  $('caixa-inicio').classList.toggle('vazio', vazio);   // a frase de ponta a ponta (ver o app.css)
+  $('caixa-inicio-linha').hidden = vazio;
+  $('caixa-inicio-linha').textContent = vazio ? '' : linhaSemQuebra([`Receitas ${valorNaTela(r.receitas, m)}`,
+    `Despesas ${valorNaTela(r.despesas, m)}`, ...(r.nCorridas ? [plural(r.nCorridas, 'corrida', 'corridas')] : [])]);
+  // A meta do dia, a mesma do Caixa: ele ve de relance quanto falta, e a
+  // barra nao diz quanto ele ganhou. Sem meta, o convite.
+  const meta = metaDoDia();
+  $('caixa-inicio-meta').hidden = !meta;
+  $('btn-inicio-definir-meta').hidden = !!meta;
+  $('inicio-meta-texto').textContent = '';
+  if (meta) {
+    const p = Caixa.progressoDaMeta(r.liquido, meta);
+    const parte = Math.round(p.fracao * 100);
+    $('inicio-meta-preenchida').style.width = `${parte}%`;
+    $('inicio-meta-barra').setAttribute('aria-valuenow', String(parte));
+    $('inicio-meta-texto').classList.toggle('batida', p.batida);
+    $('inicio-meta-texto').textContent = textoDaMeta(p, true, m);
+  }
+  // Sem nada a cobrir (nenhum lancamento, ou so de outra moeda, e sem meta), sem olho.
+  $('btn-olho-inicio').hidden = vazio && !meta;
+}
+
+// "Receitas R$ 298,40 · Despesas R$ 110,00 · 4 corridas" nao cabe numa linha
+// do cartao, e quebrava no meio de um pedaço ("· 4" / "corridas"). Com espaco
+// que nao quebra dentro de cada pedaço e antes do "·", a linha so quebra entre eles.
+const linhaSemQuebra = (pedacos) => pedacos.map((p) => p.replace(/ /g, ' ')).join(' · ');
+
+// "Corrida lançada: R$ 58,00" depois do "Só lançar no caixa", por ~5 s: e o
+// recibo que ele nao tirou, a prova de que a corrida nao se perdeu.
+// Com o cartao no topo do inicio, a linha que some encolhia o cartao e puxava
+// "Emitir recibo" e "Fazer corrida" para cima, embaixo do dedo de quem ia
+// tocar neles. Some so o texto; o espaco fica ate o proximo desenho do
+// cartao (a proxima volta ao inicio), com a altura que o texto tinha: a frase
+// longa ("no caixa de ontem", "Outubro fica no Pro") ocupa duas linhas, e o
+// espaco de uma so ainda puxava os caminhos 20 px.
+function mostrarConfirmacaoDoInicio() {
+  const linha = $('caixa-inicio-confirmacao');
+  const resta = confirmacaoDoInicio ? confirmacaoDoInicio.ate - Date.now() : 0;
+  linha.hidden = resta <= 0;
+  linha.style.minHeight = '';   // a altura presa no apagar vale so ate aqui
+  if (resta <= 0) { confirmacaoDoInicio = null; return; }
+  linha.textContent = confirmacaoDoInicio.texto;
+  clearTimeout(apagaConfirmacao);
+  apagaConfirmacao = setTimeout(() => {
+    confirmacaoDoInicio = null;
+    linha.style.minHeight = `${linha.getBoundingClientRect().height}px`;
+    linha.textContent = '\u00a0';
+  }, resta);
+}
+
+// Com a confirmacao da corrida a vista, o toque abre o dia em que ela entrou
+// (ontem, na corrida que passou da meia-noite), e nao hoje, onde ela nao esta.
+$('btn-abrir-caixa').addEventListener('click', () => {
+  vibrar('LIGHT');
+  abrirCaixa(confirmacaoDoInicio && confirmacaoDoInicio.ate > Date.now() ? confirmacaoDoInicio.dia : undefined);
+});
+$('btn-inicio-lancamento').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento(); });
+// "Definir meta do dia" do cartao: o Caixa de hoje com o campo da meta ja
+// aberto e o foco no valor, tudo no mesmo toque (no iPhone, o teclado so sobe
+// se o focus() vier dele). O desenho do Caixa, que chega depois, deixa o
+// campo aberto (ver desenharMeta).
+$('btn-inicio-definir-meta').addEventListener('click', () => {
+  vibrar('LIGHT');
+  abrirCaixa();
+  // O campo da meta mora no dia, e o ultimo desenho do Caixa pode te-lo
+  // deixado escondido: um dia do mes passado no Gratis, ou o do Pro que saiu
+  // (o Sair o redesenha sem o plano). O desenho de hoje so vem depois da
+  // leitura do banco, e o focus() num campo escondido nao pega: o teclado nao
+  // subia. Hoje nunca fica bloqueado: o dia volta a vista ja aqui, como o
+  // desenho dele vai deixar (o do bloqueio ja esvaziou os valores).
+  $('caixa-dia').hidden = false; $('btn-abrir-mes').hidden = false; $('caixa-bloqueio').hidden = true;
+  abrirFormularioDaMeta();
+});
+$('btn-caixa').addEventListener('click', () => { vibrar('LIGHT'); abrirCaixa(); });
+
+// ── Caixa do dia ───────────────────────────────────────────────────────────
+// Mostra na hora e desenha em seguida: a leitura do banco leva milissegundos,
+// e o toque nao espera por ela. Ao abrir, os recibos que o caixa ainda nao
+// tem viram receitas (o recibo recusado por cota tambem).
+// Hoje fica guardado como '' (o hoje do relogio), e nao com a data: o Caixa
+// aberto as 23h59 e deixado na tela (ou no fundo) seguia no dia que passou,
+// e o "+ Lançamento" de depois da meia-noite lancava nele, sem hora e calado (no
+// Gratis, na virada do mes, o Salvar ainda era recusado).
+function abrirCaixa(dia) {
+  diaDoCaixa = dia && dia !== Caixa.diaLocal() ? dia : '';
+  diaDesenhado = '';
+  fecharFormularioDaMeta();
+  mostrar('tela-caixa');
+  return desenharCaixa().then(async () => {
+    try { if (await completarCaixaComRecibos()) await desenharCaixa(); } catch { /* fica para a proxima abertura */ }
+  });
+}
+
+// O ultimo dia que o Caixa mostra: hoje, ou o do lancamento com data
+// adiantada. O formulario vai so ate hoje, mas o recibo nao tem esse limite, e
+// o recibo emitido com a data errada para a frente vira receita naquele dia.
+// Com as telas presas em hoje, ela ficava fora de todas (o dia, a seta, o mes,
+// e a linha dela na lista do mes abria hoje), sem como corrigir nem apagar.
+function diaFinalDoCaixa(lista, hoje) {
+  let fim = hoje;
+  for (const l of lista) if (l && !l.apagado && Caixa.dataReal(l.data) && l.data > fim) fim = l.data;
+  return fim;
+}
+
+// A ultima leitura do Caixa do dia, que o olho repinta sem ler o banco.
+let caixaNaTela = null;          // { lista, hoje, fim, dia, m }
+
+async function desenharCaixa() {
+  const vez = ++desenhosDoCaixa;
+  const hoje = Caixa.diaLocal();
+  let lista = [];
+  try { lista = await listarLancamentos(); } catch { /* banco local com defeito: o dia aparece vazio */ }
+  if (vez !== desenhosDoCaixa) return;
+  // A seta da direita nao leva a um dia que ainda nao chegou (a nao ser o de
+  // um lancamento com data adiantada), pelo relogio de cada desenho: o app
+  // aberto de um dia para o outro redesenha o dia escolhido como "Ontem".
+  const fim = diaFinalDoCaixa(lista, hoje);
+  ultimoDiaDoCaixa = fim;
+  const dia = diaDoCaixa && diaDoCaixa <= fim ? diaDoCaixa : hoje;
+  diaDoCaixa = dia === hoje ? '' : dia;   // hoje segue o relogio (ver abrirCaixa)
+  diaDesenhado = dia;
+  caixaNaTela = { lista, hoje, fim, dia, m: moedaDoCaixa() };
+  pintarCaixa();
+}
+
+// Os campos de valor do dia e do bloqueio. A pintura comeca esvaziando
+// todos: o dia liberado que fica por tras do bloqueio (e a isca, por tras do
+// dia) guardava os numeros de quando o olho estava aberto, escondidos na
+// pagina depois de ele fechar.
+const VALORES_DO_DIA = ['caixa-liquido', 'caixa-receitas', 'caixa-despesas', 'btn-mudar-meta', 'meta-texto',
+  'caixa-mes-liquido', 'caixa-mes-dias'];
+
+function pintarCaixa() {
+  if (!caixaNaTela) return;
+  const { lista, hoje, fim, dia, m } = caixaNaTela;
+  VALORES_DO_DIA.forEach((id) => { $(id).textContent = ''; });
+  trocarFilhos($('caixa-lista'), []);
+  $('caixa-bloqueio').querySelector('.caixa-bloqueio-isca').textContent = '';
+  $('caixa-dia-titulo').textContent = tituloDoDia(dia, hoje);
+  $('btn-dia-seguinte').disabled = dia >= fim;
+  $('btn-dia-anterior').disabled = dia <= '2000-01-01';
+  const mes = Caixa.mesDe(dia);
+  const mesAtual = Caixa.mesDe(hoje);
+  // No Gratis, o dia de um mes anterior mostra so o total do mes e o convite:
+  // nem o liquido do dia, nem os lancamentos, nem o mes saem do bloqueio.
+  const liberado = Caixa.mesLiberado(mes, mesAtual, ehPro());
+  $('caixa-dia').hidden = !liberado;
+  $('btn-abrir-mes').hidden = !liberado;
+  $('caixa-bloqueio').hidden = liberado;
+  if (!liberado) {
+    desenharBloqueio($('caixa-bloqueio'), Caixa.resumoDoMes(lista, mes, m.codigo), mes, mesAtual, m);
+    return;
+  }
+
+  const r = Caixa.resumoDoDia(lista, dia, m.codigo);
+  $('caixa-liquido').textContent = valorNaTela(r.liquido, m);
+  $('caixa-liquido').className = `caixa-heroi-valor ${corDoValor(r.liquido)}`;
+  $('caixa-liquido-rotulo').textContent = dia === hoje ? 'líquido de hoje'
+    : dia === Caixa.somarDias(hoje, -1) ? 'líquido de ontem' : 'líquido do dia';
+  desenharMeta(r.liquido, dia === hoje, m);
+  desenharTotal($('caixa-receitas'), 'receita', r.receitas, m);
+  desenharTotal($('caixa-despesas'), 'despesa', r.despesas, m);
+  $('caixa-n-receitas').textContent = plural(r.nReceitas, 'lançamento', 'lançamentos');
+  $('caixa-n-despesas').textContent = plural(r.nDespesas, 'lançamento', 'lançamentos');
+  notaDeOutrasMoedas($('caixa-outras-moedas'), r.outrasMoedas);
+
+  const doDia = Caixa.doDia(lista, dia);
+  trocarFilhos($('caixa-lista'), doDia.map((l) => itemDoCaixa(l, m)));
+  $('caixa-vazio').hidden = doDia.length > 0;
+
+  const doMes = Caixa.resumoDoMes(lista, mes, m.codigo);
+  $('caixa-mes-nome').textContent = nomeDoMesComMaiuscula(mes);
+  $('caixa-mes-liquido').textContent = `Líquido ${valorNaTela(doMes.liquido, m)}`;
+  $('caixa-mes-liquido').className = `caixa-mes-liquido ${corDoValor(doMes.liquido)}`;
+  $('caixa-mes-dias').textContent = doMes.diasTrabalhados
+    ? `${plural(doMes.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · ${valorNaTela(doMes.mediaPorDia, m)}/dia`
+    : 'Nenhum dia trabalhado ainda';
+}
+
+// Uma linha da lista do dia: hora, "Corrida · Pix", embaixo os litros, a rota
+// ou a observacao, e o valor com o sinal. A forma igual a categoria nao se
+// repete ("Aplicativo · Aplicativo"). O valor vai sem o simbolo (o dia e todo
+// na mesma moeda); o de outra moeda, com o dele. Coberto, "+ ••••" na cor do
+// tipo: a cor e o sinal dizem receita ou despesa, que a categoria ja diz.
+function itemDoCaixa(l, m) {
+  const item = el('button', 'caixa-item');
+  item.type = 'button';
+  item.dataset.id = l.id;
+  const rotulo = Caixa.rotuloDaCategoria(l.categoria);
+  const titulo = [rotulo, l.forma !== rotulo ? l.forma : ''].filter(Boolean).join(' · ');
+  const meio = el('span', 'caixa-item-meio');
+  meio.appendChild(el('span', 'caixa-item-titulo', titulo));
+  const detalhe = [l.litros ? `${String(l.litros).replace('.', ',')} litros` : '', l.rota, l.obs].filter(Boolean).join(' · ');
+  if (detalhe) meio.appendChild(el('span', 'caixa-item-detalhe', detalhe));
+  const valor = !valoresVisiveis ? MASCARA
+    : l.moeda === m.codigo ? Caixa.formatar(l.centavos, m.casas) : Caixa.formatarNaMoeda(l.centavos, l.moeda);
+  item.appendChild(el('span', 'caixa-item-hora', l.hora || ''));
+  item.appendChild(meio);
+  item.appendChild(el('span', `caixa-item-valor ${l.tipo === 'despesa' ? 'valor-despesa' : 'valor-receita'}`,
+    `${l.tipo === 'despesa' ? '−' : '+'} ${valor}`));
+  return item;
+}
+
+// O total do mes e a isca: os dias e os lancamentos ficam para o Pro. O mes
+// so com lancamentos de outra moeda tem o que mostrar ao assinar: dizer
+// "Nenhum lançamento" ali escondia justo o que o Pro mostra. A nota de que o
+// historico continua guardado so aparece quando ha historico, e diz onde:
+// neste aparelho (trazer do servidor para um aparelho novo e da fase 2).
+function desenharBloqueio(bloco, resumo, mes, mesAtual, m) {
+  const nome = nomeCurtoDoMes(mes, mesAtual);
+  const naMoeda = resumo.nReceitas + resumo.nDespesas;
+  bloco.querySelector('.caixa-bloqueio-isca').textContent = naMoeda
+    ? `${nome} fechou com ${valorNaTela(resumo.liquido, m)} de líquido.`
+    : resumo.outrasMoedas ? `${nome} tem ${plural(resumo.outrasMoedas, 'lançamento', 'lançamentos')} em outra moeda.`
+      : `Nenhum lançamento em ${nome.charAt(0).toLowerCase()}${nome.slice(1)}.`;
+  bloco.querySelector('.caixa-bloqueio-guardados').hidden = !naMoeda && !resumo.outrasMoedas;
+}
+
+// "Faltam R$ 87,60" (num dia que ja passou, "Faltaram") ou "Meta batida!
+// + R$ 12,00"; coberto, "Faltam R$ ••••". A barra fica sempre a vista: ela
+// diz quanto da meta ja foi, e nao quanto ele ganhou.
+const textoDaMeta = (p, ehHoje, m) => (p.batida
+  ? `Meta batida!${p.passou ? ` + ${valorNaTela(p.passou, m)}` : ''}`
+  : `${ehHoje ? 'Faltam' : 'Faltaram'} ${valorNaTela(p.falta, m)}`);
+
+// Meta do dia, do liquido. Barra em ambar, e o que falta.
+function desenharMeta(liquido, ehHoje, m) {
+  const meta = metaDoDia();
+  const editando = !$('form-meta').hidden;
+  $('meta-com').hidden = !meta || editando;
+  $('btn-definir-meta').hidden = !!meta || editando;
+  if (!meta) return;
+  const p = Caixa.progressoDaMeta(liquido, meta);
+  const parte = Math.round(p.fracao * 100);
+  $('meta-preenchida').style.width = `${parte}%`;
+  $('meta-barra').setAttribute('aria-valuenow', String(parte));
+  $('btn-mudar-meta').textContent = `meta ${valorNaTela(meta, m)}`;
+  const texto = $('meta-texto');
+  texto.classList.toggle('batida', p.batida);
+  texto.textContent = textoDaMeta(p, ehHoje, m);
+}
+
+// O campo da meta abre no mesmo toque, com o foco: no iPhone o teclado so
+// sobe se o focus() vier do proprio toque.
+function abrirFormularioDaMeta() {
+  const meta = metaDoDia();
+  const m = moedaDoCaixa();
+  $('form-meta').hidden = false;
+  $('meta-com').hidden = true;
+  $('btn-definir-meta').hidden = true;
+  $('erro-meta').hidden = true;
+  $('btn-remover-meta').hidden = !meta;
+  $('meta-valor').value = meta ? Caixa.formatar(meta, m.casas) : '';
+  $('meta-valor').placeholder = exemploDoValor(m.casas);
+  $('meta-valor').focus();
+}
+
+function fecharFormularioDaMeta() {
+  $('form-meta').hidden = true;
+}
+
+$('btn-definir-meta').addEventListener('click', abrirFormularioDaMeta);
+$('btn-mudar-meta').addEventListener('click', abrirFormularioDaMeta);
+$('btn-cancelar-meta').addEventListener('click', () => { fecharFormularioDaMeta(); desenharCaixa(); });
+$('btn-remover-meta').addEventListener('click', () => {
+  removerMetaDoDia();
+  vibrar('LIGHT');
+  fecharFormularioDaMeta();
+  desenharCaixa();
+});
+$('form-meta').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const m = moedaDoCaixa();
+  const texto = $('meta-valor').value;
+  const erro = $('erro-meta');
+  const motivo = motivoValorInvalido(texto, m.codigo, m.casas, { doCaixa: true });
+  if (motivo) { erro.textContent = motivo; erro.hidden = false; $('meta-valor').focus(); return; }
+  if (!guardarMetaDoDia(Caixa.centavosDe(decimalDoValor(texto), m.casas))) {
+    erro.textContent = MENSAGENS_DO_CAIXA.sem_sessao;
+    erro.hidden = false;
+    return;
+  }
+  vibrar('LIGHT');
+  fecharFormularioDaMeta();
+  desenharCaixa();
+});
+
+// Parte do dia que esta na tela ou, com a leitura do toque anterior ainda a
+// caminho, do dia que ele pediu, e nao do hoje do relogio: com o Caixa
+// desenhado antes da meia-noite, o "‹" levava ao proprio dia mostrado (so o
+// titulo virava "Ontem"), e a seta parecia nao andar. O dia pedido vai para o
+// diaDoCaixa e tambem para o diaDesenhado: hoje fica no diaDoCaixa como '', e
+// o toque seguinte ao que chegava a hoje partia do dia desenhado antes deles
+// ("›" "›" "›" de anteontem parava em ontem; "›" "‹" de ontem ia a anteontem).
+// Assim, toques rapidos andam um dia cada, mesmo com a leitura atrasada.
+function mudarDiaDoCaixa(dias) {
+  const hoje = Caixa.diaLocal();
+  const dia = Caixa.somarDias(diaDoCaixa || diaDesenhado || hoje, dias);
+  if (dia > (ultimoDiaDoCaixa > hoje ? ultimoDiaDoCaixa : hoje) || dia < '2000-01-01') return;
+  vibrar('LIGHT');
+  diaDoCaixa = dia === hoje ? '' : dia;
+  diaDesenhado = dia;
+  fecharFormularioDaMeta();
+  desenharCaixa();
+}
+
+$('btn-dia-anterior').addEventListener('click', () => mudarDiaDoCaixa(-1));
+$('btn-dia-seguinte').addEventListener('click', () => mudarDiaDoCaixa(1));
+$('btn-fechar-caixa').addEventListener('click', () => irParaInicio());
+$('btn-abrir-mes').addEventListener('click', () => { vibrar('LIGHT'); abrirMesDoCaixa(); });
+// O lancamento vai para o dia da tela. Em hoje (''), abre no dia do toque,
+// com a hora de agora.
+$('btn-caixa-lancamento').addEventListener('click', () => { vibrar('LIGHT'); abrirLancamento({ dia: diaDoCaixa || undefined }); });
+$('caixa-lista').addEventListener('click', (ev) => {
+  const item = ev.target.closest('.caixa-item[data-id]');
+  if (!item) return;
+  vibrar('LIGHT');
+  abrirLancamentoParaEditar(item.dataset.id);
+});
+
+// "Conhecer o Pro", do dia ou do mes: "Agora não" volta para o Caixa (e a
+// tela de base), e, assinando, o mes destrava na volta.
+document.querySelectorAll('.caixa-conhecer-pro').forEach((botao) => botao.addEventListener('click', () => {
+  vibrar('LIGHT');
+  voltarDaAssinaturaParaRecibo = false;
+  abrirAssinatura(MOTIVO_DO_CAIXA_NO_PRO);
+}));
+
+// O plano mudou com o Caixa na tela (ver atualizarVitrines).
+function redesenharCaixaAberto() {
+  if (!$('tela-caixa').hidden) desenharCaixa();
+  if (!$('tela-caixa-mes').hidden) desenharMesDoCaixa();
+}
+
+// ── Caixa do mes ───────────────────────────────────────────────────────────
+// Sem mes, o do dia que esta na tela (o cartao tocado diz o nome dele), como
+// as setas (ver mudarDiaDoCaixa).
+function abrirMesDoCaixa(mes) {
+  mesDoCaixa = mes || Caixa.mesDe(diaDoCaixa || diaDesenhado || Caixa.diaLocal());
+  mostrar('tela-caixa-mes');
+  return desenharMesDoCaixa();
+}
+
+// A ultima leitura do mes, que o olho repinta sem ler o banco.
+let mesNaTela = null;            // { lista, hoje, mes, mesFinal, m }
+
+async function desenharMesDoCaixa() {
+  const vez = ++desenhosDoMes;
+  const hoje = Caixa.diaLocal();
+  let lista = [];
+  try { lista = await listarLancamentos(); } catch { /* banco local com defeito: o mes aparece vazio */ }
+  if (vez !== desenhosDoMes) return;
+  // Ate o mes atual, ou o do lancamento com data adiantada (ver diaFinalDoCaixa).
+  const fim = diaFinalDoCaixa(lista, hoje);
+  ultimoDiaDoCaixa = fim;
+  const mesFinal = Caixa.mesDe(fim);
+  const mes = mesDoCaixa && mesDoCaixa <= mesFinal ? mesDoCaixa : Caixa.mesDe(hoje);
+  mesDoCaixa = mes;
+  mesNaTela = { lista, hoje, mes, mesFinal, m: moedaDoCaixa() };
+  pintarMesDoCaixa();
+}
+
+// Esvaziados antes de cada pintura, como os do dia (ver VALORES_DO_DIA).
+const VALORES_DO_MES = ['mes-liquido', 'mes-media', 'mes-receitas', 'mes-despesas'];
+
+function pintarMesDoCaixa() {
+  if (!mesNaTela) return;
+  const { lista, hoje, mes, mesFinal, m } = mesNaTela;
+  const mesAtual = Caixa.mesDe(hoje);
+  VALORES_DO_MES.forEach((id) => { $(id).textContent = ''; });
+  ['mes-cat-despesas', 'mes-cat-receitas', 'mes-dias'].forEach((id) => trocarFilhos($(id), []));
+  $('mes-bloqueio').querySelector('.caixa-bloqueio-isca').textContent = '';
+  $('mes-titulo').textContent = nomeDoMesComMaiuscula(mes);
+  $('btn-mes-seguinte').disabled = mes >= mesFinal;
+  $('btn-mes-anterior').disabled = mes <= '2000-01';
+  const r = Caixa.resumoDoMes(lista, mes, m.codigo);
+  const liberado = Caixa.mesLiberado(mes, mesAtual, ehPro());
+  $('mes-conteudo').hidden = !liberado;
+  $('mes-bloqueio').hidden = liberado;
+  if (!liberado) { desenharBloqueio($('mes-bloqueio'), r, mes, mesAtual, m); return; }
+
+  const nome = Caixa.nomeDoMes(mes).replace(/ de \d{4}$/, '');
+  $('mes-liquido').textContent = valorNaTela(r.liquido, m);
+  $('mes-liquido').className = `caixa-heroi-valor ${corDoValor(r.liquido)}`;
+  $('mes-liquido-rotulo').textContent = mes === mesAtual ? `líquido de ${nome} até hoje` : `líquido de ${nome}`;
+  $('mes-media').textContent = r.diasTrabalhados
+    ? `${plural(r.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · média de ${valorNaTela(r.mediaPorDia, m)} por dia`
+    : 'Nenhum dia trabalhado';
+  desenharTotal($('mes-receitas'), 'receita', r.receitas, m);
+  desenharTotal($('mes-despesas'), 'despesa', r.despesas, m);
+  $('mes-n-receitas').textContent = plural(r.nReceitas, 'lançamento', 'lançamentos');
+  $('mes-n-despesas').textContent = plural(r.nDespesas, 'lançamento', 'lançamentos');
+  notaDeOutrasMoedas($('mes-outras-moedas'), r.outrasMoedas);
+
+  trocarFilhos($('mes-cat-despesas'), r.porCategoria.despesa.map((c) => linhaDeCategoria(c, 'despesa', m)));
+  trocarFilhos($('mes-cat-receitas'), r.porCategoria.receita.map((c) => linhaDeCategoria(c, 'receita', m)));
+  trocarFilhos($('mes-dias'), r.porDia.map((d) => linhaDeDia(d, hoje, m)));
+  $('mes-bloco-despesas').hidden = !r.porCategoria.despesa.length;
+  $('mes-bloco-receitas').hidden = !r.porCategoria.receita.length;
+  $('mes-bloco-dias').hidden = !r.porDia.length;
+  // O mes so com lancamentos de outra moeda nao e vazio: a nota acima ja diz
+  // quantos sao e por que ficam fora da conta.
+  $('mes-vazio').hidden = r.porDia.length > 0 || r.outrasMoedas > 0;
+}
+
+// Categoria do mes: nome, valor, a parte do total e uma barra fina com ela.
+// O texto da parte e o do caixa.js ("<1%", ">99%"); a barra vai pela fracao de
+// verdade, e nao pelo numero arredondado, com 1% de minimo para a pequena aparecer.
+// Coberto, so o valor vira "R$ ••••": a parte e a barra dizem onde o dinheiro
+// foi, e nao quanto.
+function linhaDeCategoria(c, tipo, m) {
+  const linha = el('div', 'caixa-categoria');
+  const topo = el('div', 'caixa-categoria-linha');
+  topo.appendChild(el('span', 'caixa-categoria-nome', c.rotulo));
+  topo.appendChild(el('span', 'caixa-categoria-valor', valorNaTela(c.centavos, m)));
+  topo.appendChild(el('span', 'caixa-categoria-parte', Caixa.textoDaParte(c.parte)));
+  const barra = el('div', `caixa-categoria-barra ${tipo}`);
+  const cheia = el('span');
+  cheia.style.width = `${Math.max(1, Math.round((Number(c.parte) || 0) * 1000) / 10)}%`;
+  barra.appendChild(cheia);
+  linha.appendChild(topo);
+  linha.appendChild(barra);
+  return linha;
+}
+
+function linhaDeDia(d, hoje, m) {
+  const botao = el('button', 'caixa-dia-item');
+  botao.type = 'button';
+  botao.dataset.dia = d.data;
+  botao.appendChild(el('span', 'caixa-dia-item-nome', tituloDoDia(d.data, hoje)));
+  botao.appendChild(el('span', `caixa-dia-item-valor ${corDoValor(d.liquido)}`, valorNaTela(d.liquido, m)));
+  const seta = el('span', 'caixa-seta-fim', '›');
+  seta.setAttribute('aria-hidden', 'true');
+  botao.appendChild(seta);
+  return botao;
+}
+
+function mudarMesDoCaixa(passo) {
+  const hoje = Caixa.diaLocal();
+  const mesAtual = Caixa.mesDe(hoje);
+  const atual = mesDoCaixa || mesAtual;
+  const mes = passo < 0 ? Caixa.mesAnterior(atual) : Caixa.mesSeguinte(atual);
+  if (mes > Caixa.mesDe(ultimoDiaDoCaixa > hoje ? ultimoDiaDoCaixa : hoje) || mes < '2000-01') return;
+  vibrar('LIGHT');
+  mesDoCaixa = mes;
+  desenharMesDoCaixa();
+}
+
+$('btn-mes-anterior').addEventListener('click', () => mudarMesDoCaixa(-1));
+$('btn-mes-seguinte').addEventListener('click', () => mudarMesDoCaixa(1));
+// Voltar leva ao dia que estava aberto, e nao a hoje.
+$('btn-fechar-mes').addEventListener('click', () => abrirCaixa(diaDoCaixa));
+$('mes-dias').addEventListener('click', (ev) => {
+  const botao = ev.target.closest('.caixa-dia-item[data-dia]');
+  if (!botao) return;
+  vibrar('LIGHT');
+  abrirCaixa(botao.dataset.dia);
+});
+
+// ── Lancamento ─────────────────────────────────────────────────────────────
+let lancamentoAberto = null;     // o que esta sendo editado; null = novo
+let tipoNaTela = 'despesa';
+let categoriaNaTela = '';
+// A categoria de cada tipo enquanto a tela esta aberta: o toque sem querer em
+// "Despesa" e a volta a "Receita" devolvem a "Gorjeta" que estava marcada. Sem
+// isto a volta marcava "Corrida" sozinha, e o Salvar gravava a troca calado.
+let categoriaDoTipo = {};
+let horaAutomatica = true;       // a hora e a que o app pos: acompanha a data
+// Toque duplo no Salvar (o aparelho engasga, o motorista insiste) gravava dois
+// lancamentos iguais com ids diferentes. Mesma trava do emitindo do recibo.
+let salvandoLancamento = false;
+let apagarArmadoAte = 0;
+let desarmaApagar = null;
+
+function desenharCategorias() {
+  trocarFilhos($('l-categorias'), Caixa.CATEGORIAS[tipoNaTela].map((c) => {
+    const botao = el('button', 'categoria', c.rotulo);
+    botao.type = 'button';
+    botao.dataset.categoria = c.id;
+    botao.setAttribute('aria-pressed', String(c.id === categoriaNaTela));
+    return botao;
+  }));
+  $('campo-l-litros').hidden = !(tipoNaTela === 'despesa' && categoriaNaTela === 'combustivel');
+}
+
+// Na receita, a forma de pagamento fica a vista (Pix, dinheiro ou cartao e o
+// que ele confere no fim do dia); na despesa, dentro de "Mais detalhes". E o
+// mesmo campo, que muda de lugar com o tipo.
+function posicionarForma() {
+  const lugar = $(tipoNaTela === 'receita' ? 'lugar-forma-receita' : 'lugar-forma-despesa');
+  if ($('campo-l-forma').parentNode !== lugar) lugar.appendChild($('campo-l-forma'));
+}
+
+// Receita ja vem como corrida (e quase sempre). Despesa comeca sem nenhuma, e
+// pede para escolher: uma categoria marcada sozinha seria guardada calada.
+function escolherTipo(tipo, categoria) {
+  tipoNaTela = tipo;
+  $('tipo-receita').setAttribute('aria-checked', String(tipo === 'receita'));
+  $('tipo-despesa').setAttribute('aria-checked', String(tipo === 'despesa'));
+  categoriaNaTela = categoria !== undefined ? categoria : tipo === 'receita' ? 'corrida' : '';
+  desenharCategorias();
+  posicionarForma();
+  // O novo e "Novo lançamento" nos dois tipos: o tipo esta no segmento logo
+  // abaixo, e o titulo nao muda com o toque nele.
+  $('titulo-lancamento').textContent = lancamentoAberto ? `Editar ${tipo}` : 'Novo lançamento';
+}
+
+function trocarTipo(tipo) {
+  if (tipo === tipoNaTela) return;
+  // Recibo e corrida sao sempre receita (Caixa.tipoFixo): o segmento fica
+  // desligado (travarTipo), e isto segura qualquer outro caminho.
+  if (Caixa.tipoFixo(lancamentoAberto)) return;
+  vibrar('LIGHT');
+  categoriaDoTipo[tipoNaTela] = categoriaNaTela;
+  escolherTipo(tipo, categoriaDoTipo[tipo]);
+  if (!lancamentoAberto) $('l-forma').value = tipo === 'receita' ? ultimaForma() : '';
+  $('erro-lancamento').hidden = true;
+  // A despesa nova e o "+ Lançamento" e um toque em "Despesa". No Android o
+  // botao tocado fica com o foco, e o teclado que o "+ Lançamento" abriu
+  // descia: sem valor digitado, o foco volta ao valor no mesmo toque (no
+  // iPhone, so assim o teclado sobe), como no "+ Despesa" de antes.
+  if (!lancamentoAberto && !$('l-valor').value) $('l-valor').focus();
+}
+
+// O que veio de recibo ou de corrida nao troca de tipo: o outro segmento fica
+// desligado, a vista, e nao escondido (ele entende que nao da, e por que).
+function travarTipo(l) {
+  const fixo = Caixa.tipoFixo(l);
+  $('tipo-receita').disabled = fixo && l.tipo !== 'receita';
+  $('tipo-despesa').disabled = fixo && l.tipo !== 'despesa';
+}
+
+function desarmarApagar() {
+  apagarArmadoAte = 0;
+  clearTimeout(desarmaApagar);
+  $('btn-apagar-lancamento').textContent = 'Apagar lançamento';
+}
+
+// O que vale para o novo e para o editado: sem erro, sem o "apagar" armado,
+// "Mais detalhes" fechado e as linhas do recibo escondidas ate se saber.
+function prepararLancamento() {
+  $('erro-lancamento').hidden = true;
+  desarmarApagar();
+  $('l-mais').open = false;
+  ['btn-l-recibo', 'l-dica-recibo', 'l-rota', 'l-recusado'].forEach((id) => { $(id).hidden = true; });
+  travarTipo(lancamentoAberto);
+  mostrarMoedaDoLancamento();
+  limitarDataDoLancamento();
+}
+
+// Ate hoje (ver Caixa.erroDoLancamento) e, no Gratis, so este mes: o mes
+// anterior e do Pro, e o lancamento posto la sumia no bloqueio, sem como
+// corrigir nem apagar. E a regra que ja esconde os botoes de lancar no dia
+// bloqueado; o submit confere de novo (o seletor do sistema pode deixar passar).
+// A receita de um recibo com data adiante vai ate a data dela: o recibo nao tem
+// teto, e corrigir o valor nao pode obrigar a trocar o dia.
+// Sempre pelo relogio de agora, e nao so ao abrir: o formulario aberto antes
+// da meia-noite do dia 30 ficava com o calendario preso em novembro, e no
+// Gratis o Salvar pedia um dia de dezembro que o calendario nao oferecia.
+function limitarDataDoLancamento() {
+  const hoje = Caixa.diaLocal();
+  const l = lancamentoAberto;
+  const adiante = l && l.origem === 'recibo' && Caixa.dataReal(l.data) && l.data > hoje ? l.data : '';
+  $('l-data').max = adiante || hoje;
+  $('l-data').min = ehPro() ? '2000-01-01' : `${Caixa.mesDe(hoje)}-01`;
+}
+
+// O valor e digitado na moeda do lancamento: o editado e o dele (o recibo de
+// antes de o motorista trocar a moeda no site continua em reais), e o novo, a
+// de agora. De outra moeda vai o codigo ("BRL", "CLP"), e nao o simbolo: o
+// "$" serve a cinco moedas, e o "R$ 58,00" aparecia como "$ 58,00", convidando
+// a "corrigir" para 58.000,00 — gravados em reais.
+function mostrarMoedaDoLancamento() {
+  const m = moedaDoCaixa();
+  const l = lancamentoAberto;
+  $('l-simbolo').textContent = l && l.moeda && l.moeda !== m.codigo ? l.moeda : m.simbolo;
+}
+
+// Novo lancamento. Abre em Receita, com "Corrida": e a corrida feita sem o
+// app, o lancamento a mao mais comum; a despesa e um toque em "Despesa". O
+// foco vai para o valor no mesmo toque do "+ Lançamento": no iPhone, um
+// focus() depois de um await nao sobe o teclado. Por isso nada aqui espera o banco.
+function abrirLancamento({ tipo = 'receita', dia } = {}) {
+  lancamentoAberto = null;
+  categoriaDoTipo = {};
+  prepararLancamento();
+  const hoje = Caixa.diaLocal();
+  const data = dia && dia <= hoje ? dia : hoje;
+  $('l-valor').value = '';
+  $('l-valor').placeholder = exemploDoValor(moedaDoCaixa().casas);
+  $('l-litros').value = '';
+  $('l-obs').value = '';
+  // Do dia aberto no Caixa (ou hoje); a hora so quando e hoje: num dia que
+  // ja passou, "agora" seria uma hora inventada.
+  $('l-data').value = data;
+  $('l-hora').value = data === hoje ? Caixa.horaLocal() : '';
+  horaAutomatica = true;
+  $('btn-apagar-lancamento').hidden = true;
+  escolherTipo(tipo);
+  $('l-forma').value = tipo === 'receita' ? ultimaForma() : '';
+  mostrar('tela-lancamento');
+  $('l-valor').focus();
+}
+
+async function abrirLancamentoParaEditar(id) {
+  let l = null;
+  try { l = await buscarLancamento(id); } catch { /* banco local com defeito */ }
+  if (!l || l.apagado) return;
+  lancamentoAberto = l;
+  categoriaDoTipo = { [l.tipo]: l.categoria };
+  prepararLancamento();
+  $('l-valor').value = Caixa.formatar(l.centavos, Caixa.casasDaMoeda(l.moeda));
+  $('l-valor').placeholder = exemploDoValor(Caixa.casasDaMoeda(l.moeda));
+  $('l-litros').value = l.litros ? String(l.litros).replace('.', ',') : '';
+  $('l-obs').value = l.obs || '';
+  $('l-data').value = l.data;
+  $('l-hora').value = l.hora || '';
+  horaAutomatica = false;
+  escolherTipo(l.tipo, l.categoria);
+  // Forma que esta versao nao conhece (de uma versao futura): entra na lista,
+  // senao o Salvar a apagaria sem ele ter mexido.
+  const forma = $('l-forma');
+  if (l.forma && ![...forma.options].some((o) => o.value === l.forma)) forma.appendChild(new Option(l.forma, l.forma));
+  forma.value = l.forma || '';
+  $('btn-apagar-lancamento').hidden = false;
+  $('l-recusado').hidden = !l.recusado;
+  mostrar('tela-lancamento');
+  if (l.origem === 'recibo' && l.rid) {
+    $('l-dica-recibo').hidden = false;
+    let recibo = null;
+    try { recibo = (await listarRecibos()).find((r) => r.rid === l.rid) || null; } catch { /* sem o atalho */ }
+    if (!recibo || lancamentoAberto !== l || $('tela-lancamento').hidden) return;
+    const d = recibo.dados || {};
+    const [ano, mes, dd] = String(d.data || '').split('-');
+    const quando = dd ? `${dd}/${mes}${ano === Caixa.diaLocal().slice(0, 4) ? '' : `/${ano}`}` : '';
+    $('btn-l-recibo').textContent = `Do recibo${quando ? ` de ${quando}` : ''}${d.hora ? ` às ${d.hora}` : ''} ›`;
+    $('btn-l-recibo').dataset.rid = l.rid;
+    $('btn-l-recibo').hidden = false;
+  } else if (l.rota) {
+    $('l-rota').textContent = `Corrida: ${l.rota}`;
+    $('l-rota').hidden = false;
+  }
+}
+
+$('tipo-receita').addEventListener('click', () => trocarTipo('receita'));
+$('tipo-despesa').addEventListener('click', () => trocarTipo('despesa'));
+$('l-categorias').addEventListener('click', (ev) => {
+  const botao = ev.target.closest('.categoria[data-categoria]');
+  if (!botao) return;
+  vibrar('LIGHT');
+  categoriaNaTela = botao.dataset.categoria;
+  $('l-categorias').querySelectorAll('.categoria').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b === botao));
+  });
+  $('campo-l-litros').hidden = !(tipoNaTela === 'despesa' && categoriaNaTela === 'combustivel');
+  $('erro-lancamento').hidden = true;
+});
+$('l-data').addEventListener('change', () => {
+  if (horaAutomatica) $('l-hora').value = $('l-data').value === Caixa.diaLocal() ? Caixa.horaLocal() : '';
+});
+// O calendario do sistema le o min e o max quando abre (no Android, logo
+// depois do toque): o formulario que ficou aberto de um dia para o outro
+// passa a oferecer o hoje de agora. A data escolhida fica como esta.
+['focus', 'click'].forEach((ev) => $('l-data').addEventListener(ev, limitarDataDoLancamento));
+$('l-hora').addEventListener('input', () => { horaAutomatica = false; });
+$('btn-fechar-lancamento').addEventListener('click', () => { desarmarApagar(); voltarParaBase(); });
+
+$('btn-l-recibo').addEventListener('click', async () => {
+  const rid = $('btn-l-recibo').dataset.rid;
+  const recibo = (await listarRecibos()).find((r) => r.rid === rid);
+  if (!recibo) return;
+  vibrar('LIGHT');
+  abrirRecibo(recibo, { doCaixa: true });
+  // Como no historico: o que ainda nao subiu tenta subir antes do envio.
+  if (recibo.pendente || recibo.recusado) await esperarSubir(recibo.rid);
+});
+$('btn-voltar-caixa').addEventListener('click', () => abrirCaixa(diaDoCaixa));
+
+// O erro aparece logo abaixo do que ele tem de corrigir (`depoisDe`), e nao
+// la embaixo, perto do Salvar: com o teclado aberto no valor, a frase ficava
+// fora da vista e o toque no Salvar parecia nao fazer nada. Sem lugar certo
+// (falha ao guardar), fica antes do Salvar. `campo` recebe o foco.
+function erroNoLancamento(texto, { campo = null, depoisDe = campo } = {}) {
+  const erro = $('erro-lancamento');
+  erro.textContent = texto;
+  erro.hidden = false;
+  if (depoisDe) depoisDe.insertAdjacentElement('afterend', erro);
+  else $('l-recusado').insertAdjacentElement('beforebegin', erro);
+  // O erro de um campo de "Mais detalhes" abre o bloco: senao ele nao ve o que corrigir.
+  if (depoisDe && $('l-mais').contains(depoisDe)) $('l-mais').open = true;
+  if (campo) { campo.focus(); return; }
+  // Sem campo para digitar (a categoria): o teclado desce, e a frase aparece.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  erro.scrollIntoView({ block: 'nearest' });
+}
+
+$('form-lancamento').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  if (salvandoLancamento) return;
+  $('erro-lancamento').hidden = true;
+  // Com o relogio de agora (ver limitarDataDoLancamento): passada a meia-noite
+  // do ultimo dia do mes, o erro do Gratis abaixo abre a data com o calendario
+  // ja no mes novo, onde ha dia para escolher.
+  limitarDataDoLancamento();
+  const editando = lancamentoAberto;
+  const moeda = editando ? editando.moeda : moedaDoCaixa().codigo;
+  const casas = Caixa.casasDaMoeda(moeda);
+  const texto = $('l-valor').value;
+  const motivo = motivoValorInvalido(texto, moeda, casas, { doCaixa: true });
+  if (motivo) { erroNoLancamento(motivo, { campo: $('l-valor') }); return; }
+  if (!categoriaNaTela) { erroNoLancamento('Escolha a categoria.', { depoisDe: $('l-categorias') }); return; }
+  const combustivel = tipoNaTela === 'despesa' && categoriaNaTela === 'combustivel';
+  const litros = combustivel ? $('l-litros').value : '';
+  if (Caixa.litrosDe(litros) === null) { erroNoLancamento(MENSAGENS_DO_CAIXA.litros_invalido, { campo: $('l-litros') }); return; }
+  if (!Caixa.dataReal($('l-data').value)) {
+    erroNoLancamento('Informe a data.', { campo: $('l-data'), depoisDe: $('l-data').closest('.linha') });
+    return;
+  }
+  // No Gratis, so este mes (ver prepararLancamento). Vale tambem na edicao:
+  // levar para o mes anterior um lancamento deste mes o tirava da vista.
+  const mesAtual = Caixa.mesDe(Caixa.diaLocal());
+  if (!Caixa.mesLiberado(Caixa.mesDe($('l-data').value), mesAtual, ehPro())) {
+    erroNoLancamento(`No plano Grátis, o caixa mostra só este mês: escolha um dia de ${Caixa.nomeDoMes(mesAtual).replace(/ de \d{4}$/, '')}.`,
+      { campo: $('l-data'), depoisDe: $('l-data').closest('.linha') });
+    return;
+  }
+  const campos = {
+    tipo: tipoNaTela,
+    categoria: categoriaNaTela,
+    centavos: Caixa.centavosDe(decimalDoValor(texto), casas),
+    data: $('l-data').value,
+    hora: $('l-hora').value,
+    forma: $('l-forma').value,
+    obs: $('l-obs').value,
+    litros,
+  };
+  salvandoLancamento = true;
+  $('btn-salvar-lancamento').disabled = true;
+  try {
+    const salvo = editando ? await editarLancamento(editando.id, campos) : await criarLancamento(campos);
+    if (!salvo) {
+      // Apagado (ou de outro motorista) enquanto a tela estava aberta.
+      erroNoLancamento('Este lançamento não existe mais. Volte ao Caixa.');
+      return;
+    }
+    if (campos.tipo === 'receita' && campos.forma) Guardado.set('caixa_forma', campos.forma);
+    vibrar('LIGHT');
+    lancamentoAberto = null;
+    // O Caixa volta no dia do lancamento: se ele mudou a data, ve onde foi parar.
+    if (telaBase === 'tela-caixa') diaDoCaixa = salvo.data === Caixa.diaLocal() ? '' : salvo.data;
+    voltarParaBase();
+  } catch (e) {
+    // A data digitada pode passar da conferencia acima (depois de hoje, antes de 2000).
+    const codigo = e && e.codigo;
+    const onde = {
+      valor_invalido: { campo: $('l-valor') },
+      data_invalida: { campo: $('l-data'), depoisDe: $('l-data').closest('.linha') },
+    }[codigo];
+    erroNoLancamento(MENSAGENS_DO_CAIXA[codigo] || 'Não deu para guardar o lançamento. Tente de novo.', onde);
+  } finally {
+    salvandoLancamento = false;
+    $('btn-salvar-lancamento').disabled = false;
+  }
+});
+
+// Apagar em dois toques, sem confirm(): o primeiro arma por 4 s e troca o
+// texto; so o segundo, dentro desse tempo, apaga. Apagado vira tumulo (ver
+// apagarLancamento): sai dos totais e o recibo nao volta ao caixa.
+$('btn-apagar-lancamento').addEventListener('click', async () => {
+  const l = lancamentoAberto;
+  if (!l || salvandoLancamento) return;
+  if (Date.now() >= apagarArmadoAte) {
+    apagarArmadoAte = Date.now() + 4000;
+    $('btn-apagar-lancamento').textContent = 'Toque de novo para apagar';
+    clearTimeout(desarmaApagar);
+    desarmaApagar = setTimeout(desarmarApagar, 4000);
+    vibrar('LIGHT');
+    return;
+  }
+  desarmarApagar();
+  salvandoLancamento = true;
+  try {
+    await apagarLancamento(l.id);
+    vibrar('HEAVY');
+    lancamentoAberto = null;
+    voltarParaBase();
+  } catch {
+    erroNoLancamento('Não deu para apagar agora. Tente de novo.');
+  } finally {
+    salvandoLancamento = false;
+  }
+});
 
 // ── Indicação ──────────────────────────────────────────────────────────────
 //
@@ -3016,7 +4466,7 @@ function desenharCorrida() {
   $('btn-comecar').hidden = !!c;
   // Antes de sair, abrir o mapa e o passo principal; depois, e encerrar.
   $('btn-waze').className = `${andando ? 'secundario' : 'primario'} como-botao`;
-  if (encerrada) $('fim-resumo').textContent = resumoDaCorrida(c);
+  if (encerrada) { $('fim-resumo').textContent = resumoDaCorrida(c); desenharFimDaCorrida(c); }
   atualizarLinksDoMapa();
   desenharEstimativa();
 }
@@ -3125,17 +4575,96 @@ $('btn-retomar').addEventListener('click', () => {
   abrirCorrida();
 });
 
+// "Não lançar" (o antigo "Sem recibo"): a corrida some, e nada vai ao caixa.
 $('btn-sem-recibo').addEventListener('click', () => {
   apagarCorrida();
   vibrar('LIGHT');
   irParaInicio();
 });
 
+// O valor e a forma vao junto para o formulario, como estao na tela (vazio,
+// se ele nao digitou): a forma que a tela mostra e a que o recibo leva.
 $('btn-gerar-recibo').addEventListener('click', () => {
-  const c = corridaAtual();
+  const c = guardarFimDaCorrida() || corridaAtual();
   if (!c) { irParaInicio(); return; }
   vibrar('LIGHT');
   irParaEmitir({ daCorrida: c });
+});
+
+// ── Fim da corrida: "Quanto cobrou?" ───────────────────────────────────────
+// O valor e a forma ficam na corrida guardada a cada tecla: o sistema pode
+// fechar o app entre o fim da corrida e o toque, e o que ele digitou volta.
+function guardarFimDaCorrida() {
+  const c = corridaAtual();
+  if (!c || !c.fim) return null;
+  c.valor_cobrado = $('fim-valor').value;
+  c.forma = $('fim-forma').value;
+  guardarCorrida(c);
+  return c;
+}
+
+function erroNoFim(texto) {
+  $('erro-fim').textContent = texto;
+  $('erro-fim').hidden = !texto;
+}
+
+// A estimativa e so a dica de baixo: o campo nunca nasce com ela.
+function desenharFimDaCorrida(c) {
+  $('fim-valor').value = c.valor_cobrado || '';
+  $('fim-valor').placeholder = exemploDoValor(moedaDoCaixa().casas);
+  $('fim-forma').value = FORMAS_DE_PAGAMENTO.includes(c.forma) ? c.forma : ultimaForma();
+  const faixa = faixaDaCorrida(c);
+  $('fim-estimativa').textContent = faixa ? `Estimativa desta corrida: ${textoDaFaixa(faixa)}` : '';
+  $('fim-estimativa').hidden = !faixa;
+  erroNoFim('');
+}
+
+$('fim-valor').addEventListener('input', () => { erroNoFim(''); guardarFimDaCorrida(); });
+$('fim-forma').addEventListener('change', guardarFimDaCorrida);
+
+// "Só lançar no caixa": a receita sem recibo, com a data e a hora da saida, o
+// km da estimativa e a rota (so no aparelho). Exige o valor; a corrida some
+// so depois de o lancamento estar guardado.
+let lancandoCorrida = false;   // toque duplo: uma receita so
+
+// A confirmacao sai no cartao de HOJE, mas a receita vai para o dia da saida:
+// a corrida das 23h50 encerrada a 0h20 cai em ontem, e o cartao dizia
+// "Nenhum lançamento hoje" logo acima de "Corrida lançada" (parecia lancada e
+// nao contada; o risco era ele lancar de novo a mao). Fora de hoje, a frase
+// diz o dia; e, no Gratis, que aquele mes so aparece no Pro.
+function confirmacaoDaCorrida(l, m) {
+  const hoje = Caixa.diaLocal();
+  const valor = dinheiro(l.centavos, m);
+  if (l.data === hoje) return `Corrida lançada: ${valor}`;
+  const [ano, mes, dia] = String(l.data).split('-');
+  const quando = l.data === Caixa.somarDias(hoje, -1) ? 'ontem' : `${dia}/${mes}${ano === hoje.slice(0, 4) ? '' : `/${ano}`}`;
+  const mesAtual = Caixa.mesDe(hoje);
+  const travado = !Caixa.mesLiberado(Caixa.mesDe(l.data), mesAtual, ehPro());
+  return `Corrida lançada no caixa de ${quando}: ${valor}${travado ? `. ${nomeCurtoDoMes(Caixa.mesDe(l.data), mesAtual)} fica no Pro.` : ''}`;
+}
+
+$('btn-lancar-corrida').addEventListener('click', async () => {
+  if (lancandoCorrida) return;
+  const c = guardarFimDaCorrida();
+  if (!c) { irParaInicio(); return; }
+  const m = moedaDoCaixa();
+  const motivo = motivoValorInvalido(c.valor_cobrado, m.codigo, m.casas, { doCaixa: true });
+  if (motivo) { erroNoFim(motivo); $('fim-valor').focus(); return; }
+  lancandoCorrida = true;
+  try {
+    const l = await lancarCorridaNoCaixa(c, {
+      centavos: Caixa.centavosDe(decimalDoValor(c.valor_cobrado), m.casas), forma: c.forma,
+    });
+    Guardado.set('caixa_forma', c.forma);
+    apagarCorrida();
+    vibrar('HEAVY');
+    confirmacaoDoInicio = { texto: confirmacaoDaCorrida(l, m), dia: l.data, ate: Date.now() + 5000 };
+    irParaInicio();
+  } catch (e) {
+    erroNoFim(MENSAGENS_DO_CAIXA[e && e.codigo] || 'Não deu para lançar no caixa. Tente de novo.');
+  } finally {
+    lancandoCorrida = false;
+  }
 });
 
 $('btn-corrida-voltar').addEventListener('click', irParaInicio);
@@ -3475,9 +5004,19 @@ async function iniciar() {
   // ou sem sinal, para a fila deste motorista nao se misturar com a de outro.
   // Se o banco local falhar, o app segue (a corrida ja vive sem ele).
   try { await marcarDonoDosRecibos(); } catch { /* fica para a proxima */ }
+  try { await marcarDonoDosLancamentos(); } catch { /* fica para a proxima */ }
+  // Os recibos que o caixa ainda nao tem (na primeira abertura da 1.8, todos)
+  // viram receitas antes de pedir a sessao: com sinal fraco ela demora (o
+  // pedido nao tem prazo), e o cartao dizia "Nenhum lançamento hoje" enquanto
+  // o Caixa, aberto por ele, ja mostrava a receita. A receita leva o dono do
+  // recibo, marcado logo acima; a sessao so troca e-mail por id depois.
+  try { if (await completarCaixaComRecibos()) desenharCaixaDoInicio(); } catch { /* fica para a proxima abertura */ }
   await atualizarSessao();
   // O nome da saudacao e o dono da corrida aberta chegam com a sessao.
   if (!$('tela-inicio').hidden) irParaInicio();
+  // De novo com a sessao: o recibo antigo sem dono, que so ganha o dono quando
+  // o id chega com ela, tambem entra. O que ja entrou fica como esta.
+  try { if (await completarCaixaComRecibos()) desenharCaixaDoInicio(); } catch { /* fica para a proxima abertura */ }
   await iniciarCompras();
   carregarLojaParaVitrine();   // precos da vitrine e "ja assina?", sem esperar
   abrirVitrineAoAbrir(inicioDesde);   // no Gratis, os planos cobrem a tela uma vez por abertura

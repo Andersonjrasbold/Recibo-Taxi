@@ -75,7 +75,8 @@ async function encerrar(codigo) {
   process.exit(codigo);
 }
 // A parte de rede tem esperas de verdade (fila lenta de 9 s no Salvar do perfil;
-// sessao lenta e prazo de 5 s na compra pela vitrine).
+// sessao lenta e prazo de 5 s na compra pela vitrine), e a do caixa tambem (o
+// "apagar" armado por 4 s, a confirmacao do inicio por 5 s, o envio em 2 s).
 setTimeout(() => { console.log('VIGIA: o teste passou de 9 minutos'); encerrar(2); }, 540000).unref();
 
 let alvo;
@@ -132,6 +133,25 @@ if (modo === 'fotos') {
     // gerar o recibo, e o recibo depois do "Agora não".
     ['c=vitrine', '11-vitrine-abertura'], ['c=vitrine-recibo', '12-vitrine-recibo'],
     ['c=vitrine-recibo-depois', '13-recibo-depois-da-vitrine'],
+    // Caixa (1.8). Os valores abrem cobertos (o olho): as telas do Caixa vem
+    // com o olho aberto, para revisar o desenho com os numeros: o dia vazio, o
+    // dia com lancamentos e meta (com o "+ Lançamento"), o mes anterior no
+    // Gratis (travado) e no Pro, o dia travado, a receita de um recibo (com
+    // "Mais detalhes" aberto), o mes corrente e o campo da meta aberto. E
+    // mais: o "Novo lançamento" trocado para Despesa (combustivel com
+    // litros), o fim da corrida com o valor, o inicio com o cartao em
+    // primeiro, coberto, com a meta (como abre), o inicio sem lancamento (com
+    // "Definir meta do dia"), o inicio com o olho aberto e a confirmacao
+    // "Corrida lançada", o dia e o mes cobertos, e o "Novo lançamento" como
+    // abre (Receita e "Corrida").
+    ['c=caixa&passo=0', '14-caixa-vazio'], ['c=caixa&passo=1', '15-caixa-dia'],
+    ['c=caixa&passo=2', '16-lancamento-despesa'], ['c=caixa&passo=3', '17-fim-da-corrida'],
+    ['c=caixa&passo=4', '18-mes-gratis-bloqueado'], ['c=caixa&passo=5', '19-mes-pro'],
+    ['c=caixa&passo=6', '20-inicio-com-caixa'], ['c=caixa&passo=7', '21-dia-gratis-bloqueado'],
+    ['c=caixa&passo=8', '22-lancamento-do-recibo'], ['c=caixa&passo=9', '23-mes-atual'],
+    ['c=caixa&passo=10', '24-caixa-meta'], ['c=caixa&passo=11', '25-inicio-sem-lancamento'],
+    ['c=caixa&passo=12', '26-inicio-olho-aberto'], ['c=caixa&passo=13', '27-caixa-coberto'],
+    ['c=caixa&passo=14', '28-mes-coberto'], ['c=caixa&passo=15', '29-lancamento-novo'],
   ];
   for (const [hash, nome] of casos) {
     await abrir(hash);
@@ -147,11 +167,15 @@ if (modo === 'fotos') {
   await encerrar(0);
 }
 
-// Dois modos, nesta ordem: o fluxo (sem sessao, nada sobe) e depois o envio
-// com o servidor simulado. O IndexedDB e o mesmo nos dois; o modo rede limpa
-// os recibos antes de comecar.
+// Tres modos, nesta ordem: o fluxo (sem sessao, nada sobe), o envio com o
+// servidor simulado e as telas do caixa (1.8). O IndexedDB e o mesmo nos tres;
+// o modo rede limpa os recibos antes de comecar, e o do caixa, o banco inteiro.
+// Depois, o menu do perfil em telas baixas, cada uma no seu tamanho: o iPhone
+// SE/8 (375 x 647 uteis) e um Android pequeno, com o e-mail em duas linhas.
 const partes = [];
-for (const [hash, nome] of [['c=asserts', 'fluxo'], ['c=rede', 'rede simulada']]) {
+for (const [hash, nome, [largura, altura] = [390, 844]] of [['c=asserts', 'fluxo'], ['c=rede', 'rede simulada'], ['c=caixa', 'caixa'],
+  ['c=menu&sem_rolar=1', 'menu no iPhone SE', [375, 647]], ['c=menu&email=longo', 'menu em tela pequena', [360, 568]]]) {
+  await cdp('Emulation.setDeviceMetricsOverride', { width: largura, height: altura, deviceScaleFactor: 2, mobile: true });
   await abrir(hash);
   let parte;
   for (let i = 0; i < 480 && !parte; i++) {   // ate 240 s por parte

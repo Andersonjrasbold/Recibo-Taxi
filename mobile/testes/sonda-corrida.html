@@ -3,7 +3,14 @@
 // em pasta temporaria — nunca no www/ nem no public/ do iOS, que vao para as
 // lojas. Plugins nativos e rede simulados: nada sai para a producao.
 //   #c=asserts             fluxo inteiro conferido, resultado em #resultado-teste
-//   #c=rede                envio de recibos com servidor simulado (lento, antigo, sem cota)
+//   #c=rede                envio de recibos com servidor simulado (lento, antigo, sem cota),
+//                          e no fim os dados e o envio do caixa (1.8)
+//   #c=caixa               as telas do caixa (1.8): dia, mes, lancamento, cartao do
+//                          inicio e fim da corrida, conferidos pelos botoes
+//   #c=caixa&passo=N       para na tela N do caixa (fotos)
+//   #c=menu                o menu do perfil na tela que o rodar.mjs escolheu (telas
+//                          baixas): o "Excluir minha conta" tem de aparecer e receber
+//                          o toque. &sem_rolar=1: sem rolar o menu; &email=longo
 //   #passo=N               para no passo N (fotos)
 //   #c=negado&passo=1      localizacao negada
 localStorage.clear();
@@ -15,6 +22,24 @@ const NEGADO = H.get('c') === 'negado';
 // servidor. __regra(corpo) diz como responder a cada POST /api/recibos.
 const REDE = H.get('c') === 'rede';
 if (REDE) localStorage.setItem('access_token', JSON.stringify('token-falso'));
+// Modo caixa: o mesmo servidor simulado, mas a sessao so entra depois de a
+// sonda limpar o banco (ver o fim): sem ela, o app para no login e nao mexe
+// nele enquanto o que as outras partes deixaram e apagado.
+const CAIXA = H.get('c') === 'caixa';
+const SERVIDOR = REDE || CAIXA;
+// Modo menu: com sessao e plano Gratis guardados (a linha "2 de 6 recibos"),
+// como o motorista abre o menu para excluir a conta.
+const MENU = H.get('c') === 'menu';
+if (MENU) {
+  localStorage.setItem('access_token', JSON.stringify('token-menu'));
+  localStorage.setItem('plano', JSON.stringify('free'));
+  localStorage.setItem('limite', JSON.stringify(6));
+  localStorage.setItem('usados', JSON.stringify(2));
+  if (H.get('email') === 'longo') {
+    localStorage.setItem('motorista', JSON.stringify({ full_name: 'José Carlos da Silva Pereira', plate: 'WEB1A23',
+      email: 'jose.carlos.da.silva.taxista.centro@provedor-de-email-grande.com.br' }));
+  }
+}
 window.__regra = () => ({});
 window.__sessao = null;                 // corpo do GET /api/sessao; null = 503
 window.__refresh = null;                // {status, corpo} do POST /api/refresh; null = sem rede
@@ -24,8 +49,10 @@ window.__perfis = [];                   // corpos que o app mandou para /api/per
 window.__ordem = [];                    // 'recibo' e 'perfil', na ordem em que chegaram
 window.__sessaoAtraso = 0;              // ms ate o GET /api/sessao responder
 window.__pedidos = [];
+window.__regraCaixa = () => ({});       // como responder a cada POST /api/lancamentos (caixa, 1.8)
+window.__lotes = [];                    // corpos que o app mandou para /api/lancamentos
 window.__avaliacoes = 0;                // quantas vezes o app pediu avaliacao a loja
-window.__ouvintes = {};                 // eventos do plugin App ('resume', 'backButton')
+window.__ouvintes = {};                 // eventos do plugin App ('resume', 'pause', 'appStateChange', 'backButton')
 window.Capacitor = {
   isNativePlatform: () => true,
   getPlatform: () => 'ios',
@@ -60,7 +87,7 @@ window.fetch = async (url, op) => {
   }
   const json = (corpo, status) => new Response(JSON.stringify(corpo),
     { status, headers: { 'Content-Type': 'application/json' } });
-  if (REDE && String(url).endsWith('/api/recibos') && op && op.method === 'POST') {
+  if (SERVIDOR && String(url).endsWith('/api/recibos') && op && op.method === 'POST') {
     const corpo = JSON.parse(op.body);
     window.__ordem.push('recibo');
     const regra = window.__regra(corpo) || {};
@@ -69,25 +96,39 @@ window.fetch = async (url, op) => {
     return json(regra.corpo || { rid: corpo.rid, url: 'https://exemplo.invalid/recibo/' + corpo.rid, criado_agora: true },
                 regra.status || 201);
   }
-  if (REDE && String(url).endsWith('/api/sessao')) {
+  if (SERVIDOR && String(url).endsWith('/api/sessao')) {
     await new Promise((ok) => setTimeout(ok, window.__sessaoAtraso || 0));
     return window.__sessao ? json(window.__sessao, 200) : json({}, 503);
   }
-  if (REDE && String(url).endsWith('/api/refresh')) {
+  if (SERVIDOR && String(url).endsWith('/api/refresh')) {
     window.__refreshes++;
     if (!window.__refresh) throw new TypeError('sonda: sem rede');
     await new Promise((ok) => setTimeout(ok, window.__refresh.atraso || 0));
     return json(window.__refresh.corpo || {}, window.__refresh.status);
   }
-  if (REDE && String(url).endsWith('/api/perfil')) {
+  if (SERVIDOR && String(url).endsWith('/api/perfil')) {
     window.__perfis.push(JSON.parse(op.body));
     window.__ordem.push('perfil');
     const p = window.__perfil || { status: 503, corpo: {} };
     await new Promise((ok) => setTimeout(ok, p.atraso || 0));
     return json(p.corpo || {}, p.status);
   }
-  if (REDE && /\/api\/recibos\/[A-Z0-9]+\/email$/.test(String(url))) {
+  if (SERVIDOR && /\/api\/recibos\/[A-Z0-9]+\/email$/.test(String(url))) {
     return json({}, window.__email_status || 200);
+  }
+  // O caixa sobe no fim de cada passada da fila. Sem esta resposta, cada
+  // passada do modo rede acabaria em "rede caida" e reagendaria a seguinte.
+  // __regraCaixa(corpo) pode atrasar, derrubar a conexao, mudar o status ou
+  // recusar alguns ids ({recusados: [{id, erro}]}); o resto volta aceito.
+  if (SERVIDOR && String(url).endsWith('/api/lancamentos') && op && op.method === 'POST') {
+    const corpo = JSON.parse(op.body);
+    window.__lotes.push(corpo);
+    const regra = window.__regraCaixa(corpo) || {};
+    await new Promise((ok) => setTimeout(ok, regra.atraso || 0));
+    if (regra.falhar) throw new TypeError('sonda: a conexao caiu');
+    const recusados = regra.recusados || [];
+    const aceitos = (corpo.lancamentos || []).map((l) => l.id).filter((id) => !recusados.some((x) => x.id === id));
+    return json(regra.corpo || { aceitos, recusados }, regra.status || 200);
   }
   throw new TypeError('sonda: sem rede');
 };
@@ -122,6 +163,46 @@ window.addEventListener('load', async () => {
     document.body.appendChild(pre);
   };
 
+  if (MENU) {
+    // ── Menu do perfil numa tela baixa ──────────────────────────────────────
+    // O menu mora no cabecalho fixo: rolar a pagina nao o move. Com o "Meu
+    // caixa" (1.8), o "Excluir minha conta" (exigido pela Apple e pelo Google,
+    // e a unica entrada do app para excluir) saia pelo pe da tela no iPhone
+    // SE/8 e nos Androids pequenos. O rodar.mjs escolhe o tamanho da tela.
+    const r = [];
+    const tela = `${innerWidth}x${innerHeight}${H.get('email') === 'longo' ? ', e-mail longo' : ''}`;
+    const ok = (nome, cond, extra = '') => r.push(`${cond ? 'OK   ' : 'FALHA'} menu (${tela}): ${nome}${cond ? '' : ' :: ' + extra}`);
+    try {
+      vitrineCheiaNestaAbertura = true;   // os planos em tela cheia nao entram no meio
+      await espera(1500);
+      irParaInicio(); await espera(200);
+      clicar('btn-perfil'); await espera(300);
+      const menu = q('menu-perfil'), ex = q('btn-excluir-conta');
+      const caixa = (el) => el.getBoundingClientRect();
+      const tocavel = () => {
+        const e = caixa(ex);
+        const alvo = document.elementFromPoint(e.left + e.width / 2, e.top + e.height / 2);
+        return alvo === ex || ex.contains(alvo);
+      };
+      const onde = () => JSON.stringify({ excluir: [Math.round(caixa(ex).top), Math.round(caixa(ex).bottom)], menu: Math.round(caixa(menu).bottom), tela: innerHeight });
+      ok('o menu abre sem passar do pe da tela', !menu.hidden && caixa(menu).bottom <= innerHeight, onde());
+      if (H.get('sem_rolar')) {
+        ok('"Excluir minha conta" aparece inteiro e recebe o toque sem rolar nada', caixa(ex).bottom <= caixa(menu).bottom && tocavel(), onde());
+      }
+      ex.scrollIntoView({ block: 'nearest' }); await espera(200);
+      ok('"Excluir minha conta" aparece inteiro e recebe o toque (rolando o menu, se preciso)', caixa(ex).top >= caixa(menu).top
+         && caixa(ex).bottom <= caixa(menu).bottom && caixa(ex).bottom <= innerHeight && tocavel(), onde());
+      const baixos = [...menu.querySelectorAll('.menu-item')].filter((b) => b.getBoundingClientRect().height < 44);
+      ok('todo item do menu com alvo de 44 px ou mais', baixos.length === 0, baixos.map((b) => b.textContent).join('|'));
+      clicar('btn-excluir-conta'); await espera(300);
+      ok('o toque em "Excluir minha conta" abre a exclusao', !q('tela-excluir').hidden);
+    } catch (e) {
+      r.push(`FALHA menu: excecao: ${e && e.stack || e}`);
+    }
+    terminar(r);
+    return;
+  }
+
   if (REDE) {
     const r = [];
     const ok = (nome, cond, extra = '') => r.push(`${cond ? 'OK   ' : 'FALHA'} rede: ${nome}${cond ? '' : ' :: ' + extra}`);
@@ -133,7 +214,8 @@ window.addEventListener('load', async () => {
       q('form-recibo').requestSubmit();
     };
     try {
-      await espera(500); await limparRecibosLocais();
+      // O caixa dos recibos do modo asserts tambem sai: subiria aqui, no meio dos testes.
+      await espera(500); await limparRecibosLocais(); await limparLancamentosLocais();
 
       // Sinal fraco: o envio do 1o recibo demora; o motorista emite o 2o nesse
       // meio-tempo, e o 2o sobe antes. Quando o envio lento termina, a tela
@@ -1007,8 +1089,12 @@ window.addEventListener('load', async () => {
          vRec.textContent.includes('3 de 6 recibos') && Guardado.get('usados') === 3, `${vRec.textContent} / ${Guardado.get('usados')}`);
       // Sessao que chega com o envio em voo ja traz este recibo: o 201 nao
       // soma de novo (senao a faixa mostraria um recibo a mais).
-      window.__regra = (c) => (c.origem === 'Vitrine guarda' ? { atraso: 900 } : {});
-      await emitir('Vitrine guarda', '15'); await espera(250);
+      // Espera o POST chegar ao servidor simulado, e nao um tempo fixo: com a
+      // maquina carregada, ele saia depois da sessao, e ai o 201 somar e o certo.
+      let guardaEmVoo = false;
+      window.__regra = (c) => (c.origem === 'Vitrine guarda' ? (guardaEmVoo = true, { atraso: 900 }) : {});
+      await emitir('Vitrine guarda', '15');
+      for (let i = 0; i < 60 && !guardaEmVoo; i++) await espera(50);
       window.__sessao = { ...window.__sessao, usados_no_mes: 4 };   // o servidor ja contou este
       await atualizarSessao();
       await espera(1300);
@@ -1191,8 +1277,1692 @@ window.addEventListener('load', async () => {
       ok('vitrine: sair da conta esconde as faixas e esquece a loja, mesmo com a resposta da loja chegando depois',
          vIni.hidden && vRec.hidden && proPelaLoja === false && lojaConferidaParaVitrine === false && buscouVitrineEm === 0);
       delete window.Capacitor.Plugins.Purchases;
+
+      // ── Caixa (1.8): dados no aparelho e envio ──────────────────────────
+      // Por ultimo de proposito: apaga o banco para recria-lo na versao 1.
+      // A sessao acabou no teste anterior; nada agendado mexe mais no banco.
+      if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      clearTimeout(caixaReagendado); caixaReagendado = null;
+      if (passadaDoCaixa) await passadaDoCaixa;
+      await espera(500);
+      // O banco da versao 1 (app ate a 1.7), com recibos, sobe para a 2 sem perder nada.
+      const apagouBanco = await new Promise((ok2) => {
+        const req = indexedDB.deleteDatabase('recibo-taxi');
+        req.onsuccess = () => ok2(true); req.onerror = () => ok2(false);
+        setTimeout(() => ok2(false), 5000);
+      });
+      ok('caixa: as conexoes abertas fecham sozinhas para o banco mudar de versao', apagouBanco);
+      const bancoV1 = await new Promise((ok2, falha) => {
+        const req = indexedDB.open('recibo-taxi', 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore('recibos', { keyPath: 'rid' }).createIndex('pendente', 'pendente'); };
+        req.onsuccess = () => ok2(req.result); req.onerror = () => falha(req.error);
+      });
+      const reciboV1 = (rid, valor, extra = {}, fora = {}) => ({ rid, criado_em: '2026-11-20T15:00:00.000Z', pendente: false, url: 'x',
+        dono: 'web-motorista', motorista: retratoV, ...fora,
+        dados: { rid, origem: 'Rodoviária', destino: 'Centro', valor, valor_exibido: valor, moeda: 'BRL', data: '2026-11-20', hora: '12:00',
+                 forma_pagamento: 'Pix', ...extra } });
+      await new Promise((ok2) => {
+        const tx = bancoV1.transaction('recibos', 'readwrite');
+        [reciboV1('A0000000000001', 'R$ 45'), reciboV1('A0000000000002', '1 500,00'), reciboV1('A0000000000003', '15 000', { moeda: 'CRC' }),
+         reciboV1('A0000000000004', '12,50', { moeda: undefined }), reciboV1('A0000000000005', 'abc'),
+         reciboV1('A0000000000006', '30', {}, { dono: 'outro' }), reciboV1('A0000000000007', '40', {}, { recusado: 'limite_mensal' }),
+         // De antes do build 23, que nao conferia o valor: "150000" passa do teto e o servidor recusou.
+         reciboV1('A0000000000008', '150000', {}, { recusado: 'valor_invalido' })]
+          .forEach((x) => tx.objectStore('recibos').put(x));
+        tx.oncomplete = ok2;
+      });
+      bancoV1.close();
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      Guardado.set('motorista', retratoV);
+      const recibosV1 = await todosOsRecibos();
+      const bancoV2 = await abrirBanco();
+      ok('caixa: o banco da versao 1 sobe para a 2 sem perder recibo', recibosV1.length === 8 && bancoV2.version === 2
+         && bancoV2.objectStoreNames.contains('lancamentos'), `${recibosV1.length} recibos, versao ${bancoV2.version}`);
+      // Os recibos antigos viram receitas, com o decimalDoValor de verdade.
+      const criadosV1 = await completarCaixaComRecibos();
+      let doCaixa = await listarLancamentos();
+      const doRecibo = (rid) => doCaixa.find((x) => x.id === 'r-' + rid) || {};
+      ok('caixa: recibo antigo com "R$ 45", "1 500,00" e "15 000" (colones) vira receita de 4500, 150000 e 1500000',
+         doRecibo('A0000000000001').centavos === 4500 && doRecibo('A0000000000002').centavos === 150000
+         && doRecibo('A0000000000003').centavos === 1500000 && doRecibo('A0000000000003').moeda === 'CRC',
+         JSON.stringify(doCaixa.map((x) => [x.id, x.centavos, x.moeda])));
+      ok('caixa: recibo sem moeda usa a moeda de agora', doRecibo('A0000000000004').moeda === 'BRL' && doRecibo('A0000000000004').centavos === 1250);
+      ok('caixa: o recusado por cota tambem entra (a corrida aconteceu)', doRecibo('A0000000000007').centavos === 4000);
+      ok('caixa: recibo antigo acima do teto da moeda ("150000", recusado pelo servidor) fica fora do caixa',
+         !doRecibo('A0000000000008').id && !(await todosOsLancamentos()).some((x) => x.rid === 'A0000000000008'));
+      ok('caixa: valor que nao e numero fica fora, e o recibo de outro motorista tambem', criadosV1 === 5 && !doRecibo('A0000000000005').id
+         && !(await todosOsLancamentos()).some((x) => x.rid === 'A0000000000006'), String(criadosV1));
+      ok('caixa: a receita do recibo e corrida, de origem recibo, com a rota so no aparelho, versao 1 e pendente',
+         doRecibo('A0000000000001').categoria === 'corrida' && doRecibo('A0000000000001').origem === 'recibo'
+         && doRecibo('A0000000000001').rota === 'Rodoviária → Centro' && doRecibo('A0000000000001').versao === 1
+         && doRecibo('A0000000000001').pendente === true && doRecibo('A0000000000001').dono === 'web-motorista');
+      // Uma observacao com o telefone de alguem, posta antes de apagar (sem
+      // mudar a versao): o tumulo que sobe nao a leva, nem a forma (ver o envio).
+      await mudarLancamentos(['r-A0000000000001'], (atual) => ({ ...atual, obs: 'ligar para a Maria 11 99999-0000' }));
+      await apagarLancamento('r-A0000000000001');
+      ok('caixa: completar de novo nao cria nada e nao ressuscita o apagado', (await completarCaixaComRecibos()) === 0
+         && (await buscarLancamento('r-A0000000000001') || {}).apagado === true && (await listarLancamentos()).length === 5);
+      // Emitir o recibo cria a receita dele.
+      await emitir('Caixa: recibo novo', 'R$ 58,00'); await espera(500);
+      const reciboNovo = await achar('Caixa: recibo novo');
+      const receitaNova = reciboNovo && await buscarLancamento('r-' + reciboNovo.rid);
+      ok('caixa: emitir o recibo cria a receita r-<rid>', !!receitaNova && receitaNova.centavos === 5800 && receitaNova.origem === 'recibo'
+         && receitaNova.pendente === true, JSON.stringify(receitaNova));
+      // Lancamento a mao, editar, a conferencia antes de guardar e os totais.
+      const hojeC = Caixa.diaLocal();
+      const despesa = await criarLancamento({ tipo: 'despesa', categoria: 'combustivel', centavos: 8600, data: hojeC, hora: '15:10', litros: '30,5' });
+      ok('caixa: despesa a mao guardada com dono, id novo e litros', despesa.dono === 'web-motorista' && /^l-[0-9a-f]{16}$/.test(despesa.id)
+         && despesa.litros === '30.5' && despesa.origem === 'manual' && despesa.pendente === true, JSON.stringify(despesa));
+      let codigoRecusa = '';
+      try { await criarLancamento({ tipo: 'despesa', categoria: 'combustivel', centavos: 0, data: hojeC }); } catch (e) { codigoRecusa = e.codigo; }
+      ok('caixa: o que o servidor recusaria nem e guardado, e a tela recebe o codigo', codigoRecusa === 'valor_invalido', codigoRecusa);
+      const despesaEditada = await editarLancamento(despesa.id, { centavos: 9000 });
+      ok('caixa: editar sobe a versao e volta a fila', despesaEditada && despesaEditada.versao === 2 && despesaEditada.centavos === 9000 && despesaEditada.pendente);
+      const diaC = Caixa.resumoDoDia(await listarLancamentos(), hojeC, 'BRL');
+      ok('caixa: totais do dia com a receita do recibo e a despesa editada', diaC.receitas === 5800 && diaC.despesas === 9000 && diaC.liquido === -3200,
+         JSON.stringify(diaC));
+      ok('caixa: meta do dia guardada por motorista, em centavos', guardarMetaDoDia(40000) && metaDoDia() === 40000
+         && Guardado.get('caixa_meta:web-motorista') === 40000);
+      // Envio: so os meus, em lotes de 100, do mais antigo para o mais novo, sem rota nem dono.
+      await salvarLancamento(Caixa.novoLancamento({ tipo: 'receita', categoria: 'corrida', centavos: 100, data: hojeC },
+        { id: 'l-deoutromotorista', dono: 'outro' }));
+      for (let i = 0; i < 150; i++) {
+        await salvarLancamento(Caixa.novoLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 100 + i, data: hojeC },
+          { id: `l-lote${String(i).padStart(3, '0')}`, dono: 'web-motorista', agora: new Date(Date.UTC(2026, 10, 1, 0, 0, i)).toISOString() }));
+      }
+      localStorage.setItem('access_token', JSON.stringify('token-caixa'));
+      localStorage.setItem('refresh_token', JSON.stringify('refresh-caixa'));
+      window.__refresh = null; window.__regra = () => ({}); window.__regraCaixa = () => ({});
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      if (passadaDoCaixa) await passadaDoCaixa;
+      __lotes.length = 0;
+      const envio1 = await enviarCaixa();
+      const itensEnviados = __lotes.flatMap((c) => c.lancamentos);
+      ok('caixa: envio em lotes de 100, do mais antigo para o mais novo', __lotes.length === 2 && __lotes[0].lancamentos.length === 100
+         && __lotes[1].lancamentos.length === 57 && __lotes[0].lancamentos[0].id === 'l-lote000', JSON.stringify(__lotes.map((c) => c.lancamentos.length)));
+      ok('caixa: envio manda so os meus, sem rota, dono nem o estado do aparelho', !itensEnviados.some((x) => x.id === 'l-deoutromotorista')
+         && itensEnviados.every((x) => !('rota' in x) && !('dono' in x) && !('pendente' in x) && !('criado_em' in x))
+         && !JSON.stringify(__lotes).includes('Rodoviária'));
+      ok('caixa: o apagado sobe como apagado, com a versao nova', (itensEnviados.find((x) => x.id === 'r-A0000000000001') || {}).apagado === true
+         && (itensEnviados.find((x) => x.id === 'r-A0000000000001') || {}).versao === 2);
+      const tumuloEnviado = itensEnviados.find((x) => x.id === 'r-A0000000000001') || {};
+      ok('caixa: o tumulo sobe sem a observacao nem a forma (no aparelho, ele continua inteiro)', tumuloEnviado.obs === '' && tumuloEnviado.forma === ''
+         && !JSON.stringify(__lotes).includes('99999-0000') && ((await buscarLancamento('r-A0000000000001')) || {}).obs === 'ligar para a Maria 11 99999-0000'
+         && ((await buscarLancamento('r-A0000000000001')) || {}).forma === 'Pix', JSON.stringify(tumuloEnviado));
+      ok('caixa: aceito sai de pendente', envio1.enviados === 157 && (await listarLancamentos()).every((x) => !x.pendente), JSON.stringify(envio1));
+      ok('caixa: o do outro motorista fica pendente e dele', ((await todosOsLancamentos()).find((x) => x.id === 'l-deoutromotorista') || {}).pendente === true);
+      // Editado enquanto o lote viajava: continua pendente, com a versao nova.
+      const lento = await criarLancamento({ tipo: 'despesa', categoria: 'pedagio', centavos: 1250, data: hojeC });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      window.__regraCaixa = () => ({ atraso: 600 });
+      const passadaLenta = enviarCaixa();
+      await espera(200);
+      await editarLancamento(lento.id, { centavos: 1300 });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      await passadaLenta;
+      const lentoDepois = await buscarLancamento(lento.id);
+      ok('caixa: editado durante o envio continua pendente', lentoDepois.pendente === true && lentoDepois.versao === 2 && lentoDepois.centavos === 1300,
+         JSON.stringify(lentoDepois));
+      window.__regraCaixa = () => ({});
+      await enviarCaixa();
+      ok('caixa: e sobe na passada seguinte', (await buscarLancamento(lento.id)).pendente === false);
+      // Recusado: sai da fila e guarda o motivo.
+      const ruim = await criarLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 700, data: hojeC });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      window.__regraCaixa = () => ({ recusados: [{ id: ruim.id, erro: 'categoria_invalida' }] });
+      const envioRuim = await enviarCaixa();
+      const ruimDepois = await buscarLancamento(ruim.id);
+      ok('caixa: recusado sai da fila e fica marcado com o motivo', ruimDepois.pendente === false && ruimDepois.recusado === 'categoria_invalida'
+         && envioRuim.recusados === 1, JSON.stringify(ruimDepois));
+      // 429, 503, 405 (servidor sem o caixa) e rede caida: fica pendente e tenta de novo depois.
+      for (const [nome, regra] of [['429', { status: 429, corpo: { erro: 'muitos_lancamentos' } }], ['503', { status: 503, corpo: { erro: 'indisponivel' } }],
+                                   ['405 (servidor sem o caixa)', { status: 405, corpo: {} }], ['rede caida', { falhar: true }]]) {
+        const fica = await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 3000, data: hojeC });
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        clearTimeout(caixaReagendado); caixaReagendado = null;
+        window.__regraCaixa = () => regra;
+        const envioAdiado = await enviarCaixa();
+        const ficou = await buscarLancamento(fica.id);
+        ok(`caixa: ${nome} deixa pendente, sem marcar recusado, e agenda outra tentativa`,
+           envioAdiado.adiada && ficou.pendente === true && !ficou.recusado && !!caixaReagendado, JSON.stringify(envioAdiado));
+      }
+      clearTimeout(caixaReagendado); caixaReagendado = null;
+      if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      // O sincronizar leva o caixa junto, sem mudar o que devolve (o Salvar do perfil conta recibos).
+      window.__regraCaixa = () => ({});
+      __lotes.length = 0;
+      const sincronia = await sincronizar();
+      await enviarCaixa();
+      ok('caixa: o sincronizar sobe o caixa e devolve o mesmo de antes', Object.keys(sincronia).join() === 'enviados,restantes,semCota'
+         && __lotes.length === 1 && (await listarLancamentos()).every((x) => !x.pendente || x.recusado), JSON.stringify(sincronia));
+      // A espera do caixa e so dele. Com o temporizador e o contador dos
+      // recibos, o caixa recusado por muito tempo (servidor sem o caixa, 0022
+      // nao aplicada, teto do dia) prendia a nova tentativa dos recibos em 5 min.
+      const atrasos = [];   // os temporizadores longos (de 10 s ou mais) que o app armou
+      const setTimeoutDaPagina = window.setTimeout;
+      window.setTimeout = (fn, ms, ...resto) => { if (ms >= 10000) atrasos.push(ms); return setTimeoutDaPagina.call(window, fn, ms, ...resto); };
+      try {
+        clearTimeout(caixaReagendado); caixaReagendado = null; tentativasDoCaixa = 0;
+        if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+        tentativasAdiadas = 0;
+        await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 2500, data: hojeC });
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        window.__regraCaixa = () => ({ status: 405, corpo: {} });
+        for (let i = 0; i < 6; i++) {
+          clearTimeout(caixaReagendado); caixaReagendado = null;   // o temporizador do caixa "disparou"
+          await enviarCaixa();
+        }
+        ok('caixa: recusado sem parar (servidor sem o caixa), a espera do caixa sobe de 30 s ate 5 min',
+           atrasos.join() === '30000,60000,120000,240000,300000,300000', atrasos.join());
+        const reciboComCaixaTravado = (rid) => salvarRecibo({ rid, criado_em: new Date().toISOString(), pendente: true, dono: 'web-motorista',
+          motorista: retratoV, dados: { rid, origem: 'Caixa travado', destino: 'Centro', valor: '22', valor_exibido: '22,00', moeda: 'BRL',
+            data: hojeC, hora: '10:00', forma_pagamento: 'Pix' } });
+        atrasos.length = 0;
+        await reciboComCaixaTravado('B0000000000001');
+        window.__regra = () => ({ status: 503, corpo: { erro: 'indisponivel' } });
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        ok('caixa: com o caixa travado, o recibo que cai tenta de novo em 30 s, e nao no temporizador do caixa',
+           atrasos.join() === '30000' && !!sincronizacaoAgendada && tentativasAdiadas === 1, `${atrasos.join()} / ${tentativasAdiadas}`);
+        clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null;   // o temporizador dos recibos "disparou"
+        window.__regra = () => ({});
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        ok('caixa: o recibo que sobe zera a espera dos recibos, mesmo com o caixa ainda travado',
+           tentativasAdiadas === 0 && ((await listarRecibos()).find((x) => x.rid === 'B0000000000001') || {}).pendente === false
+           && tentativasDoCaixa === 6, `${tentativasAdiadas} / ${tentativasDoCaixa}`);
+        atrasos.length = 0;
+        await reciboComCaixaTravado('B0000000000002');
+        window.__regra = () => ({ status: 503, corpo: { erro: 'indisponivel' } });
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        ok('caixa: e o recibo seguinte que cai volta a esperar 30 s', atrasos.join() === '30000', atrasos.join());
+        clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null;
+        window.__regra = () => ({});
+        await sincronizar();
+        if (passadaDoCaixa) await passadaDoCaixa;
+        // O caixa volta: a espera dele zera.
+        window.__regraCaixa = () => ({});
+        clearTimeout(caixaReagendado); caixaReagendado = null;
+        await enviarCaixa();
+        ok('caixa: o caixa que volta zera a propria espera', tentativasDoCaixa === 0 && !caixaReagendado
+           && (await listarLancamentos()).every((x) => !x.pendente || x.recusado), String(tentativasDoCaixa));
+        // 429 do teto do dia: o servidor recusa ate a virada, e o app espera uma hora.
+        await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 2600, data: hojeC });
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        window.__regraCaixa = () => ({ status: 429, corpo: { erro: 'muitos_lancamentos', limite: 500 } });
+        atrasos.length = 0;
+        await enviarCaixa();
+        ok('caixa: 429 do teto do dia espera uma hora para tentar de novo, e nao 30 s', atrasos.join() === '3600000', atrasos.join());
+        clearTimeout(caixaReagendado); caixaReagendado = null;
+        window.__regraCaixa = () => ({ status: 429, corpo: {} });   // 429 de outro tipo (a borda): a curva de sempre
+        atrasos.length = 0;
+        await enviarCaixa();
+        ok('caixa: outro 429 segue a curva de 30 s a 5 min', atrasos.join() === '60000', atrasos.join());
+      } finally {
+        window.setTimeout = setTimeoutDaPagina;
+        window.__regra = () => ({}); window.__regraCaixa = () => ({});
+        clearTimeout(caixaReagendado); caixaReagendado = null;
+        if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      }
+      await enviarCaixa();
+      tentativasAdiadas = 0;
+      // Guardar agenda a passada para ~2 s depois.
+      __lotes.length = 0;
+      const sozinho = await criarLancamento({ tipo: 'receita', categoria: 'gorjeta', centavos: 300, data: hojeC });
+      ok('caixa: guardar agenda o envio, sem subir na hora', !!envioDoCaixaAgendado && __lotes.length === 0);
+      await espera(2700);
+      ok('caixa: ~2 s depois, sobe sozinho', __lotes.length === 1 && (await buscarLancamento(sozinho.id)).pendente === false, String(__lotes.length));
+      // Pro: o servidor ou a loja.
+      ok('caixa: no Gratis, os meses anteriores ficam travados', ehPro() === false && !Caixa.mesLiberado('2026-10', '2026-11', ehPro()));
+      proPelaLoja = true;
+      ok('caixa: quem acabou de assinar na loja ja ve', ehPro() === true);
+      proPelaLoja = false;
+      // Antes da sessao, o dono e o e-mail; com a sessao, o id (e a meta continua dele).
+      encerrarSessao();
+      entrarNaSessao({ access_token: 'token-caixa2', refresh_token: 'refresh-caixa2' }, 'web@teste.invalid');
+      const antesDaSessao = await criarLancamento({ tipo: 'despesa', categoria: 'alimentacao', centavos: 2500, data: hojeC });
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      ok('caixa: sair nao apaga o caixa, e antes da sessao o lancamento leva o e-mail como dono',
+         antesDaSessao.dono === 'web@teste.invalid' && (await listarLancamentos()).length > 150, String((await listarLancamentos()).length));
+      window.__sessao = { id: 'web-motorista', plano: 'pro', limite_mensal: null, usados_no_mes: 0, passageiro_opcional: true, motorista: retratoV };
+      await atualizarSessao();
+      ok('caixa: com a sessao, o dono vira o id, e o Pro do servidor ve os meses anteriores',
+         (await buscarLancamento(antesDaSessao.id) || {}).dono === 'web-motorista' && ehPro() === true && metaDoDia() === 40000);
+      // 401 com a sessao morta: login, e o caixa fica no aparelho.
+      if (passadaDoCaixa) await passadaDoCaixa;
+      window.__regraCaixa = () => ({ status: 401, corpo: { erro: 'nao_autenticado' } });
+      window.__refresh = { status: 401, corpo: { erro: 'refresh_invalido' } };
+      await enviarCaixa();
+      ok('caixa: 401 com a sessao morta leva ao login, e o caixa fica no aparelho', !q('tela-login').hidden && !localStorage.getItem('access_token')
+         && (await todosOsLancamentos()).some((x) => x.id === antesDaSessao.id && x.pendente));
+      // Aparelho dividido: o outro motorista ve e sobe so o dele.
+      localStorage.setItem('access_token', JSON.stringify('token-outro'));
+      localStorage.setItem('motorista_id', JSON.stringify('outro'));
+      Guardado.set('motorista', { full_name: 'Outro', email: 'outro@teste.invalid' });
+      window.__refresh = null; window.__regraCaixa = () => ({});
+      __lotes.length = 0;
+      await enviarCaixa();
+      const doOutro = await listarLancamentos();
+      ok('caixa: aparelho dividido: o outro motorista ve e sobe so o dele', doOutro.length === 1 && doOutro[0].id === 'l-deoutromotorista'
+         && __lotes.length === 1 && __lotes[0].lancamentos.map((x) => x.id).join() === 'l-deoutromotorista', JSON.stringify(doOutro.map((x) => x.id)));
+      ok('caixa: a meta de um nao aparece para o outro', metaDoDia() === null);
+      await limparLancamentosLocais();
+      ok('caixa: excluir a conta apaga so o caixa de quem excluiu', !(await todosOsLancamentos()).some((x) => x.dono === 'outro')
+         && (await todosOsLancamentos()).some((x) => x.dono === 'web-motorista') && Guardado.get('caixa_meta:web-motorista') === 40000);
+      // Cada conexao com o banco fecha quando a transacao dela acaba. Com o
+      // ouvinte de versionchange, o navegador deixou de recolher a conexao
+      // esquecida: cada leitura e gravacao ficava aberta ate o app morrer.
+      clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+      clearTimeout(caixaReagendado); caixaReagendado = null;
+      if (sincronizacaoAgendada) { clearTimeout(sincronizacaoAgendada); sincronizacaoAgendada = null; }
+      if (passadaDoCaixa) await passadaDoCaixa;
+      await espera(300);
+      const conexoes = [];
+      const fechadas = new WeakSet();
+      const abrirDoNavegador = IDBFactory.prototype.open;
+      const fecharDoNavegador = IDBDatabase.prototype.close;
+      indexedDB.open = function (...a) {
+        const req = abrirDoNavegador.apply(this, a);
+        req.addEventListener('success', () => conexoes.push(req.result));
+        return req;
+      };
+      IDBDatabase.prototype.close = function () { fechadas.add(this); return fecharDoNavegador.call(this); };
+      try {
+        await salvarRecibo({ rid: 'D0000000000001', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'outro', motorista: {},
+          dados: { rid: 'D0000000000001', origem: 'Conexoes', destino: 'Centro', valor: '12', valor_exibido: '12,00', moeda: 'BRL', data: hojeC,
+                   hora: '10:00', forma_pagamento: 'Pix' } });
+        await todosOsRecibos();
+        await completarCaixaComRecibos();
+        const l = await criarLancamento({ tipo: 'despesa', categoria: 'lavagem', centavos: 1500, data: hojeC });
+        await editarLancamento(l.id, { centavos: 1600 });
+        await buscarLancamento(l.id);
+        await apagarLancamento(l.id);
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        await enviarCaixa();
+        await limparLancamentosLocais();
+        await limparRecibosLocais();
+        await espera(400);
+      } finally {
+        delete indexedDB.open;
+        IDBDatabase.prototype.close = fecharDoNavegador;
+      }
+      const abertas = conexoes.filter((c) => !fechadas.has(c)).length;
+      ok('caixa: cada conexao com o banco fecha quando a transacao acaba (nenhuma fica aberta ate o app morrer)',
+         conexoes.length >= 10 && abertas === 0, `${abertas} de ${conexoes.length} abertas`);
     } catch (e) {
       r.push(`FALHA rede: excecao: ${e && e.stack || e}`);
+    }
+    terminar(r);
+    return;
+  }
+
+  if (CAIXA) {
+    // ── Caixa (1.8): as telas ───────────────────────────────────────────────
+    // O dia, o mes, o lancamento, o cartao do inicio e o fim da corrida, pelos
+    // botoes, como o motorista usa. Os dados e o envio por baixo ja sao
+    // conferidos no fim do modo rede; aqui, o que as telas fazem com eles.
+    const r = [];
+    const ok = (nome, cond, extra = '') => r.push(`${cond ? 'OK   ' : 'FALHA'} caixa: ${nome}${cond ? '' : ' :: ' + extra}`);
+    const visivel = (id) => !!q(id) && !q(id).hidden && !q(id).closest('[hidden]');
+    const textoDe = (id) => q(id).textContent.replace(/\s+/g, ' ').trim();
+    const reais = (c) => Caixa.formatar(c, 2, 'R$');
+    const retrato = { full_name: 'Teste Navegador', email: 'web@teste.invalid', plate: 'WEB1A23' };
+    const sessaoGratis = { id: 'web-motorista', plano: 'free', limite_mensal: 6, usados_no_mes: 0, passageiro_opcional: true, motorista: retrato };
+    const naLoja = async (lojas, faz) => {
+      const banco = await abrirBanco();
+      await new Promise((ok2, falha) => {
+        const tx = banco.transaction(lojas, 'readwrite');
+        faz(tx);
+        tx.oncomplete = ok2; tx.onerror = () => falha(tx.error);
+      });
+    };
+    const guardarVarios = (lista) => naLoja('lancamentos', (tx) => lista.forEach((l) => tx.objectStore('lancamentos').put(l)));
+    // Lancamento pronto, ja enviado (as fotos e os totais nao dependem da fila).
+    const lanc = (id, campos, extra = {}) => ({ ...Caixa.novoLancamento(campos, { id, dono: 'web-motorista', moeda: 'BRL' }), pendente: false, ...extra });
+    const categoria = (id) => q('l-categorias').querySelector(`[data-categoria="${id}"]`);
+    const itemDa = (id) => q('caixa-lista').querySelector(`.caixa-item[data-id="${id}"]`);
+    // A despesa a mao, como o motorista faz: "+ Lançamento" no Caixa (que abre
+    // em Receita) e o toque em "Despesa".
+    const lancarDespesa = () => { clicar('btn-caixa-lancamento'); clicar('tipo-despesa'); };
+    // Os valores do Caixa abrem cobertos (o olho): o que le numeros abre o olho
+    // antes, e de novo depois do que o cobre (o app no fundo, o Sair).
+    const mostrarValores = () => { if (!valoresVisiveis) aplicarOlho(true); };
+    const hoje = Caixa.diaLocal();
+    const ontem = Caixa.somarDias(hoje, -1);
+    const mesAtual = Caixa.mesDe(hoje);
+    const mesPassado = Caixa.mesAnterior(mesAtual);
+    const tarifa = { bandeirada: 5.5, km1: 3.5, km2: 4.55, hora: 42 };
+    const saidaDeHoje = () => new Date(Math.max(Date.now() - 31 * 60000, new Date(`${Caixa.diaLocal()}T00:00:00`).getTime())).toISOString();
+    const corridaEncerrada = (extra = {}) => guardarCorrida({
+      motorista: 'web-motorista', origem: 'Avenida Paulista, 1578', destino: 'Aeroporto de Congonhas',
+      inicio: new Date(Date.now() - 31 * 60000).toISOString(), fim: new Date().toISOString(), bandeira: 1,
+      estimativa: { km: 14.2, minutos: 31, minutos_sem_transito: 22, destino: 'Aeroporto de Congonhas', origem: 'Avenida Paulista, 1578' },
+      ...extra,
+    });
+
+    // Um mes de trabalho com cara de verdade, para as fotos: hoje, os dias
+    // anteriores e o mes passado inteiro, com o domingo de folga.
+    const sorte = (n) => { const x = Math.sin(n * 12.9898) * 43758.5453; return x - Math.floor(x); };
+    const ROTAS = ['Rodoviária → Centro', 'Centro → Aeroporto', 'Shopping Iguatemi → Hospital São Lucas',
+                   'Aeroporto → Hotel Ibis Paulista', 'Estação da Luz → Vila Madalena', 'Hospital das Clínicas → Moema'];
+    const FORMAS = ['Pix', 'Dinheiro', 'Cartão', 'Pix', 'Pix'];
+    let serie = 0;
+    const diaDeTrabalho = (data) => {
+      const n = Number(data.replace(/-/g, ''));
+      const semana = new Date(`${data}T12:00:00`).getDay();
+      if (semana === 0) return [];
+      const novo = (campos) => lanc(`l-foto${++serie}`, { data, ...campos });
+      const lista = [];
+      const corridas = 3 + Math.floor(sorte(n) * 5);
+      for (let i = 0; i < corridas; i++) {
+        const s = sorte(n * 7 + i);
+        lista.push(novo({ tipo: 'receita', categoria: 'corrida', centavos: 2500 + Math.round(s * 45) * 100 + (i % 2 ? 50 : 0),
+          hora: `${String(7 + i * 2).padStart(2, '0')}:${String(5 + Math.floor(s * 50)).padStart(2, '0')}`,
+          forma: FORMAS[i % FORMAS.length], origem: 'corrida', rota: ROTAS[(n + i) % ROTAS.length] }));
+      }
+      if (n % 2) lista.push(novo({ tipo: 'despesa', categoria: 'combustivel', centavos: 8000 + Math.round(sorte(n + 3) * 40) * 100, hora: '07:30', forma: 'Cartão', litros: '30,5' }));
+      lista.push(novo({ tipo: 'despesa', categoria: 'alimentacao', centavos: 1800 + Math.round(sorte(n + 5) * 15) * 100, hora: '12:15', forma: 'Dinheiro' }));
+      if (semana === 1) lista.push(novo({ tipo: 'despesa', categoria: 'aluguel_veiculo', centavos: 35000, hora: '08:00', forma: 'Pix' }));
+      if (semana === 6) lista.push(novo({ tipo: 'despesa', categoria: 'lavagem', centavos: 4000, hora: '18:00' }));
+      if (sorte(n + 13) > 0.6) lista.push(novo({ tipo: 'despesa', categoria: 'pedagio', centavos: 1240, hora: '10:10' }));
+      if (sorte(n + 9) > 0.7) lista.push(novo({ tipo: 'receita', categoria: 'gorjeta', centavos: 500 + Math.round(sorte(n + 11) * 10) * 100, hora: '16:40' }));
+      if (sorte(n + 17) > 0.5) lista.push(novo({ tipo: 'receita', categoria: 'aplicativo', centavos: 6000 + Math.round(sorte(n + 19) * 60) * 100, hora: '20:30', forma: 'Aplicativo' }));
+      return lista;
+    };
+    const hojeDaFoto = [
+      ['07:40', 'despesa', 'combustivel', 8600, { forma: 'Cartão', litros: '30,5' }],
+      ['08:15', 'receita', 'corrida', 3200, { forma: 'Pix', origem: 'corrida', rota: 'Rodoviária → Centro' }],
+      ['09:02', 'receita', 'corrida', 5800, { forma: 'Dinheiro', origem: 'corrida', rota: 'Centro → Aeroporto' }],
+      ['11:30', 'receita', 'corrida', 4150, { forma: 'Cartão', origem: 'corrida', rota: 'Shopping Iguatemi → Hospital São Lucas' }],
+      ['12:20', 'despesa', 'alimentacao', 2400, { forma: 'Dinheiro' }],
+      ['14:05', 'receita', 'gorjeta', 1000, {}],
+      ['15:40', 'receita', 'corrida', 6490, { forma: 'Pix', origem: 'corrida', rota: 'Aeroporto → Hotel Ibis Paulista' }],
+      ['17:10', 'receita', 'aplicativo', 9200, { forma: 'Aplicativo', obs: 'Semana do app' }],
+    ].map(([hora, tipo, cat, centavos, extra], i) => lanc(`l-hoje${i}`, { tipo, categoria: cat, centavos, data: hoje, hora, ...extra }));
+    const comMesDeTrabalho = async () => {
+      const lista = [...hojeDaFoto];
+      for (let d = `${mesPassado}-01`; d < hoje; d = Caixa.somarDias(d, 1)) lista.push(...diaDeTrabalho(d));
+      await guardarVarios(lista);
+    };
+
+    try {
+      // Do zero: o banco tem o que as outras partes deixaram. A sessao entra
+      // so agora, e o app comeca como numa abertura.
+      const limparCaixa = () => naLoja(['recibos', 'lancamentos'], (tx) => { tx.objectStore('recibos').clear(); tx.objectStore('lancamentos').clear(); });
+      await limparCaixa();
+      localStorage.setItem('access_token', JSON.stringify('token-caixa'));
+      localStorage.setItem('refresh_token', JSON.stringify('refresh-caixa'));
+      window.__sessao = sessaoGratis;
+      let cartaoComSessaoLenta = null;
+      if (H.has('passo')) {
+        await iniciar();
+      } else {
+        // Primeira abertura da 1.8 com sinal fraco: o recibo de hoje, emitido
+        // na 1.7, ainda sem receita, e a /api/sessao demorando. O cartao do
+        // inicio tem de conta-lo antes de ela chegar (o Caixa, aberto por ele,
+        // ja contava). Depois, o caixa volta a ficar vazio para o resto.
+        await salvarRecibo({ rid: 'F0000000000017', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista',
+          motorista: retrato, dados: { rid: 'F0000000000017', origem: 'Rodoviária', destino: 'Centro', valor: '45,00', valor_exibido: '45,00',
+                                       moeda: 'BRL', data: hoje, hora: '07:10', forma_pagamento: 'Pix' } });
+        window.__sessaoAtraso = 4000;
+        const abertura = iniciar();
+        await espera(1500);
+        // Os valores abrem cobertos: coberto, o cartao ja diz que ha lancamento
+        // ("R$ ••••", e nao "Nenhum lançamento hoje"), e o olho mostra quanto.
+        const coberto = { valor: textoDe('caixa-inicio-valor'), olho: q('btn-olho-inicio').getAttribute('aria-label'),
+                          olhoAVista: visivel('btn-olho-inicio'), estado: valoresVisiveis };
+        clicar('btn-olho-inicio');
+        cartaoComSessaoLenta = { coberto, cartao: textoDe('caixa-inicio-valor'), semSessao: Guardado.get('plano') == null };
+        clicar('btn-olho-inicio');
+        await abertura;
+        window.__sessaoAtraso = 0;
+        clearTimeout(envioDoCaixaAgendado); envioDoCaixaAgendado = null;
+        if (passadaDoCaixa) await passadaDoCaixa;
+        await limparCaixa();
+        irParaInicio(); await espera(300);
+      }
+
+      if (H.has('passo')) {
+        // Fotos: monta a tela e para ali. Os valores abrem cobertos: as telas do
+        // Caixa que ja tinham foto abrem o olho (o desenho se revisa com os
+        // numeros), e a 20, a 27 e a 28 mostram como o app abre, coberto.
+        const passo = Number(H.get('passo'));
+        if (passo === 0) { mostrarValores(); await abrirCaixa(); return; }
+        if (passo === 11) { irParaInicio(); return; }   // o cartao do inicio sem lancamento e sem meta
+        await comMesDeTrabalho();
+        if (passo === 1) { guardarMetaDoDia(40000); mostrarValores(); await abrirCaixa(); return; }
+        if (passo === 2) {
+          // "+ Lançamento" (que abre em Receita) e o toque em "Despesa".
+          abrirLancamento();
+          clicar('tipo-despesa');
+          q('l-valor').value = '86,00'; categoria('combustivel').click(); q('l-litros').value = '30,5';
+          q('l-forma').value = 'Cartão'; q('l-mais').open = true;   // a forma da despesa mora aqui dentro
+          return;
+        }
+        if (passo === 3) {
+          Guardado.set('tarifa', tarifa);
+          corridaEncerrada({ valor_cobrado: '58,00', forma: 'Pix' });
+          await abrirCorrida();
+          return;
+        }
+        if (passo === 4) { mostrarValores(); await abrirMesDoCaixa(mesPassado); return; }
+        if (passo === 5) {
+          window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
+          await atualizarSessao();
+          mostrarValores();
+          await abrirMesDoCaixa(mesPassado);
+          return;
+        }
+        if (passo === 6) { guardarMetaDoDia(40000); irParaInicio(); return; }   // o cartao em primeiro, coberto, com a meta
+        if (passo === 7) { mostrarValores(); await abrirCaixa(`${mesPassado}-14`); return; }
+        if (passo === 8) {
+          const recibo = { rid: 'F0000000000008', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista', motorista: retrato,
+            dados: { rid: 'F0000000000008', origem: 'Rodoviária', destino: 'Centro', valor: '45,00', valor_exibido: '45,00', moeda: 'BRL',
+                     data: hoje, hora: '18:42', forma_pagamento: 'Pix' } };
+          await salvarRecibo(recibo);
+          await lancarReciboNoCaixa(recibo);
+          mostrarValores();
+          await abrirLancamentoParaEditar('r-F0000000000008');
+          q('l-mais').open = true;
+          return;
+        }
+        if (passo === 9) { mostrarValores(); await abrirMesDoCaixa(mesAtual); return; }
+        if (passo === 10) { guardarMetaDoDia(40000); mostrarValores(); await abrirCaixa(); clicar('btn-mudar-meta'); return; }
+        if (passo === 12) {   // o olho aberto e a confirmacao do "Só lançar no caixa"
+          guardarMetaDoDia(40000);
+          confirmacaoDoInicio = { texto: 'Corrida lançada: R$ 58,00', dia: hoje, ate: Date.now() + 60000 };
+          mostrarValores();
+          irParaInicio();
+          return;
+        }
+        if (passo === 13) { guardarMetaDoDia(40000); await abrirCaixa(); return; }   // o Caixa do dia como abre, coberto
+        if (passo === 14) { await abrirMesDoCaixa(mesAtual); return; }   // o mes, coberto
+        if (passo === 15) { abrirLancamento(); return; }   // "Novo lançamento" como abre: Receita e "Corrida"
+        return;
+      }
+
+      // ── Menu e cartao do inicio ──
+      ok('ao abrir o app, os valores vem cobertos: o cartao diz "R$ ••••", com o olho "Mostrar valores" a vista',
+         !!cartaoComSessaoLenta && cartaoComSessaoLenta.coberto.valor === 'R$ ••••' && cartaoComSessaoLenta.coberto.olho === 'Mostrar valores'
+         && cartaoComSessaoLenta.coberto.olhoAVista && cartaoComSessaoLenta.coberto.estado === false, JSON.stringify(cartaoComSessaoLenta));
+      ok('primeira abertura da 1.8 com a sessao demorando: o cartao do inicio ja conta o recibo de hoje, antes de ela chegar (com o olho aberto)',
+         !!cartaoComSessaoLenta && cartaoComSessaoLenta.semSessao && cartaoComSessaoLenta.cartao === 'R$ 45,00', JSON.stringify(cartaoComSessaoLenta));
+      ok('"Meu caixa" no menu, logo depois de "Meus dados"', q('btn-meus-dados').nextElementSibling === q('btn-caixa') && textoDe('btn-caixa') === 'Meu caixa');
+      const depois = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      // O primeiro bloco do inicio (pedido do Anderson, 2026-11-27): depois da
+      // saudacao e do aviso da corrida aberta, antes dos dois caminhos.
+      const cartaoEmPrimeiro = () => {
+        const caminhos = document.querySelector('.caminhos');
+        const blocos = [...q('tela-inicio').children].filter((e) => !e.hidden);
+        return blocos.indexOf(q('caixa-inicio')) === blocos.indexOf(q('titulo-inicio')) + (visivel('btn-continuar-corrida') ? 2 : 1)
+          && blocos.indexOf(caminhos) === blocos.indexOf(q('caixa-inicio')) + 1
+          && q('titulo-inicio').getBoundingClientRect().bottom <= q('caixa-inicio').getBoundingClientRect().top
+          && (!visivel('btn-continuar-corrida') || q('btn-continuar-corrida').getBoundingClientRect().bottom <= q('caixa-inicio').getBoundingClientRect().top)
+          && q('caixa-inicio').getBoundingClientRect().bottom <= caminhos.getBoundingClientRect().top;
+      };
+      ok('o inicio mostra o cartao "Caixa de hoje" em primeiro: logo depois da saudacao e antes dos dois caminhos, da vitrine e da indicacao',
+         !q('tela-inicio').hidden && visivel('caixa-inicio') && textoDe('caixa-inicio').includes('Caixa de hoje') && cartaoEmPrimeiro()
+         && depois(q('caixa-inicio'), q('vitrine-inicio')) && depois(q('caixa-inicio'), q('btn-ir-indicar')));
+      ok('sem lancamento: "Nenhum lançamento hoje" e o "+ Lançamento"', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje'
+         && visivel('btn-inicio-lancamento') && textoDe('btn-inicio-lancamento') === '+ Lançamento' && q('caixa-inicio-linha').hidden);
+      ok('sem nada a cobrir no cartao, sem o olho', !visivel('btn-olho-inicio'));
+      ok('sem meta, o cartao convida com "Definir meta do dia", sem a barra', visivel('btn-inicio-definir-meta')
+         && textoDe('btn-inicio-definir-meta') === 'Definir meta do dia' && !visivel('caixa-inicio-meta'));
+      guardarMetaDoDia(40000);
+      irParaInicio(); await espera(300);
+      ok('sem lancamento e com meta: a barra vazia e "Faltam R$ ••••", e o olho aparece (ha o que cobrir)', visivel('caixa-inicio-meta')
+         && q('inicio-meta-preenchida').style.width === '0%' && textoDe('inicio-meta-texto') === 'Faltam R$ ••••' && !visivel('btn-inicio-definir-meta')
+         && visivel('btn-olho-inicio') && textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje', textoDe('inicio-meta-texto'));
+      removerMetaDoDia();
+
+      // ── Olho: os valores cobertos ──
+      // Um mes de trabalho, com a meta, e o olho fechado, como em toda abertura
+      // do app: nenhum numero de dinheiro no cartao nem nas telas do Caixa, nem
+      // escondido na pagina. O olho mostra e cobre, um estado so para os tres.
+      const neutro = (e) => !e.classList.contains('valor-receita') && !e.classList.contains('valor-despesa');
+      const ariaDo = (id) => q(id).getAttribute('aria-label');
+      const temAlgarismo = (ids) => ids.some((id) => /\d/.test(q(id).textContent));
+      // Numero de dinheiro ("298,40") no texto, escondido ou nao, e nos atributos
+      // (aria-label, title, data-*): devolve onde achou, para a mensagem da falha.
+      // O placeholder do campo da meta ("0,00") e o formato, e nao um valor.
+      const dinheiroNaPagina = () => ['caixa-inicio', 'tela-caixa', 'tela-caixa-mes'].flatMap((id) => {
+        const achados = [];
+        const andar = document.createTreeWalker(q(id), NodeFilter.SHOW_TEXT);
+        while (andar.nextNode()) {
+          const n = andar.currentNode;
+          if (/\d,\d\d/.test(n.nodeValue)) achados.push(`${n.parentElement.id || n.parentElement.className}: ${n.nodeValue.trim().slice(0, 60)}`);
+        }
+        q(id).querySelectorAll('*').forEach((e) => [...e.attributes].forEach((a) => {
+          if (a.name !== 'placeholder' && /\d,\d\d/.test(a.value)) achados.push(`${e.id || e.tagName} [${a.name}]: ${a.value.slice(0, 60)}`);
+        }));
+        return achados;
+      });
+      const semDinheiro = () => !dinheiroNaPagina().length;
+      await comMesDeTrabalho();
+      guardarMetaDoDia(40000);
+      const todosO = await listarLancamentos();
+      const diaO = Caixa.resumoDoDia(todosO, hoje, 'BRL');
+      const mesO = Caixa.resumoDoMes(todosO, mesAtual, 'BRL');
+      const parteO = Math.round(Math.min(1, Math.max(0, diaO.liquido) / 40000) * 100);
+      irParaInicio(); await espera(300);
+      ok('olho fechado: o cartao mostra "R$ ••••" na cor neutra e "Receitas R$ •••• · Despesas R$ •••• · N corridas", com o olho a vista',
+         !valoresVisiveis && textoDe('caixa-inicio-valor') === 'R$ ••••' && neutro(q('caixa-inicio-valor'))
+         && textoDe('caixa-inicio-linha') === `Receitas R$ •••• · Despesas R$ •••• · ${plural(diaO.nCorridas, 'corrida', 'corridas')}`
+         && visivel('btn-olho-inicio') && ariaDo('btn-olho-inicio') === 'Mostrar valores' && !temAlgarismo(['caixa-inicio-valor']),
+         `${textoDe('caixa-inicio-valor')} | ${textoDe('caixa-inicio-linha')}`);
+      ok('olho fechado: a meta no cartao, com a barra a vista na parte certa e "Faltam R$ ••••"', visivel('caixa-inicio-meta')
+         && q('inicio-meta-preenchida').style.width === `${parteO}%` && q('inicio-meta-barra').getAttribute('aria-valuenow') === String(parteO)
+         && textoDe('inicio-meta-texto') === 'Faltam R$ ••••' && !temAlgarismo(['inicio-meta-texto']) && !visivel('btn-inicio-definir-meta')
+         && getComputedStyle(q('inicio-meta-preenchida')).backgroundColor === 'rgb(255, 197, 49)',
+         `${q('inicio-meta-preenchida').style.width} | ${textoDe('inicio-meta-texto')}`);
+      await abrirCaixa();
+      const valoresDaLista = [...q('caixa-lista').querySelectorAll('.caixa-item-valor')];
+      ok('olho fechado, no Caixa do dia: o liquido "R$ ••••" na cor neutra, "+ R$ ••••" e "− R$ ••••" nas cores dos tipos, e as contagens a vista',
+         textoDe('caixa-liquido') === 'R$ ••••' && neutro(q('caixa-liquido')) && textoDe('caixa-receitas') === '+ R$ ••••'
+         && textoDe('caixa-despesas') === '− R$ ••••' && q('caixa-receitas').classList.contains('valor-receita') && q('caixa-despesas').classList.contains('valor-despesa')
+         && textoDe('caixa-n-receitas') === plural(diaO.nReceitas, 'lançamento', 'lançamentos') && ariaDo('btn-olho-caixa') === 'Mostrar valores'
+         && !temAlgarismo(['caixa-liquido', 'caixa-receitas', 'caixa-despesas']), `${textoDe('caixa-liquido')} | ${textoDe('caixa-receitas')} | ${textoDe('caixa-despesas')}`);
+      ok('olho fechado: a lista do dia com "+ ••••" e "− ••••" na cor do tipo, e a hora, a categoria e a rota a vista',
+         valoresDaLista.length === hojeDaFoto.length && valoresDaLista.every((v) => /^[+−] ••••$/.test(v.textContent)
+           && v.classList.contains(v.textContent.startsWith('−') ? 'valor-despesa' : 'valor-receita'))
+         && textoDe('caixa-lista').includes('Aeroporto → Hotel Ibis Paulista') && textoDe('caixa-lista').includes('17:10'),
+         valoresDaLista.map((v) => v.textContent).join(' '));
+      ok('olho fechado: a meta diz "meta R$ ••••" e "Faltam R$ ••••", e a barra fica a vista, com a parte certa',
+         textoDe('btn-mudar-meta') === 'meta R$ ••••' && textoDe('meta-texto') === 'Faltam R$ ••••' && parteO > 0
+         && q('meta-preenchida').style.width === `${parteO}%` && q('meta-barra').getAttribute('aria-valuenow') === String(parteO),
+         `${textoDe('btn-mudar-meta')} | ${textoDe('meta-texto')} | ${q('meta-preenchida').style.width}`);
+      ok('olho fechado: o cartao do mes diz "Líquido R$ ••••" e "N dias trabalhados · R$ ••••/dia"', textoDe('caixa-mes-liquido') === 'Líquido R$ ••••'
+         && neutro(q('caixa-mes-liquido')) && textoDe('caixa-mes-dias') === `${plural(mesO.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · R$ ••••/dia`,
+         `${textoDe('caixa-mes-liquido')} | ${textoDe('caixa-mes-dias')}`);
+      await abrirMesDoCaixa(mesAtual);
+      const partesO = [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-parte')];
+      ok('olho fechado, no mes: liquido, media, receitas, despesas, categorias e dias com "R$ ••••"; as partes e as barras a vista',
+         textoDe('mes-liquido') === 'R$ ••••' && neutro(q('mes-liquido'))
+         && textoDe('mes-media') === `${plural(mesO.diasTrabalhados, 'dia trabalhado', 'dias trabalhados')} · média de R$ •••• por dia`
+         && textoDe('mes-receitas') === '+ R$ ••••' && textoDe('mes-despesas') === '− R$ ••••' && !temAlgarismo(['mes-liquido', 'mes-receitas', 'mes-despesas'])
+         && [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-valor')].every((v) => v.textContent === 'R$ ••••')
+         && partesO.length > 1 && partesO.every((p) => /%$/.test(p.textContent))
+         && [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-barra span')].every((b) => parseFloat(b.style.width) > 0)
+         && [...q('mes-dias').querySelectorAll('.caixa-dia-item-valor')].every((v) => v.textContent === 'R$ ••••' && neutro(v))
+         && ariaDo('btn-olho-mes') === 'Mostrar valores', `${textoDe('mes-media')} | ${textoDe('mes-cat-despesas')}`);
+      const iscaCoberta = `${nomeCurtoDoMes(mesPassado, mesAtual)} fechou com R$ •••• de líquido.`;
+      await abrirMesDoCaixa(mesPassado);
+      ok('olho fechado, no Gratis: a isca do mes anterior diz "fechou com R$ •••• de líquido."', visivel('mes-bloqueio')
+         && textoDe('mes-bloqueio').includes(iscaCoberta) && visivel('btn-olho-mes'), textoDe('mes-bloqueio'));
+      await abrirCaixa(`${mesPassado}-15`);
+      ok('e a do dia de mes anterior tambem, com o olho a vista no bloqueio', visivel('caixa-bloqueio')
+         && textoDe('caixa-bloqueio').includes(iscaCoberta) && visivel('btn-olho-caixa'), textoDe('caixa-bloqueio'));
+      ok('olho fechado: nenhum numero de dinheiro na pagina do cartao e das telas do Caixa, nem escondido, nem em atributo', semDinheiro(),
+         dinheiroNaPagina().join(' | '));
+
+      // O olho mostra e cobre na hora, e o estado e um so.
+      irParaInicio(); await espera(300);
+      const linhaAberta = `Receitas ${reais(diaO.receitas)} · Despesas ${reais(diaO.despesas)} · ${plural(diaO.nCorridas, 'corrida', 'corridas')}`;
+      clicar('btn-olho-inicio');
+      ok('o olho do cartao mostra os valores na hora (o liquido na cor dele) e vira "Esconder valores", com o olho riscado',
+         valoresVisiveis && textoDe('caixa-inicio-valor') === reais(diaO.liquido) && q('caixa-inicio-valor').classList.contains('valor-receita')
+         && textoDe('caixa-inicio-linha') === linhaAberta && ariaDo('btn-olho-inicio') === 'Esconder valores'
+         && q('btn-olho-inicio').innerHTML.includes('m2 2 20 20'), `${textoDe('caixa-inicio-valor')} | ${textoDe('caixa-inicio-linha')}`);
+      ok('com o olho aberto, a meta do cartao diz quanto falta, com a barra igual', textoDe('inicio-meta-texto') === `Faltam ${reais(40000 - diaO.liquido)}`
+         && q('inicio-meta-preenchida').style.width === `${parteO}%`, textoDe('inicio-meta-texto'));
+      await abrirCaixa();
+      ok('um estado so: o Caixa aberto depois ja vem com os valores, e o olho dele em "Esconder valores"',
+         textoDe('caixa-liquido') === reais(diaO.liquido) && textoDe('caixa-receitas') === `+ ${reais(diaO.receitas)}`
+         && textoDe('caixa-despesas') === `− ${reais(diaO.despesas)}` && textoDe('btn-mudar-meta') === `meta ${reais(40000)}`
+         && textoDe('meta-texto') === `Faltam ${reais(40000 - diaO.liquido)}` && itemDa('l-hoje1').querySelector('.caixa-item-valor').textContent === '+ 32,00'
+         && textoDe('caixa-mes-liquido') === `Líquido ${reais(mesO.liquido)}` && ariaDo('btn-olho-caixa') === 'Esconder valores', textoDe('caixa-liquido'));
+      clicar('btn-olho-caixa');
+      ok('o olho do Caixa cobre de novo, e os do cartao e do mes tambem voltam a "Mostrar valores", com o olho aberto',
+         !valoresVisiveis && textoDe('caixa-liquido') === 'R$ ••••' && textoDe('caixa-inicio-valor') === 'R$ ••••'
+         && ['btn-olho-caixa', 'btn-olho-inicio', 'btn-olho-mes'].every((id) => ariaDo(id) === 'Mostrar valores' && !q(id).innerHTML.includes('m2 2 20 20')));
+      clicar('btn-abrir-mes'); await espera(400);
+      const mesCoberto = textoDe('mes-liquido');
+      clicar('btn-olho-mes');
+      ok('o mes abre coberto, e o olho dele mostra o liquido, as receitas, a media e as categorias', mesCoberto === 'R$ ••••'
+         && textoDe('mes-liquido') === reais(mesO.liquido) && textoDe('mes-receitas') === `+ ${reais(mesO.receitas)}`
+         && textoDe('mes-media').includes(`média de ${reais(mesO.mediaPorDia)} por dia`)
+         && [...q('tela-caixa-mes').querySelectorAll('.caixa-categoria-valor')].every((v) => /^R\$ \d/.test(v.textContent))
+         && ariaDo('btn-olho-mes') === 'Esconder valores', `${mesCoberto} | ${textoDe('mes-liquido')}`);
+      clicar('btn-fechar-mes'); await espera(400);
+      ok('e o dia, na volta do mes, tambem com os valores', textoDe('caixa-liquido') === reais(diaO.liquido) && ariaDo('btn-olho-caixa') === 'Esconder valores');
+
+      // Coberto, os formularios mostram o valor de verdade: editar e ato dele.
+      clicar('btn-olho-caixa');
+      itemDa('l-hoje0').click(); await espera(300);
+      ok('olho fechado: o lancamento aberto para editar mostra o valor de verdade', !valoresVisiveis && !q('tela-lancamento').hidden
+         && textoDe('titulo-lancamento') === 'Editar despesa' && q('l-valor').value === '86,00', q('l-valor').value);
+      clicar('btn-fechar-lancamento'); await espera(300);
+      clicar('btn-mudar-meta'); await espera(100);
+      ok('olho fechado: o campo da meta, aberto, mostra a meta de verdade', !valoresVisiveis && visivel('form-meta') && q('meta-valor').value === '400,00',
+         q('meta-valor').value);
+      clicar('btn-cancelar-meta'); await espera(300);
+
+      // Ao ir para o fundo (o Waze, o WhatsApp, a tela bloqueada), cobre na
+      // hora, sem esperar o banco: o que esta na tela e o que ficou desenhado
+      // nas outras. Aqui a pagina "escondida" e o 'pause' do Capacitor.
+      clicar('btn-olho-caixa');
+      clicar('btn-abrir-mes'); await espera(400);
+      clicar('btn-fechar-mes'); await espera(400);
+      const abertoAntes = !semDinheiro() && textoDe('caixa-liquido') === reais(diaO.liquido);
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      const naHora = { estado: valoresVisiveis, dia: textoDe('caixa-liquido'), lista: textoDe('caixa-lista').includes('+ 32,00'),
+                       cartao: textoDe('caixa-inicio-valor'), mes: textoDe('mes-liquido'), semDinheiro: semDinheiro(), olho: ariaDo('btn-olho-caixa') };
+      delete document.visibilityState;
+      ok('a pagina escondida (o app indo para o fundo) cobre na hora o Caixa aberto, e o cartao e o mes desenhados antes',
+         abertoAntes && naHora.estado === false && naHora.dia === 'R$ ••••' && !naHora.lista && naHora.cartao === 'R$ ••••'
+         && naHora.mes === 'R$ ••••' && naHora.semDinheiro && naHora.olho === 'Mostrar valores', `${JSON.stringify(naHora)} ${dinheiroNaPagina().join(' | ')}`);
+      irParaInicio(); await espera(300);
+      clicar('btn-olho-inicio');
+      const abertoNoInicio = textoDe('caixa-inicio-valor') === reais(diaO.liquido);
+      (__ouvintes.pause || []).forEach((f) => f());
+      ok('o "pause" do app tambem cobre na hora o cartao do inicio aberto', abertoNoInicio && !valoresVisiveis
+         && textoDe('caixa-inicio-valor') === 'R$ ••••' && semDinheiro() && ariaDo('btn-olho-inicio') === 'Mostrar valores', dinheiroNaPagina().join(' | '));
+
+      // No iPhone, o 'pause' e a pagina escondida chegam tarde: o sistema tira a
+      // foto do app para a lista de apps abertos antes deles (e o seletor de
+      // apps, aberto de dentro do app, nem os manda). O que chega antes e o
+      // appStateChange com isActive false: sozinho, ele cobre na hora o cartao,
+      // o Caixa do dia e o mes, e o isActive true da volta nao mostra de novo.
+      const ficarAtivo = (isActive) => (__ouvintes.appStateChange || []).forEach((f) => f({ isActive }));
+      if (!valoresVisiveis) clicar('btn-olho-inicio');
+      const inativo = { antes: textoDe('caixa-inicio-valor') === reais(diaO.liquido) && !semDinheiro() };
+      ficarAtivo(false);
+      inativo.naHora = { estado: valoresVisiveis, cartao: textoDe('caixa-inicio-valor'), linha: textoDe('caixa-inicio-linha'), semDinheiro: semDinheiro() };
+      ficarAtivo(true);
+      inativo.naVolta = { estado: valoresVisiveis, cartao: textoDe('caixa-inicio-valor') };
+      ok('o app ficando inativo (appStateChange, que no iPhone chega antes do "pause") cobre na hora o cartao do inicio aberto, e a volta nao mostra',
+         inativo.antes && inativo.naHora.estado === false && inativo.naHora.cartao === 'R$ ••••'
+         && inativo.naHora.linha.startsWith('Receitas R$ •••• · Despesas R$ ••••') && inativo.naHora.semDinheiro
+         && inativo.naVolta.estado === false && inativo.naVolta.cartao === 'R$ ••••', `${JSON.stringify(inativo)} ${dinheiroNaPagina().join(' | ')}`);
+      await abrirCaixa();
+      if (!valoresVisiveis) clicar('btn-olho-caixa');
+      const caixaInativo = { antes: textoDe('caixa-liquido') === reais(diaO.liquido) && !semDinheiro() };
+      ficarAtivo(false);
+      Object.assign(caixaInativo, { estado: valoresVisiveis, dia: textoDe('caixa-liquido'), semDinheiro: semDinheiro(), olho: ariaDo('btn-olho-caixa') });
+      await abrirMesDoCaixa(mesAtual);
+      if (!valoresVisiveis) clicar('btn-olho-mes');
+      const mesInativo = { antes: textoDe('mes-liquido') === reais(mesO.liquido) };
+      ficarAtivo(false);
+      Object.assign(mesInativo, { estado: valoresVisiveis, mes: textoDe('mes-liquido'), semDinheiro: semDinheiro(), olho: ariaDo('btn-olho-mes') });
+      ok('e cobre na hora tambem o Caixa do dia e o do mes abertos, sem numero de dinheiro na pagina',
+         caixaInativo.antes && caixaInativo.estado === false && caixaInativo.dia === 'R$ ••••' && caixaInativo.semDinheiro
+         && caixaInativo.olho === 'Mostrar valores' && mesInativo.antes && mesInativo.estado === false && mesInativo.mes === 'R$ ••••'
+         && mesInativo.semDinheiro && mesInativo.olho === 'Mostrar valores', `${JSON.stringify({ caixaInativo, mesInativo })} ${dinheiroNaPagina().join(' | ')}`);
+      if (valoresVisiveis) aplicarOlho(false);   // o que vem depois comeca coberto, de qualquer jeito
+
+      // A fonte do sistema aumentada (Android, "Tamanho da fonte"): o WebView
+      // aumenta o texto, e as caixas ficam do mesmo tamanho. Com "CAIXA DE HOJE"
+      // sem quebrar, 130% num Android de 360 px punha o olho embaixo do
+      // "+ Lançamento", e o toque nele abria o lancamento. Aqui, o inicio com
+      // 360 px e o texto de cada elemento 1,3 e 1,5 vez maior.
+      irParaInicio(); await espera(300);
+      const telaDoInicio = q('tela-inicio');
+      const doInicio = [telaDoInicio, ...telaDoInicio.querySelectorAll('*')];
+      const fonteDoInicio = doInicio.map((e) => parseFloat(getComputedStyle(e).fontSize));
+      const aumentarFonte = (f) => doInicio.forEach((e, i) => { e.style.fontSize = f === 1 ? '' : `${fonteDoInicio[i] * f}px`; });
+      const tocado = (x, y) => { const e = document.elementFromPoint(x, y); return e && (e.closest('button') || e); };
+      const olhoNoCartao = () => {
+        const olho = q('btn-olho-inicio');
+        const alvo = olho.getBoundingClientRect();
+        const desenho = olho.querySelector('svg').getBoundingClientRect();
+        const meio = (desenho.top + desenho.bottom) / 2;
+        let tapado = 0;   // pontos do desenho, na linha do meio, que o toque nao leva ao olho
+        for (let x = Math.ceil(desenho.left); x < desenho.right; x++) if (tocado(x, meio) !== olho) tapado++;
+        const faixa = document.createRange();
+        faixa.selectNodeContents(document.querySelector('.caixa-cartao-rotulo'));
+        const linhas = [...faixa.getClientRects()];
+        return { centro: tocado((alvo.left + alvo.right) / 2, (alvo.top + alvo.bottom) / 2) === olho, tapado,
+                 linhas: new Set(linhas.map((l) => Math.round(l.top))).size,
+                 rotuloSobOBotao: linhas.some((l) => tocado(l.right - 2, (l.top + l.bottom) / 2) === q('btn-inicio-lancamento')) };
+      };
+      const fonteNormal = olhoNoCartao();
+      const em360 = {};
+      telaDoInicio.style.maxWidth = '360px';
+      try {
+        for (const f of [1, 1.3, 1.5]) { aumentarFonte(f); em360[f] = olhoNoCartao(); }
+      } finally {
+        aumentarFonte(1);
+        telaDoInicio.style.maxWidth = '';
+      }
+      ok('com a fonte normal, "CAIXA DE HOJE" fica numa linha so, com o olho logo depois, inteiro (390 e 360 px)',
+         [fonteNormal, em360[1]].every((m) => m.linhas === 1 && m.centro && !m.tapado && !m.rotuloSobOBotao), JSON.stringify({ fonteNormal, f1: em360[1] }));
+      ok('com a fonte do sistema a 130% e a 150% (360 px), o olho fica inteiro a vista e pega o toque, e "CAIXA DE HOJE" (que quebra a linha) fora do "+ Lançamento"',
+         [1.3, 1.5].every((f) => em360[f].centro && !em360[f].tapado && !em360[f].rotuloSobOBotao), JSON.stringify(em360));
+
+      // A meta batida no cartao: a barra cheia, em verde, e o que passou.
+      guardarMetaDoDia(diaO.liquido - 1000);
+      irParaInicio(); await espera(300);
+      const batidaCoberta = { texto: textoDe('inicio-meta-texto'), barra: q('inicio-meta-preenchida').style.width,
+                              cor: getComputedStyle(q('inicio-meta-texto')).color };
+      clicar('btn-olho-inicio');
+      ok('meta batida no cartao: a barra cheia e "Meta batida! + R$ ••••" em verde; com o olho aberto, "Meta batida! + R$ 10,00"',
+         batidaCoberta.texto === 'Meta batida! + R$ ••••' && batidaCoberta.barra === '100%' && batidaCoberta.cor === 'rgb(91, 214, 138)'
+         && textoDe('inicio-meta-texto') === 'Meta batida! + R$ 10,00', `${JSON.stringify(batidaCoberta)} ${textoDe('inicio-meta-texto')}`);
+      clicar('btn-olho-inicio');
+
+      // Sem meta, o "Definir meta do dia" do cartao leva ao campo da meta.
+      removerMetaDoDia();
+      irParaInicio(); await espera(300);
+      ok('sem meta, o cartao com lancamentos tambem mostra "Definir meta do dia" no lugar da barra', visivel('btn-inicio-definir-meta')
+         && !visivel('caixa-inicio-meta') && visivel('btn-olho-inicio'));
+      clicar('btn-inicio-definir-meta');
+      const noToque = { caixa: !q('tela-caixa').hidden, campo: visivel('form-meta'), foco: document.activeElement === q('meta-valor') };
+      await espera(400);
+      ok('"Definir meta do dia" do cartao abre o Caixa de hoje com o campo da meta aberto e o foco no valor, no mesmo toque',
+         noToque.caixa && noToque.campo && noToque.foco && textoDe('caixa-dia-titulo').startsWith('Hoje, ') && visivel('form-meta')
+         && !visivel('meta-com') && !visivel('btn-definir-meta') && document.activeElement === q('meta-valor') && q('meta-valor').value === '',
+         `${JSON.stringify(noToque)} ${textoDe('caixa-dia-titulo')}`);
+      q('meta-valor').value = '400,00'; q('form-meta').requestSubmit(); await espera(300);
+      irParaInicio(); await espera(300);
+      ok('e a meta salva ali aparece no cartao do inicio', metaDoDia() === 40000 && visivel('caixa-inicio-meta')
+         && textoDe('inicio-meta-texto') === 'Faltam R$ ••••' && !visivel('btn-inicio-definir-meta'));
+      // O Caixa deixado num dia bloqueado (o mes passado, no Gratis: no dia 1o,
+      // um toque em "‹") escondia o dia, e o campo da meta mora nele: o focus()
+      // do toque seguinte, no cartao, nao pegava, e o teclado nao subia.
+      removerMetaDoDia();
+      await abrirCaixa(`${mesPassado}-14`);
+      const ficouNoBloqueio = visivel('caixa-bloqueio') && !visivel('caixa-dia');
+      clicar('btn-fechar-caixa'); await espera(300);
+      const conviteDepoisDoBloqueio = visivel('btn-inicio-definir-meta');
+      clicar('btn-inicio-definir-meta');
+      const depoisDoBloqueio = { foco: document.activeElement === q('meta-valor'), campo: visivel('meta-valor'), bloqueio: visivel('caixa-bloqueio') };
+      await espera(400);
+      ok('depois de um dia bloqueado do Gratis, "Definir meta do dia" do cartao abre hoje com o campo e o foco no valor, no mesmo toque',
+         ficouNoBloqueio && conviteDepoisDoBloqueio && depoisDoBloqueio.foco && depoisDoBloqueio.campo && !depoisDoBloqueio.bloqueio
+         && textoDe('caixa-dia-titulo').startsWith('Hoje, ') && visivel('form-meta') && document.activeElement === q('meta-valor'),
+         `${JSON.stringify(depoisDoBloqueio)} ${textoDe('caixa-dia-titulo')}`);
+      clicar('btn-cancelar-meta'); await espera(300);
+
+      // De volta ao Caixa vazio do resto da parte, e com os numeros a vista:
+      // as verificacoes daqui em diante leem valores.
+      removerMetaDoDia();
+      await limparCaixa();
+      irParaInicio(); await espera(300);
+      mostrarValores();
+
+      clicar('btn-perfil'); await espera(100);
+      clicar('btn-caixa'); await espera(400);
+      ok('"Meu caixa" abre o Caixa de hoje e fecha o menu', !q('tela-caixa').hidden && q('menu-perfil').hidden
+         && textoDe('caixa-dia-titulo') === `Hoje, ${Caixa.dataCurta(hoje).replace(', ', ' ')}`, textoDe('caixa-dia-titulo'));
+      ok('em hoje, a seta da direita fica desligada', q('btn-dia-seguinte').disabled && !q('btn-dia-anterior').disabled);
+      ok('caixa vazio: a frase de que os recibos entram sozinhos, e a corrida sem recibo pelo "+ Lançamento"', visivel('caixa-vazio') && !q('caixa-lista').children.length
+         && textoDe('caixa-vazio') === 'Nenhum lançamento neste dia. Os recibos que você emitir entram aqui sozinhos; a corrida sem recibo entra pelo "+ Lançamento".',
+         textoDe('caixa-vazio'));
+      ok('o Caixa tem um "+ Lançamento" so, de largura inteira, no lugar de "+ Despesa" e "+ Receita"', visivel('btn-caixa-lancamento')
+         && textoDe('btn-caixa-lancamento') === '+ Lançamento' && !q('btn-caixa-despesa') && !q('btn-caixa-receita')
+         && Math.abs(q('btn-caixa-lancamento').getBoundingClientRect().width - q('caixa-dia').getBoundingClientRect().width) < 1);
+      ok('vazio: liquido zero, "líquido de hoje" e "Definir meta do dia"', textoDe('caixa-liquido') === 'R$ 0,00'
+         && textoDe('caixa-liquido-rotulo') === 'líquido de hoje' && visivel('btn-definir-meta') && !visivel('meta-com'));
+      ok('vazio: os zeros vao sem sinal e sem cor (nao parecem dinheiro que entrou ou saiu)', textoDe('caixa-receitas') === 'R$ 0,00'
+         && !q('caixa-receitas').className && !q('caixa-despesas').className && !q('caixa-liquido').classList.contains('valor-receita'));
+
+      // ── Lancamento: despesa ──
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('"+ Lançamento" abre "Novo lançamento" em Receita, com "Corrida" marcada e o foco no valor, no mesmo toque (o teclado do iPhone sobe)',
+         !q('tela-lancamento').hidden && document.activeElement === q('l-valor') && q('tipo-receita').getAttribute('aria-checked') === 'true'
+         && q('tipo-despesa').getAttribute('aria-checked') === 'false' && categoria('corrida').getAttribute('aria-pressed') === 'true'
+         && textoDe('titulo-lancamento') === 'Novo lançamento' && q('l-valor').inputMode === 'decimal', document.activeElement && document.activeElement.id);
+      // No Android o botao tocado fica com o foco (e o teclado desce): aqui, o
+      // foco vai para ele antes do clique, como la.
+      q('tipo-despesa').focus(); clicar('tipo-despesa'); await espera(50);
+      ok('o toque em "Despesa" troca para a despesa, o titulo continua "Novo lançamento" e o foco volta ao valor (o teclado nao desce)',
+         q('tipo-despesa').getAttribute('aria-checked') === 'true' && q('tipo-receita').getAttribute('aria-checked') === 'false'
+         && textoDe('titulo-lancamento') === 'Novo lançamento' && document.activeElement === q('l-valor'), document.activeElement && document.activeElement.id);
+      ok('a despesa comeca sem categoria, e a forma fica em "Mais detalhes", fechado',
+         !q('l-categorias').querySelector('[aria-pressed="true"]') && q('l-mais').contains(q('l-forma')) && !q('l-mais').open && q('l-forma').value === '');
+      ok('as categorias de despesa, com "Aluguel do veículo", sao botoes com aria-pressed',
+         [...q('l-categorias').querySelectorAll('button.categoria[aria-pressed]')].map((b) => b.textContent).join('|') === Caixa.CATEGORIAS.despesa.map((c) => c.rotulo).join('|'));
+      ok('a data e o dia aberto no Caixa (hoje) e a hora e a de agora', q('l-data').value === hoje && /^\d{2}:\d{2}$/.test(q('l-hora').value));
+      q('l-valor').value = '86,00';
+      q('form-lancamento').requestSubmit(); await espera(200);
+      ok('sem categoria, pede para escolher e nao guarda', textoDe('erro-lancamento') === 'Escolha a categoria.'
+         && !q('tela-lancamento').hidden && (await listarLancamentos()).length === 0, textoDe('erro-lancamento'));
+      ok('a frase aparece logo abaixo das categorias, e o teclado desce', q('erro-lancamento').previousElementSibling === q('l-categorias')
+         && document.activeElement !== q('l-valor'));
+      categoria('combustivel').click();
+      ok('combustivel mostra "Litros (opcional)"', visivel('campo-l-litros') && categoria('combustivel').getAttribute('aria-pressed') === 'true'
+         && q('campo-l-litros').textContent.includes('Litros (opcional)'));
+      categoria('pedagio').click();
+      ok('outra categoria esconde os litros e so ela fica marcada', !visivel('campo-l-litros')
+         && q('l-categorias').querySelectorAll('[aria-pressed="true"]').length === 1);
+      categoria('combustivel').click();
+      for (const [valor, trecho] of [['', 'Informe o valor.'], ['0', 'maior que zero'], ['12abc34', 'só o número'], ['100000', 'Valor acima do limite.']]) {
+        q('l-valor').value = valor;
+        q('form-lancamento').requestSubmit(); await espera(150);
+        ok(`valor "${valor}" nao e guardado, e a frase fala de valor, nao de corrida`, textoDe('erro-lancamento').includes(trecho)
+           && !textoDe('erro-lancamento').includes('corrida') && (await listarLancamentos()).length === 0, textoDe('erro-lancamento'));
+      }
+      ok('o erro do valor fica logo abaixo do campo, com o foco nele (a vista com o teclado aberto)',
+         q('erro-lancamento').previousElementSibling === q('l-valor') && document.activeElement === q('l-valor'));
+      q('l-valor').value = '86,00'; q('l-litros').value = '30,5 l';
+      q('form-lancamento').requestSubmit(); await espera(150);
+      ok('litros que nao sao numero nao passam', textoDe('erro-lancamento').startsWith('Litros:') && (await listarLancamentos()).length === 0);
+      q('l-litros').value = '30,5';
+      q('form-lancamento').requestSubmit(); q('form-lancamento').requestSubmit(); await espera(500);
+      let meus = await listarLancamentos();
+      const despesa = meus[0] || {};
+      ok('salvar guarda uma despesa so (toque duplo nao duplica), com os litros', meus.length === 1 && despesa.tipo === 'despesa'
+         && despesa.categoria === 'combustivel' && despesa.centavos === 8600 && despesa.litros === '30.5' && despesa.versao === 1
+         && despesa.data === hoje && despesa.dono === 'web-motorista', JSON.stringify(meus));
+      const linhaDa = (id) => { const item = itemDa(id); return item ? item.textContent.replace(/\s+/g, ' ').trim() : ''; };
+      ok('e volta ao Caixa com a despesa na lista: "Combustível", "30,5 litros" embaixo e "− 86,00"', !q('tela-caixa').hidden
+         && itemDa(despesa.id).querySelector('.caixa-item-titulo').textContent === 'Combustível'
+         && itemDa(despesa.id).querySelector('.caixa-item-detalhe').textContent === '30,5 litros' && linhaDa(despesa.id).includes('− 86,00'),
+         linhaDa(despesa.id));
+      ok('liquido negativo em coral: "−R$ 86,00"', textoDe('caixa-liquido') === '−R$ 86,00' && q('caixa-liquido').classList.contains('valor-despesa')
+         && textoDe('caixa-despesas') === '− R$ 86,00' && textoDe('caixa-n-despesas') === '1 lançamento', textoDe('caixa-liquido'));
+
+      // ── Lancamento: receita ──
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('"+ Lançamento" abre a receita com "Corrida" marcada, o foco no valor e a forma a vista (Pix na primeira vez)',
+         q('tipo-receita').getAttribute('aria-checked') === 'true' && categoria('corrida').getAttribute('aria-pressed') === 'true'
+         && q('lugar-forma-receita').contains(q('l-forma')) && visivel('l-forma') && q('l-forma').value === 'Pix'
+         && document.activeElement === q('l-valor') && textoDe('titulo-lancamento') === 'Novo lançamento');
+      ok('as categorias de receita', [...q('l-categorias').querySelectorAll('.categoria')].map((b) => b.textContent).join('|') === 'Corrida|Aplicativo|Gorjeta|Outra');
+      categoria('aplicativo').click(); q('l-forma').value = 'Aplicativo'; q('l-valor').value = '9,00';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const doApp = (await listarLancamentos()).find((x) => x.categoria === 'aplicativo') || {};
+      ok('a forma igual a categoria nao se repete na lista ("Aplicativo", e nao "Aplicativo · Aplicativo")',
+         !!itemDa(doApp.id) && itemDa(doApp.id).querySelector('.caixa-item-titulo').textContent === 'Aplicativo');
+      await apagarLancamento(doApp.id); await abrirCaixa();
+      clicar('btn-caixa-lancamento'); await espera(100);
+      q('l-valor').value = '58'; q('l-forma').value = 'Dinheiro';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      ok('a receita entra com "+", em verde, e o liquido muda', textoDe('caixa-lista').includes('Corrida · Dinheiro') && textoDe('caixa-lista').includes('+ 58,00')
+         && textoDe('caixa-receitas') === '+ R$ 58,00' && textoDe('caixa-liquido') === '−R$ 28,00'
+         && q('caixa-lista').querySelector('.caixa-item-valor.valor-receita') !== null, textoDe('caixa-liquido'));
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('a receita seguinte comeca com a ultima forma usada', q('l-forma').value === 'Dinheiro');
+      clicar('tipo-despesa'); await espera(50);
+      ok('trocar para despesa: categoria limpa e a forma vai para "Mais detalhes" (o titulo continua "Novo lançamento")', !q('l-categorias').querySelector('[aria-pressed="true"]')
+         && q('l-mais').contains(q('l-forma')) && textoDe('titulo-lancamento') === 'Novo lançamento');
+      clicar('btn-fechar-lancamento'); await espera(300);
+      ok('Cancelar volta ao Caixa sem guardar nada', !q('tela-caixa').hidden && (await listarLancamentos()).filter((x) => !x.apagado).length === 2);
+
+      // ── Recibos entram sozinhos ──
+      await irParaEmitir(); await espera(100);
+      q('passageiro').value = ''; q('origem').value = 'Centro'; q('destino').value = 'Aeroporto'; q('valor').value = 'R$ 45,00';
+      q('form-recibo').requestSubmit(); await espera(1200);
+      const emitido = (await listarRecibos()).find((x) => x.dados.origem === 'Centro') || {};
+      await abrirCaixa();
+      ok('o recibo emitido entra no Caixa como receita, com a rota embaixo', !!(await buscarLancamento('r-' + emitido.rid))
+         && !!itemDa('r-' + emitido.rid) && textoDe('caixa-lista').includes('Centro → Aeroporto') && textoDe('caixa-lista').includes('+ 45,00'));
+      await salvarRecibo({ rid: 'C0000000000001', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista', motorista: retrato,
+        dados: { rid: 'C0000000000001', origem: 'Rodoviária', destino: 'Hotel', valor: '1 500,00', valor_exibido: '1.500,00', data: hoje, hora: '06:10', forma_pagamento: 'Pix' } });
+      await abrirCaixa();
+      ok('abrir o Caixa traz o recibo que ainda nao estava nele (sem moeda: a de agora)', !!itemDa('r-C0000000000001')
+         && textoDe('caixa-lista').includes('+ 1.500,00') && ((await buscarLancamento('r-C0000000000001')) || {}).centavos === 150000);
+      const ordem = [...q('caixa-lista').querySelectorAll('.caixa-item-hora')].map((x) => x.textContent).filter(Boolean);
+      ok('a lista do dia vai do mais recente para o mais antigo', ordem.join() === [...ordem].sort().reverse().join(), ordem.join());
+
+      // ── Editar e apagar ──
+      itemDa(despesa.id).click(); await espera(300);
+      ok('tocar na despesa abre para editar, preenchida, com "Apagar lançamento"', !q('tela-lancamento').hidden
+         && textoDe('titulo-lancamento') === 'Editar despesa' && q('l-valor').value === '86,00' && q('l-litros').value === '30,5'
+         && categoria('combustivel').getAttribute('aria-pressed') === 'true' && visivel('btn-apagar-lancamento') && q('l-recusado').hidden
+         && document.activeElement !== q('l-valor'));
+      q('l-valor').value = '90,00';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const editada = await buscarLancamento(despesa.id);
+      ok('editar sobe a versao e a lista mostra o valor novo', editada.versao === 2 && editada.centavos === 9000 && editada.litros === '30.5'
+         && textoDe('caixa-lista').includes('− 90,00') && !textoDe('caixa-lista').includes('− 86,00'), JSON.stringify(editada));
+
+      itemDa('r-' + emitido.rid).click(); await espera(400);
+      const diaMes = `${hoje.slice(8, 10)}/${hoje.slice(5, 7)}`;
+      ok('a receita do recibo diz de qual recibo veio, e que mudar o valor aqui nao muda o recibo',
+         visivel('btn-l-recibo') && textoDe('btn-l-recibo') === `Do recibo de ${diaMes} às ${emitido.dados.hora} ›` && visivel('l-dica-recibo')
+         && textoDe('l-dica-recibo') === 'Mudar o valor aqui não muda o recibo.', textoDe('btn-l-recibo'));
+      ok('a receita do recibo nao vira despesa: o segmento "Despesa" fica desligado', q('tipo-despesa').disabled && !q('tipo-receita').disabled);
+      clicar('tipo-despesa'); await espera(50);
+      ok('e o toque nele nao troca o tipo', q('tipo-receita').getAttribute('aria-checked') === 'true' && textoDe('titulo-lancamento') === 'Editar receita'
+         && categoria('corrida').getAttribute('aria-pressed') === 'true');
+      clicar('btn-l-recibo'); await espera(400);
+      ok('a linha abre o recibo, com "Voltar ao caixa"', !q('tela-recibo').hidden && q('btn-compartilhar').dataset.rid === emitido.rid
+         && visivel('btn-voltar-caixa') && q('btn-voltar-historico').hidden);
+      clicar('btn-voltar-caixa'); await espera(300);
+      ok('"Voltar ao caixa" volta ao Caixa', !q('tela-caixa').hidden);
+      itemDa('r-' + emitido.rid).click(); await espera(300);
+      clicar('btn-l-recibo'); await espera(300);
+      ok('o voltar do Android no recibo aberto pelo lancamento tambem volta ao Caixa', voltarUmNivel() === true && !q('tela-caixa').hidden);
+      await espera(300);
+      // O mesmo recibo, aberto pelo historico, nao ganha o "Voltar ao caixa".
+      abrirRecibo(emitido, { doHistorico: true });
+      ok('pelo historico, o recibo nao mostra "Voltar ao caixa"', q('btn-voltar-caixa').hidden && !q('btn-voltar-historico').hidden);
+      await abrirCaixa();
+
+      itemDa(despesa.id).click(); await espera(300);
+      clicar('btn-apagar-lancamento'); await espera(100);
+      ok('apagar: o primeiro toque so arma ("Toque de novo para apagar")', textoDe('btn-apagar-lancamento') === 'Toque de novo para apagar'
+         && !q('tela-lancamento').hidden && !(await buscarLancamento(despesa.id)).apagado);
+      await espera(4300);
+      ok('apagar: depois de 4 s, desarma sozinho', textoDe('btn-apagar-lancamento') === 'Apagar lançamento');
+      clicar('btn-apagar-lancamento'); await espera(100);
+      clicar('btn-apagar-lancamento'); await espera(400);
+      const tumulo = await buscarLancamento(despesa.id);
+      ok('apagar: o segundo toque vira tumulo (versao + 1, na fila) e volta ao Caixa', tumulo.apagado === true && tumulo.versao === 3
+         && !q('tela-caixa').hidden, JSON.stringify(tumulo));
+      ok('o apagado some da lista e dos totais', !itemDa(despesa.id) && textoDe('caixa-despesas') === 'R$ 0,00'
+         && textoDe('caixa-n-despesas') === '0 lançamentos', textoDe('caixa-despesas'));
+
+      // Recusado pelo servidor: uma linha discreta no detalhe.
+      await guardarVarios([lanc('l-recusado1', { tipo: 'receita', categoria: 'gorjeta', centavos: 700, data: hoje, hora: '13:00' }, { recusado: 'categoria_invalida' })]);
+      await abrirCaixa();
+      itemDa('l-recusado1').click(); await espera(300);
+      ok('lancamento recusado: "A cópia deste lançamento não foi guardada no servidor."', visivel('l-recusado')
+         && textoDe('l-recusado') === 'A cópia deste lançamento não foi guardada no servidor.');
+      clicar('btn-fechar-lancamento'); await espera(300);
+
+      // O que o motorista escreveu entra como texto.
+      await guardarVarios([lanc('l-xss', { tipo: 'despesa', categoria: 'outra_despesa', centavos: 100, data: hoje, hora: '13:30',
+        obs: '<img src=x onerror="window.__xss=1">', forma: '<b>Pix</b>' })]);
+      await abrirCaixa(); await espera(200);
+      ok('observacao e forma entram como texto, nunca como HTML', !q('caixa-lista').querySelector('img, b')
+         && textoDe('caixa-lista').includes('<img src=x') && !window.__xss);
+
+      // Tocar em "Despesa" sem querer e voltar a "Receita" devolve a categoria
+      // que estava marcada (antes voltava "Corrida", e o Salvar gravava a troca).
+      await guardarVarios([lanc('l-gorjeta', { tipo: 'receita', categoria: 'gorjeta', centavos: 1000, data: hoje, hora: '14:05' })]);
+      await abrirCaixa();
+      itemDa('l-gorjeta').click(); await espera(300);
+      ok('lancamento a mao: os dois segmentos ficam ligados (o tipo pode mudar)', !q('tipo-receita').disabled && !q('tipo-despesa').disabled);
+      clicar('tipo-despesa'); await espera(50);
+      clicar('tipo-receita'); await espera(50);
+      ok('editar: ida e volta entre os tipos devolve a categoria (Gorjeta), e nao "Corrida"', categoria('gorjeta').getAttribute('aria-pressed') === 'true'
+         && q('l-categorias').querySelectorAll('[aria-pressed="true"]').length === 1);
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const gorjetaSalva = await buscarLancamento('l-gorjeta');
+      ok('e o Salvar guarda a gorjeta como gorjeta', gorjetaSalva.categoria === 'gorjeta' && gorjetaSalva.tipo === 'receita' && gorjetaSalva.versao === 2,
+         JSON.stringify(gorjetaSalva));
+      clicar('btn-caixa-lancamento'); await espera(100);
+      categoria('gorjeta').click(); clicar('tipo-despesa'); await espera(50);
+      categoria('combustivel').click(); clicar('tipo-receita'); await espera(50);
+      const naReceita = categoria('gorjeta').getAttribute('aria-pressed') === 'true';
+      clicar('tipo-despesa'); await espera(50);
+      ok('lancamento novo: cada tipo guarda a categoria escolhida nele enquanto a tela esta aberta', naReceita
+         && categoria('combustivel').getAttribute('aria-pressed') === 'true' && visivel('campo-l-litros'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+
+      // ── Meta do dia ──
+      clicar('btn-definir-meta'); await espera(100);
+      ok('"Definir meta do dia" abre o campo com o foco, sem "Remover"', visivel('form-meta') && document.activeElement === q('meta-valor')
+         && q('btn-remover-meta').hidden && !visivel('btn-definir-meta'));
+      q('meta-valor').value = 'abc'; q('form-meta').requestSubmit(); await espera(100);
+      ok('meta que nao e valor explica e nao guarda', visivel('erro-meta') && metaDoDia() === null);
+      const diaAgora = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'BRL');
+      const alvo = diaAgora.liquido + 25000;
+      q('meta-valor').value = Caixa.formatar(alvo, 2); q('form-meta').requestSubmit(); await espera(300);
+      const parteDaMeta = Math.round(Math.max(0, diaAgora.liquido) / alvo * 100);
+      ok('com meta: barra em ambar e "Faltam R$ 250,00"', visivel('meta-com') && !visivel('form-meta') && metaDoDia() === alvo
+         && textoDe('btn-mudar-meta') === `meta ${reais(alvo)}` && textoDe('meta-texto') === 'Faltam R$ 250,00'
+         && q('meta-barra').getAttribute('aria-valuenow') === String(parteDaMeta) && q('meta-preenchida').style.width === `${parteDaMeta}%`
+         && getComputedStyle(q('meta-preenchida')).backgroundColor === 'rgb(255, 197, 49)', textoDe('meta-texto'));
+      clicar('btn-mudar-meta'); await espera(100);
+      ok('tocar na meta abre o campo preenchido, agora com "Remover meta"', q('meta-valor').value === Caixa.formatar(alvo, 2) && visivel('btn-remover-meta'));
+      q('meta-valor').value = Caixa.formatar(diaAgora.liquido - 1000, 2); q('form-meta').requestSubmit(); await espera(300);
+      ok('meta batida: "Meta batida! + R$ 10,00", em verde', textoDe('meta-texto') === 'Meta batida! + R$ 10,00'
+         && getComputedStyle(q('meta-texto')).color === 'rgb(91, 214, 138)', textoDe('meta-texto'));
+      ok('a meta fica neste aparelho, por motorista, em centavos', Guardado.get('caixa_meta:web-motorista') === diaAgora.liquido - 1000);
+      clicar('btn-mudar-meta'); await espera(100);
+      clicar('btn-remover-meta'); await espera(300);
+      ok('remover a meta volta ao "Definir meta do dia"', visivel('btn-definir-meta') && !visivel('meta-com') && metaDoDia() === null);
+
+      // ── Dias ──
+      const ontemTravado = Caixa.mesDe(ontem) !== mesAtual;   // hoje e dia 1: ontem e do mes passado
+      await guardarVarios([lanc('l-ontem', { tipo: 'receita', categoria: 'corrida', centavos: 3000, data: ontem, hora: '10:00', forma: 'Pix' })]);
+      await abrirCaixa();
+      ok('o lancamento de ontem nao aparece hoje', !itemDa('l-ontem'));
+      clicar('btn-dia-anterior'); await espera(300);
+      ok('‹ vai para ontem e liga a seta da direita', textoDe('caixa-dia-titulo').startsWith('Ontem, ') && !q('btn-dia-seguinte').disabled);
+      if (!ontemTravado) {
+        ok('ontem: "líquido de ontem" e o lancamento de ontem', textoDe('caixa-liquido-rotulo') === 'líquido de ontem' && !!itemDa('l-ontem')
+           && textoDe('caixa-liquido') === 'R$ 30,00');
+        clicar('btn-caixa-lancamento'); await espera(100);
+        ok('lancar a partir de ontem: a data e ontem e a hora fica vazia', q('l-data').value === ontem && q('l-hora').value === '');
+        clicar('btn-fechar-lancamento'); await espera(300);
+        ok('Cancelar volta para o mesmo dia', textoDe('caixa-dia-titulo').startsWith('Ontem, '));
+      }
+      clicar('btn-dia-seguinte'); await espera(300);
+      ok('› volta para hoje e desliga de novo', textoDe('caixa-dia-titulo').startsWith('Hoje, ') && q('btn-dia-seguinte').disabled);
+      // Toques mais rapidos que a leitura do banco (aparelho lento, com meses
+      // de lancamentos): os cliques seguidos, na mesma tarefa, nao deixam
+      // nenhum desenho terminar entre eles, seja qual for a velocidade desta
+      // maquina. O toque que chegava a hoje guardava so o '' do diaDoCaixa, e
+      // o seguinte partia do dia desenhado antes de todos: o terceiro "›"
+      // voltava a ontem, e o "‹" logo depois do "›" ia a anteontem.
+      await abrirCaixa(Caixa.somarDias(hoje, -2));
+      clicar('btn-dia-seguinte'); clicar('btn-dia-seguinte'); clicar('btn-dia-seguinte'); await espera(300);
+      ok('tres "›" rapidos de anteontem param em hoje, e nao voltam a ontem', textoDe('caixa-dia-titulo').startsWith('Hoje, ')
+         && q('btn-dia-seguinte').disabled, textoDe('caixa-dia-titulo'));
+      await abrirCaixa(ontem);
+      clicar('btn-dia-seguinte'); clicar('btn-dia-anterior'); await espera(300);
+      ok('"›" e logo "‹" a partir de ontem voltam a ontem, e nao a anteontem', textoDe('caixa-dia-titulo').startsWith('Ontem, '),
+         textoDe('caixa-dia-titulo'));
+      await abrirCaixa(Caixa.somarDias(hoje, -6));
+      for (let i = 0; i < 7; i++) clicar('btn-dia-seguinte');
+      await espera(300);
+      ok('sete "›" rapidos de seis dias atras param em hoje', textoDe('caixa-dia-titulo').startsWith('Hoje, '), textoDe('caixa-dia-titulo'));
+      await abrirCaixa();
+
+      // ── Mes ──
+      const doMes = Caixa.resumoDoMes(await listarLancamentos(), mesAtual, 'BRL');
+      ok('o cartao do mes: nome, liquido e dias trabalhados', textoDe('caixa-mes-nome') === nomeDoMesComMaiuscula(mesAtual)
+         && textoDe('caixa-mes-liquido') === `Líquido ${reais(doMes.liquido)}`
+         && textoDe('caixa-mes-dias') === `${doMes.diasTrabalhados} ${doMes.diasTrabalhados === 1 ? 'dia trabalhado' : 'dias trabalhados'} · ${reais(doMes.mediaPorDia)}/dia`,
+         `${textoDe('caixa-mes-liquido')} / ${textoDe('caixa-mes-dias')}`);
+      clicar('btn-abrir-mes'); await espera(400);
+      ok('o mes: liquido, receitas, despesas e media, com a seta da direita desligada', !q('tela-caixa-mes').hidden
+         && textoDe('mes-titulo') === nomeDoMesComMaiuscula(mesAtual) && textoDe('mes-liquido') === reais(doMes.liquido)
+         && textoDe('mes-receitas') === `+ ${reais(doMes.receitas)}` && textoDe('mes-media').includes(`média de ${reais(doMes.mediaPorDia)} por dia`)
+         && q('btn-mes-seguinte').disabled, `${textoDe('mes-liquido')} / ${textoDe('mes-media')}`);
+      const corrida = doMes.porCategoria.receita.find((c) => c.categoria === 'corrida');
+      ok('receitas e despesas por categoria, com o valor e a parte do total', textoDe('mes-cat-receitas').includes(`Corrida${reais(corrida.centavos)}${Math.round(corrida.parte * 100)}%`)
+         && textoDe('mes-cat-despesas').includes('Outra') && !visivel('mes-vazio'), textoDe('mes-cat-receitas'));
+      // O mes do taxista e quase so corrida: R$ 6.000,00 de corrida e R$ 20,00
+      // de gorjeta. A corrida (99,7%) nao pode dizer "100%" com a gorjeta logo
+      // abaixo, nem a barra dela ficar igual a de quem e o total inteiro.
+      const linhaDaParte = (centavos, total) => {
+        const linha = linhaDeCategoria({ rotulo: 'X', centavos, parte: centavos / total }, 'receita', moedaDoCaixa());
+        return [linha.querySelector('.caixa-categoria-parte').textContent, linha.querySelector('.caixa-categoria-barra span').style.width];
+      };
+      const partesNaTela = [linhaDaParte(600000, 602000), linhaDaParte(2000, 602000), linhaDaParte(4500, 4500), linhaDaParte(50500, 100000)];
+      ok('a parte de 99,7% ao lado de outra categoria e ">99%" (barra pela fracao), a de 0,3% e "<1%", e so a unica categoria e "100%"',
+         JSON.stringify(partesNaTela) === JSON.stringify([['>99%', '99.7%'], ['<1%', '1%'], ['100%', '100%'], ['51%', '50.5%']]), JSON.stringify(partesNaTela));
+      const diasNaTela = [...q('mes-dias').querySelectorAll('.caixa-dia-item')].map((b) => b.dataset.dia);
+      ok('a lista de dias, do mais recente para o mais antigo', diasNaTela.join() === doMes.porDia.map((d) => d.data).join() && diasNaTela[0] === hoje, diasNaTela.join());
+      ok('voltar do Android: mes -> dia que estava aberto', voltarUmNivel() === true && !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Hoje, '));
+      await espera(300);
+      if (!ontemTravado) {
+        clicar('btn-dia-anterior'); await espera(300);
+        clicar('btn-abrir-mes'); await espera(300);
+        clicar('btn-fechar-mes'); await espera(300);
+        ok('"Voltar" do mes volta ao dia que estava aberto (ontem), e nao a hoje', !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Ontem, '));
+        clicar('btn-abrir-mes'); await espera(300);
+        q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${hoje}"]`).click(); await espera(300);
+        ok('tocar num dia da lista abre o dia', !q('tela-caixa').hidden && textoDe('caixa-dia-titulo').startsWith('Hoje, '));
+      }
+
+      // ── Data adiante ──
+      // O formulario vai so ate hoje: amanha sumia do dia que ele olhava.
+      await abrirCaixa();
+      lancarDespesa(); await espera(100);
+      ok('a data do lancamento vai ate hoje (o calendario nao oferece amanha)', q('l-data').max === hoje);
+      q('l-valor').value = '10,00'; categoria('pedagio').click(); q('l-data').value = Caixa.somarDias(hoje, 1);
+      q('form-lancamento').requestSubmit(); await espera(300);
+      ok('lancamento com data de amanha nao e guardado, e a frase diz ate quando vale', textoDe('erro-lancamento') === 'Confira a data: vale de 2000 até hoje.'
+         && !q('tela-lancamento').hidden && !(await listarLancamentos()).some((x) => x.data > hoje), textoDe('erro-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+      // O recibo nao tem esse limite: a receita do recibo com a data errada para
+      // a frente fica no dia dela, e o Caixa vai ate la (antes, nenhuma tela chegava).
+      const adiante = Caixa.somarDias(hoje, 3);
+      await guardarVarios([lanc('l-adiante', { tipo: 'receita', categoria: 'corrida', centavos: 4700, data: adiante, hora: '09:00', forma: 'Pix' })]);
+      await abrirCaixa();
+      ok('com um lancamento de data adiante, a seta da direita de hoje liga', !q('btn-dia-seguinte').disabled);
+      // E os toques rapidos passam por hoje sem parar nele (ver os toques
+      // rapidos em "Dias"): o segundo "›" partia de ontem de novo.
+      await abrirCaixa(ontem);
+      clicar('btn-dia-seguinte'); clicar('btn-dia-seguinte'); await espera(300);
+      ok('com ele, dois "›" rapidos de ontem passam por hoje e chegam a amanha',
+         textoDe('caixa-dia-titulo') === tituloDoDia(Caixa.somarDias(hoje, 1), hoje), textoDe('caixa-dia-titulo'));
+      await abrirMesDoCaixa(Caixa.mesDe(adiante));
+      const linhaAdiante = q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${adiante}"]`);
+      ok('o mes do lancamento adiante abre, com a linha do dia dele', textoDe('mes-titulo') === nomeDoMesComMaiuscula(Caixa.mesDe(adiante)) && !!linhaAdiante
+         && q('btn-mes-seguinte').disabled, textoDe('mes-titulo'));
+      if (linhaAdiante) linhaAdiante.click();
+      await espera(300);
+      ok('a linha do dia no mes abre aquele dia (e nao hoje), com o lancamento, e para ali', !q('tela-caixa').hidden
+         && textoDe('caixa-dia-titulo') === tituloDoDia(adiante, hoje) && !!itemDa('l-adiante') && q('btn-dia-seguinte').disabled, textoDe('caixa-dia-titulo'));
+      // A receita de um recibo com a data adiante (o recibo nao tem teto, e o
+      // servidor tambem a aceita): corrigir o valor nao obriga a trocar o dia.
+      const diaDoReciboAdiante = Caixa.somarDias(hoje, 2);
+      const reciboAdiante = { rid: 'E0000000000001', criado_em: new Date().toISOString(), pendente: false, url: 'x', dono: 'web-motorista', motorista: retrato,
+        dados: { rid: 'E0000000000001', origem: 'Centro', destino: 'Aeroporto', valor: '80,00', valor_exibido: '80,00', moeda: 'BRL',
+                 data: diaDoReciboAdiante, hora: '10:00', forma_pagamento: 'Pix' } };
+      await salvarRecibo(reciboAdiante);
+      await lancarReciboNoCaixa(reciboAdiante);
+      await abrirCaixa(diaDoReciboAdiante);
+      itemDa('r-E0000000000001').click(); await espera(300);
+      ok('a receita do recibo com data adiante abre com o calendario indo ate a data dela', q('l-data').value === diaDoReciboAdiante
+         && q('l-data').max === diaDoReciboAdiante, `${q('l-data').value} max ${q('l-data').max}`);
+      q('l-valor').value = '85,00';
+      q('form-lancamento').requestSubmit(); await espera(400);
+      const reciboAdianteSalvo = (await buscarLancamento('r-E0000000000001')) || {};
+      ok('e o Salvar guarda o valor novo no mesmo dia, sem erro, e volta para ele', reciboAdianteSalvo.centavos === 8500
+         && reciboAdianteSalvo.data === diaDoReciboAdiante && reciboAdianteSalvo.versao === 2 && !q('tela-caixa').hidden
+         && textoDe('caixa-dia-titulo') === tituloDoDia(diaDoReciboAdiante, hoje), `${JSON.stringify(reciboAdianteSalvo)} ${textoDe('erro-lancamento')}`);
+      lancarDespesa(); await espera(100);
+      ok('a despesa a mao, aberta nesse dia adiante, continua indo so ate hoje', q('l-data').value === hoje && q('l-data').max === hoje,
+         `${q('l-data').value} max ${q('l-data').max}`);
+      clicar('btn-fechar-lancamento'); await espera(300);
+      await apagarLancamento('r-E0000000000001');
+      await naLoja('recibos', (tx) => tx.objectStore('recibos').delete('E0000000000001'));
+      await apagarLancamento('l-adiante');
+      await abrirCaixa();
+      ok('sem lancamento adiante, a seta da direita de hoje desliga de novo', q('btn-dia-seguinte').disabled);
+
+      // ── Gratis e Pro ──
+      const diaPassado = `${mesPassado}-15`;
+      await guardarVarios([lanc('l-passado1', { tipo: 'receita', categoria: 'corrida', centavos: 420000, data: diaPassado, hora: '09:00', forma: 'Pix' }),
+                           lanc('l-passado2', { tipo: 'despesa', categoria: 'aluguel_veiculo', centavos: 33000, data: diaPassado, hora: '08:00' })]);
+      await abrirCaixa(diaPassado);
+      // No dia 1º o l-ontem (R$ 30,00) cai no mes passado e entra na conta dele.
+      const liquidoPassado = ontemTravado ? 'R$ 3.900,00' : 'R$ 3.870,00';
+      const isca = `${nomeCurtoDoMes(mesPassado, mesAtual)} fechou com ${liquidoPassado} de líquido.`;
+      ok('Gratis: dia de mes anterior mostra o bloqueio com o total do mes, sem o dia nem os lancamentos',
+         visivel('caixa-bloqueio') && textoDe('caixa-bloqueio').includes('Os meses anteriores ficam no Pro.') && textoDe('caixa-bloqueio').includes(isca)
+         && !visivel('caixa-dia') && !visivel('btn-abrir-mes') && !q('tela-caixa').innerText.includes('4.200,00'), textoDe('caixa-bloqueio'));
+      // A nota promete so o que a fase 1 cumpre: o historico volta ao assinar
+      // NESTE aparelho (trazer do servidor para outro e da fase 2), e so
+      // aparece quando o mes travado tem lancamento.
+      const notaGuardados = (bloco) => q(bloco).querySelector('.caixa-bloqueio-guardados');
+      const notaAVista = (bloco) => !notaGuardados(bloco).hidden && !notaGuardados(bloco).closest('[hidden]');
+      const textoDaNota = 'Seus lançamentos continuam guardados neste aparelho: ao assinar, o histórico aparece inteiro.';
+      ok('Gratis: com lancamento no mes travado, a nota diz que ele continua guardado neste aparelho', notaAVista('caixa-bloqueio')
+         && notaGuardados('caixa-bloqueio').textContent === textoDaNota, notaGuardados('caixa-bloqueio').textContent);
+      ok('o mes da isca sem o ano quando e o mesmo ano', mesPassado.slice(0, 4) !== mesAtual.slice(0, 4) || !/ de \d{4} fechou/.test(isca));
+      clicar('btn-caixa-pro'); await espera(300);
+      ok('"Conhecer o Pro" abre a assinatura com o motivo do caixa', !q('tela-assinatura').hidden
+         && textoDe('motivo-pro') === 'O Pro mostra os meses anteriores do seu caixa.');
+      clicar('btn-fechar-pro'); await espera(400);
+      ok('"Agora não" volta ao Caixa, no mesmo dia', !q('tela-caixa').hidden && visivel('caixa-bloqueio'));
+      // O formulario do Gratis nao lanca em mes anterior: o lancamento ia direto
+      // para o bloqueio, sem como corrigir nem apagar.
+      await abrirCaixa();
+      lancarDespesa(); await espera(100);
+      ok('Gratis: a data do lancamento vai do dia 1 deste mes ate hoje', q('l-data').min === `${mesAtual}-01` && q('l-data').max === hoje,
+         `${q('l-data').min} ${q('l-data').max}`);
+      q('l-valor').value = '12,00'; categoria('pedagio').click(); q('l-data').value = `${mesPassado}-28`;
+      q('form-lancamento').requestSubmit(); await espera(300);
+      ok('Gratis: lancar com data do mes anterior explica, sob a data, e nao guarda',
+         textoDe('erro-lancamento') === `No plano Grátis, o caixa mostra só este mês: escolha um dia de ${Caixa.nomeDoMes(mesAtual).replace(/ de \d{4}$/, '')}.`
+         && q('l-mais').open && !q('tela-lancamento').hidden
+         // So o pedagio recusado: em 1o de marco de ano comum, o l-ontem tambem e do dia 28.
+         && !(await listarLancamentos()).some((x) => x.data === `${mesPassado}-28` && x.categoria === 'pedagio' && x.centavos === 1200), textoDe('erro-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+      await abrirMesDoCaixa(mesPassado);
+      ok('Gratis: o mes anterior mostra o total como isca e o convite, sem dias nem categorias', visivel('mes-bloqueio') && !visivel('mes-conteudo')
+         && textoDe('mes-bloqueio').includes(isca) && !q('tela-caixa-mes').innerText.includes('Aluguel'));
+      ok('Gratis: no mes travado com lancamento, a nota de que continua guardado neste aparelho', notaAVista('mes-bloqueio')
+         && notaGuardados('mes-bloqueio').textContent === textoDaNota);
+      const mesSemNada = Caixa.mesAnterior(mesPassado);
+      await abrirMesDoCaixa(mesSemNada);
+      const nomeSemNada = nomeCurtoDoMes(mesSemNada, mesAtual);
+      ok('Gratis: mes travado sem lancamento nenhum diz so que nao ha, sem prometer historico', visivel('mes-bloqueio')
+         && textoDe('mes-bloqueio').includes(`Nenhum lançamento em ${nomeSemNada.charAt(0).toLowerCase()}${nomeSemNada.slice(1)}.`)
+         && !notaAVista('mes-bloqueio'), textoDe('mes-bloqueio'));
+      await abrirMesDoCaixa(mesPassado);
+      clicar('btn-mes-seguinte'); await espera(300);
+      ok('› do mes volta ao mes atual, liberado', !visivel('mes-bloqueio') && visivel('mes-conteudo') && q('btn-mes-seguinte').disabled);
+      clicar('btn-mes-anterior'); await espera(300);
+      window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
+      await atualizarSessao(); await espera(400);
+      ok('virou Pro com o mes na tela: destrava sozinho, com categorias e dias', !visivel('mes-bloqueio') && visivel('mes-conteudo')
+         && textoDe('mes-liquido') === liquidoPassado && textoDe('mes-cat-despesas').includes('Aluguel do veículo')
+         && !!q('mes-dias').querySelector(`.caixa-dia-item[data-dia="${diaPassado}"]`), textoDe('mes-liquido'));
+      await abrirCaixa(diaPassado);
+      ok('Pro: o dia do mes anterior mostra os lancamentos', !visivel('caixa-bloqueio') && !!itemDa('l-passado1') && visivel('btn-abrir-mes'));
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('Pro: o lancamento pode ter data de mes anterior', q('l-data').min === '2000-01-01' && q('l-data').value === diaPassado);
+      clicar('btn-fechar-lancamento'); await espera(300);
+      window.__sessao = sessaoGratis;
+      await atualizarSessao(); await espera(400);
+      ok('de volta ao Gratis, o dia do mes anterior trava de novo', visivel('caixa-bloqueio') && !visivel('caixa-dia'));
+
+      // ── Meia-noite e virada do mes (Gratis, relogio adiantado) ──
+      // O app e o caixa.js leem o Date global a cada conta: trocar o window.Date
+      // por um adiantado muda o "hoje" de tudo. O do teste e o ultimo dia deste
+      // mes as 23h59 e, depois, o dia 1 do seguinte. Volta ao de verdade no finally.
+      const DataDeVerdade = Date;
+      const relogioEm = (quando) => {
+        const desvio = new DataDeVerdade(quando).getTime() - DataDeVerdade.now();
+        window.Date = class extends DataDeVerdade {
+          constructor(...a) { if (a.length) super(...a); else super(DataDeVerdade.now() + desvio); }
+          static now() { return DataDeVerdade.now() + desvio; }
+        };
+      };
+      const diaUm = `${Caixa.mesSeguinte(mesAtual)}-01`;
+      const fimDoMes = Caixa.somarDias(diaUm, -1);
+      const doValor = async (centavos) => (await listarLancamentos()).find((x) => x.centavos === centavos && !x.apagado) || null;
+      const dataNaTela = () => `${q('l-data').value} ${q('l-data').min}..${q('l-data').max}`;
+      try {
+        // Tela acesa: o Caixa aberto em hoje as 23h59, e o "+ Lançamento" tocado
+        // depois da meia-noite (antes, ia para o dia que passou, sem hora).
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:00:10`);
+        clicar('btn-caixa-lancamento'); await espera(100);
+        ok('Caixa aberto em hoje antes da meia-noite: o "+ Lançamento" de depois dela vem no dia novo, com a hora de agora',
+           q('l-data').value === diaUm && /^00:0\d$/.test(q('l-hora').value) && dataNaTela() === `${diaUm} ${diaUm}..${diaUm}`,
+           `${dataNaTela()} ${q('l-hora').value}`);
+        clicar('btn-fechar-lancamento'); await espera(300);
+        ok('e o Cancelar volta ao Caixa no dia novo, como "Hoje", sem o bloqueio do Pro', !q('tela-caixa').hidden
+           && textoDe('caixa-dia-titulo') === tituloDoDia(diaUm, diaUm) && visivel('caixa-dia'), textoDe('caixa-dia-titulo'));
+        // Na tela que ficou desenhada de antes da meia-noite, o "‹" anda a
+        // partir do dia mostrado, e nao do hoje novo (que so mudava o titulo).
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:00:10`);
+        clicar('btn-dia-anterior'); await espera(300);
+        ok('na tela desenhada antes da meia-noite, o "‹" vai ao dia antes do mostrado (e nao ao proprio, renomeado "Ontem")',
+           textoDe('caixa-dia-titulo') === tituloDoDia(Caixa.somarDias(fimDoMes, -1), diaUm), textoDe('caixa-dia-titulo'));
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:00:10`);
+        clicar('btn-abrir-mes'); await espera(300);
+        ok('e o cartao do mes, tocado nessa tela, abre o mes que ele mostra', !q('tela-caixa-mes').hidden
+           && textoDe('mes-titulo') === nomeDoMesComMaiuscula(mesAtual), textoDe('mes-titulo'));
+        clicar('btn-fechar-mes'); await espera(300);
+
+        // O formulario aberto antes da meia-noite do ultimo dia do mes e o
+        // Salvar depois dela: no Gratis, o dia 30 ja e do mes travado.
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        lancarDespesa(); await espera(100);
+        const aoAbrir = dataNaTela();
+        q('l-valor').value = '23,00'; categoria('estacionamento').click();
+        relogioEm(`${diaUm}T00:00:10`);
+        q('form-lancamento').requestSubmit(); await espera(300);
+        const mesNovo = Caixa.nomeDoMes(Caixa.mesDe(diaUm)).replace(/ de \d{4}$/, '');
+        ok('Gratis, formulario aberto na virada do mes: o Salvar explica, e o calendario passa a oferecer o dia 1 do mes novo',
+           aoAbrir === `${fimDoMes} ${mesAtual}-01..${fimDoMes}` && q('l-mais').open && !(await doValor(2300))
+           && textoDe('erro-lancamento') === `No plano Grátis, o caixa mostra só este mês: escolha um dia de ${mesNovo}.`
+           && q('l-data').min === diaUm && q('l-data').max === diaUm, `${aoAbrir} | ${textoDe('erro-lancamento')} | ${dataNaTela()}`);
+        q('l-data').value = q('l-data').max; q('l-data').dispatchEvent(new Event('change'));
+        q('form-lancamento').requestSubmit(); await espera(400);
+        const naVirada = await doValor(2300);
+        ok('e com o dia que o calendario oferece, o Salvar guarda nele e volta ao Caixa em "Hoje"', !!naVirada && naVirada.data === diaUm
+           && !q('tela-caixa').hidden && textoDe('caixa-dia-titulo') === tituloDoDia(diaUm, diaUm) && visivel('caixa-dia'),
+           `${JSON.stringify(naVirada)} ${textoDe('caixa-dia-titulo')}`);
+        if (naVirada) await apagarLancamento(naVirada.id);
+
+        // Tocar na data com o formulario aberto desde antes da meia-noite: o
+        // calendario do sistema le o min e o max nessa hora.
+        relogioEm(`${fimDoMes}T23:59:50`);
+        await abrirCaixa();
+        clicar('btn-caixa-lancamento'); await espera(100);
+        relogioEm(`${diaUm}T00:00:10`);
+        q('l-mais').open = true; await espera(50);
+        clicar('l-data');
+        ok('tocar na data com o formulario aberto de um dia para o outro: o calendario vai ate o hoje novo, e a data escolhida fica',
+           dataNaTela() === `${fimDoMes} ${diaUm}..${diaUm}`, dataNaTela());
+        clicar('btn-fechar-lancamento'); await espera(300);
+
+        // Bloqueou as 23h50 com o Caixa em hoje e voltou depois da meia-noite,
+        // com rede: a sessao relida redesenha o Caixa (atualizarVitrines).
+        relogioEm(`${fimDoMes}T23:50:00`);
+        await abrirCaixa();
+        relogioEm(`${diaUm}T00:10:00`);
+        redesenharCaixaAberto(); await espera(300);
+        ok('Gratis, Caixa em hoje redesenhado depois da virada do mes: e o hoje novo, e nao o dia 30 travado como "Ontem"',
+           textoDe('caixa-dia-titulo') === tituloDoDia(diaUm, diaUm) && visivel('caixa-dia') && !visivel('caixa-bloqueio'), textoDe('caixa-dia-titulo'));
+        lancarDespesa(); await espera(100);
+        q('l-valor').value = '24,00'; categoria('estacionamento').click();
+        q('form-lancamento').requestSubmit(); await espera(400);
+        const depoisDaVolta = await doValor(2400);
+        irParaInicio(); await espera(300);
+        ok('e o lancamento vai para o dia novo, com a hora, e o cartao do inicio o conta', !!depoisDaVolta && depoisDaVolta.data === diaUm
+           && depoisDaVolta.hora === '00:10' && textoDe('caixa-inicio-valor') === '−R$ 24,00',
+           `${JSON.stringify(depoisDaVolta)} ${textoDe('caixa-inicio-valor')}`);
+        if (depoisDaVolta) await apagarLancamento(depoisDaVolta.id);
+      } finally {
+        window.Date = DataDeVerdade;
+      }
+      irParaInicio(); await espera(300);
+
+      // ── Lancamentos em outra moeda ──
+      // Ele corrigiu o pais no site (Argentina): a sessao traz o peso, e o que
+      // ja estava no caixa continua em reais, fora das contas (a nota diz
+      // quantos). Nenhum texto pode dizer que nao ha lancamento, e o lancamento
+      // em reais e editado em reais, com a moeda dele no rotulo.
+      const rotuloDoValor = () => document.querySelector('label[for="l-valor"]').textContent;
+      window.__sessao = { ...sessaoGratis, moeda: 'ARS', moeda_simbolo: '$', moeda_casas: 2, pais: 'AR', ddi: '54' };
+      try {
+        await atualizarSessao();
+        irParaInicio(); await espera(300);
+        const emReaisHoje = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'ARS').outrasMoedas;
+        ok('outra moeda: o cartao do inicio diz quantos lancamentos de hoje estao em outra moeda, e nao "Nenhum lançamento hoje"',
+           emReaisHoje > 0 && textoDe('caixa-inicio-valor') === `${plural(emReaisHoje, 'lançamento', 'lançamentos')} em outra moeda`
+           && q('caixa-inicio-linha').hidden, `${emReaisHoje} ${textoDe('caixa-inicio-valor')}`);
+        await abrirMesDoCaixa(mesAtual);
+        ok('outra moeda: o mes so com eles mostra a nota, sem "Nenhum lançamento neste mês."', visivel('mes-outras-moedas') && !visivel('mes-vazio'),
+           `${textoDe('mes-outras-moedas')} | vazio a vista: ${visivel('mes-vazio')}`);
+        await abrirMesDoCaixa(mesPassado);
+        const emReaisNoPassado = Caixa.resumoDoMes(await listarLancamentos(), mesPassado, 'ARS').outrasMoedas;
+        ok('outra moeda, Gratis: o mes travado diz quantos lancamentos ele tem, e que continuam guardados', emReaisNoPassado > 0
+           && textoDe('mes-bloqueio').includes(`${nomeCurtoDoMes(mesPassado, mesAtual)} tem ${plural(emReaisNoPassado, 'lançamento', 'lançamentos')} em outra moeda.`)
+           && !textoDe('mes-bloqueio').includes('Nenhum lançamento') && notaAVista('mes-bloqueio'), textoDe('mes-bloqueio'));
+        await abrirCaixa();
+        itemDa('l-gorjeta').click(); await espera(300);
+        const naEdicao = rotuloDoValor();
+        aplicarMoedaNaTela();   // a sessao relida com o formulario aberto (o menu, a volta ao app)
+        ok('outra moeda: o lancamento em reais e editado em reais, com o codigo da moeda no rotulo (o "$" serve a cinco moedas)',
+           naEdicao === 'Valor (BRL)' && rotuloDoValor() === 'Valor (BRL)' && q('l-valor').value === '10,00', `${naEdicao} | ${rotuloDoValor()}`);
+        clicar('btn-fechar-lancamento'); await espera(300);
+        clicar('btn-caixa-lancamento'); await espera(100);
+        ok('outra moeda: o lancamento novo e na moeda de agora', rotuloDoValor() === 'Valor ($)', rotuloDoValor());
+        clicar('btn-fechar-lancamento'); await espera(300);
+      } finally {
+        window.__sessao = { ...sessaoGratis, moeda: 'BRL', moeda_simbolo: 'R$', moeda_casas: 2, pais: 'BR', ddi: '55' };
+        await atualizarSessao();
+        window.__sessao = sessaoGratis;
+      }
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('de volta ao real, o lancamento novo e em reais de novo', moedaAtual().codigo === 'BRL' && rotuloDoValor() === 'Valor (R$)', rotuloDoValor());
+      clicar('btn-fechar-lancamento'); await espera(300);
+
+      // ── Fim da corrida ──
+      Guardado.set('tarifa', tarifa);
+      // A saida no dia de hoje: rodado logo depois da meia-noite, 31 min antes
+      // seria ontem (a corrida que passa da meia-noite tem o teste dela, abaixo).
+      corridaEncerrada({ inicio: saidaDeHoje() });
+      await abrirCorrida(); await espera(200);
+      ok('fim da corrida: "Quanto cobrou?" vazio e sem foco; a estimativa so como dica', visivel('fim-valor') && q('fim-valor').value === ''
+         && document.activeElement !== q('fim-valor') && textoDe('fim-estimativa') === 'Estimativa desta corrida: R$ 55 a R$ 68'
+         && q('corrida-fim').textContent.includes('Quanto cobrou? (R$)') && q('fim-valor').inputMode === 'decimal', textoDe('fim-estimativa'));
+      const alturas = ['btn-sem-recibo', 'btn-retomar'].map((id) => Math.round(q(id).getBoundingClientRect().height));
+      ok('"Não lançar" e "Voltar para a corrida" com alvo de 44 px', alturas.every((h) => h >= 44), JSON.stringify(alturas));
+      const [bGerar, bLancar, bNao, bVoltar] = ['btn-gerar-recibo', 'btn-lancar-corrida', 'btn-sem-recibo', 'btn-retomar']
+        .map((id) => q(id).getBoundingClientRect());
+      ok('as acoes ficam afastadas umas das outras (12 px ou mais), inclusive "Não lançar" e "Voltar para a corrida"',
+         bLancar.top - bGerar.bottom >= 12 && bNao.top - bLancar.bottom >= 12 && bVoltar.top - bNao.bottom >= 12,
+         `${Math.round(bLancar.top - bGerar.bottom)} ${Math.round(bNao.top - bLancar.bottom)} ${Math.round(bVoltar.top - bNao.bottom)}`);
+      ok('o antigo "Sem recibo" agora e "Não lançar", com o mesmo id', textoDe('btn-sem-recibo') === 'Não lançar' && textoDe('btn-lancar-corrida') === 'Só lançar no caixa');
+      const antesDeLancar = (await listarLancamentos()).length;
+      clicar('btn-lancar-corrida'); await espera(300);
+      ok('"Só lançar no caixa" sem valor explica, logo abaixo do campo, e nao lanca', textoDe('erro-fim') === 'Informe o valor.'
+         && q('erro-fim').previousElementSibling === q('fim-valor') && !!corridaAtual()
+         && (await listarLancamentos()).length === antesDeLancar, textoDe('erro-fim'));
+      digitar('fim-valor', '58,00');
+      q('fim-forma').value = 'Dinheiro'; q('fim-forma').dispatchEvent(new Event('change'));
+      ok('o valor e a forma ficam guardados na corrida (o app pode morrer no meio)', corridaAtual().valor_cobrado === '58,00'
+         && corridaAtual().forma === 'Dinheiro' && !visivel('erro-fim'));
+      irParaInicio(); await espera(300);
+      ok('com a corrida aberta, o aviso dela fica em cima do cartao do Caixa, e o cartao antes dos dois caminhos',
+         visivel('btn-continuar-corrida') && cartaoEmPrimeiro());
+      await abrirCorrida(); await espera(150);
+      ok('reabrir a corrida traz o valor e a forma de volta', q('fim-valor').value === '58,00' && q('fim-forma').value === 'Dinheiro');
+      const saida = agoraLocal(new Date(corridaAtual().inicio));
+      // Ele volta do Waze com o caixa coberto (o app foi para o fundo).
+      aplicarOlho(false);
+      clicar('btn-lancar-corrida'); clicar('btn-lancar-corrida'); await espera(600);
+      const daCorrida = (await listarLancamentos()).filter((x) => x.origem === 'corrida');
+      const lancada = daCorrida[0] || {};
+      ok('"Só lançar no caixa" cria uma receita so, da corrida, com a data e a hora da saida, o km e a rota',
+         daCorrida.length === 1 && lancada.centavos === 5800 && lancada.tipo === 'receita' && lancada.categoria === 'corrida' && lancada.forma === 'Dinheiro'
+         && lancada.data === saida.data && lancada.hora === saida.hora && lancada.km === '14.2'
+         && lancada.rota === 'Avenida Paulista, 1578 → Aeroporto de Congonhas', JSON.stringify(daCorrida));
+      ok('e apaga a corrida e volta ao inicio com "Corrida lançada: R$ 58,00"', !corridaAtual() && !q('tela-inicio').hidden
+         && visivel('caixa-inicio-confirmacao') && textoDe('caixa-inicio-confirmacao') === 'Corrida lançada: R$ 58,00');
+      // A confirmacao e a corrida que o passageiro acabou de pagar, e nao o caixa.
+      ok('com o caixa coberto, a confirmacao continua com o valor da corrida, e o cartao fica coberto', !valoresVisiveis
+         && textoDe('caixa-inicio-confirmacao') === 'Corrida lançada: R$ 58,00' && textoDe('caixa-inicio-valor') === 'R$ ••••',
+         `${textoDe('caixa-inicio-confirmacao')} | ${textoDe('caixa-inicio-valor')}`);
+      await espera(300);
+      mostrarValores();
+      const diaComCorrida = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'BRL');
+      const linhaEsperada = [`Receitas ${reais(diaComCorrida.receitas)}`, `Despesas ${reais(diaComCorrida.despesas)}`,
+        ...(diaComCorrida.nCorridas ? [plural(diaComCorrida.nCorridas, 'corrida', 'corridas')] : [])].join(' · ');
+      ok('o cartao do inicio ja conta: liquido, receitas, despesas e corridas', textoDe('caixa-inicio-valor') === reais(diaComCorrida.liquido)
+         && textoDe('caixa-inicio-linha') === linhaEsperada, `${textoDe('caixa-inicio-linha')} x ${linhaEsperada}`);
+      const caminhosAntes = document.querySelector('.caminhos').getBoundingClientRect().top;
+      await espera(5200);
+      // Com o cartao no topo, a linha que sumisse puxava os dois caminhos para
+      // cima, embaixo do dedo: some o texto, e o espaco fica ate a proxima volta ao inicio.
+      ok('a confirmacao some sozinha depois de ~5 s, sem puxar "Emitir recibo" e "Fazer corrida" para cima',
+         textoDe('caixa-inicio-confirmacao') === '' && !confirmacaoDoInicio
+         && document.querySelector('.caminhos').getBoundingClientRect().top === caminhosAntes,
+         `${textoDe('caixa-inicio-confirmacao')} ${caminhosAntes} ${document.querySelector('.caminhos').getBoundingClientRect().top}`);
+      irParaInicio(); await espera(300);
+      ok('e na volta seguinte ao inicio a linha sai de vez', !visivel('caixa-inicio-confirmacao'));
+      await abrirCaixa(lancada.data);
+      itemDa(lancada.id).click(); await espera(300);
+      ok('a receita do "Só lançar" tambem nao vira despesa (segmento desligado)', q('tipo-despesa').disabled
+         && textoDe('titulo-lancamento') === 'Editar receita');
+      clicar('btn-fechar-lancamento'); await espera(300);
+
+      corridaEncerrada();
+      await abrirCorrida(); await espera(150);
+      ok('a forma do fim da corrida comeca com a ultima usada', q('fim-forma').value === 'Dinheiro');
+      digitar('fim-valor', '61,40');
+      q('fim-forma').value = 'Cartão'; q('fim-forma').dispatchEvent(new Event('change'));
+      clicar('btn-gerar-recibo'); await espera(300);
+      ok('"Gerar recibo" leva o valor e a forma digitados ao formulario', !q('tela-emitir').hidden && q('valor').value === '61,40' && q('forma').value === 'Cartão'
+         && q('titulo-emitir').textContent === 'Recibo da corrida');
+      q('form-recibo').requestSubmit(); await espera(1200);
+      const doFim = (await listarRecibos()).find((x) => x.dados.valor === '61,40');
+      const receitaDoFim = doFim && await buscarLancamento('r-' + doFim.rid);
+      ok('o recibo da corrida sai com o valor e a forma, e a receita dele entra no caixa', !!doFim && doFim.dados.forma_pagamento === 'Cartão'
+         && !!receitaDoFim && receitaDoFim.centavos === 6140 && receitaDoFim.forma === 'Cartão' && !corridaAtual());
+      ok('o recibo da corrida nao vira duas receitas (a do recibo e a da corrida)', (await listarLancamentos()).filter((x) => x.centavos === 6140).length === 1);
+
+      corridaEncerrada();
+      await abrirCorrida(); await espera(150);
+      const antesDoNao = (await listarLancamentos()).length;
+      digitar('fim-valor', '30,00');
+      clicar('btn-sem-recibo'); await espera(300);
+      ok('"Não lançar" apaga a corrida e nao cria nada no caixa', !corridaAtual() && !q('tela-inicio').hidden
+         && (await listarLancamentos()).length === antesDoNao);
+
+      // A corrida que passou da meia-noite entra no dia da SAIDA (ontem). A
+      // confirmacao sai no cartao de hoje: diz o dia, e o toque abre esse dia.
+      corridaEncerrada({ inicio: new Date(`${ontem}T23:50:00`).toISOString() });
+      await abrirCorrida(); await espera(150);
+      digitar('fim-valor', '58,00');
+      clicar('btn-lancar-corrida'); await espera(600);
+      const daMadrugada = (await listarLancamentos()).find((x) => x.origem === 'corrida' && x.data === ontem && x.hora === '23:50') || {};
+      const textoDeOntem = `Corrida lançada no caixa de ontem: R$ 58,00${ontemTravado ? `. ${nomeCurtoDoMes(Caixa.mesDe(ontem), mesAtual)} fica no Pro.` : ''}`;
+      ok('corrida que passou da meia-noite: entra em ontem, e a confirmacao diz "no caixa de ontem"', !!daMadrugada.id
+         && visivel('caixa-inicio-confirmacao') && textoDe('caixa-inicio-confirmacao') === textoDeOntem, textoDe('caixa-inicio-confirmacao'));
+      clicar('btn-abrir-caixa'); await espera(400);
+      ok('com a confirmacao a vista, o toque no cartao abre o dia da corrida (ontem), e nao hoje', !q('tela-caixa').hidden
+         && textoDe('caixa-dia-titulo').startsWith('Ontem, ') && (ontemTravado ? visivel('caixa-bloqueio') : !!itemDa(daMadrugada.id)),
+         textoDe('caixa-dia-titulo'));
+      // A corrida esquecida aberta desde o mes passado, no Gratis: a frase diz
+      // o dia e que aquele mes so aparece no Pro.
+      corridaEncerrada({ inicio: new Date(`${mesPassado}-15T22:00:00`).toISOString() });
+      await abrirCorrida(); await espera(150);
+      digitar('fim-valor', '58,00');
+      clicar('btn-lancar-corrida'); await espera(600);
+      const [anoPassado, numeroPassado] = mesPassado.split('-');
+      const textoDoMesPassado = `Corrida lançada no caixa de 15/${numeroPassado}${anoPassado === hoje.slice(0, 4) ? '' : `/${anoPassado}`}: R$ 58,00. `
+        + `${nomeCurtoDoMes(mesPassado, mesAtual)} fica no Pro.`;
+      ok('corrida de um mes anterior, no Gratis: a confirmacao diz o dia e que o mes fica no Pro',
+         textoDe('caixa-inicio-confirmacao') === textoDoMesPassado, textoDe('caixa-inicio-confirmacao'));
+      // Esta frase ocupa duas linhas (a da corrida de ontem tambem, em 360 px).
+      // Ao sumir, fica o espaco das duas: com o de uma so, o cartao encolhia e
+      // puxava "Emitir recibo" e "Fazer corrida" para cima, embaixo do dedo. O
+      // apagar e o de sempre, so que mais cedo: sem os 5 s de espera.
+      const linhaDaConfirmacao = q('caixa-inicio-confirmacao');
+      const faixaDaConfirmacao = document.createRange();
+      faixaDaConfirmacao.selectNodeContents(linhaDaConfirmacao);
+      const linhasDaConfirmacao = new Set([...faixaDaConfirmacao.getClientRects()].map((l) => Math.round(l.top))).size;
+      if (confirmacaoDoInicio) confirmacaoDoInicio.ate = Date.now() + 600;
+      irParaInicio(); await espera(300);
+      const caminhosComDuasLinhas = document.querySelector('.caminhos').getBoundingClientRect().top;
+      await espera(600);
+      ok('a confirmacao de duas linhas tambem some sem puxar "Emitir recibo" e "Fazer corrida" para cima',
+         linhasDaConfirmacao >= 2 && textoDe('caixa-inicio-confirmacao') === '' && !confirmacaoDoInicio
+         && document.querySelector('.caminhos').getBoundingClientRect().top === caminhosComDuasLinhas,
+         `${linhasDaConfirmacao} linhas; ${caminhosComDuasLinhas} -> ${document.querySelector('.caminhos').getBoundingClientRect().top}`);
+      irParaInicio(); await espera(300);
+      ok('e na volta seguinte ao inicio ela sai de vez, sem guardar a altura das duas linhas', !visivel('caixa-inicio-confirmacao')
+         && linhaDaConfirmacao.style.minHeight === '');
+      // A corrida do dia continua com a frase curta (o teste do "Só lançar" acima).
+
+      // Gravacao que aborta (o Android sem espaco: o commit falha so com
+      // "abort", sem "error"): o "Só lançar" e o Salvar avisam e soltam a trava,
+      // em vez de ficar parados ate ele fechar o app.
+      const putDoNavegador = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...a) {
+        const req = putDoNavegador.apply(this, a);
+        if (this.name === 'lancamentos') {
+          const tx = this.transaction;
+          req.addEventListener('success', () => { try { tx.abort(); } catch { /* ja acabou */ } });
+        }
+        return req;
+      };
+      try {
+        corridaEncerrada({ inicio: saidaDeHoje() });
+        await abrirCorrida(); await espera(150);
+        digitar('fim-valor', '33,00');
+        clicar('btn-lancar-corrida'); await espera(600);
+        ok('gravacao abortada (aparelho sem espaco): o "Só lançar no caixa" avisa, solta a trava e a corrida fica',
+           textoDe('erro-fim') === 'Não deu para lançar no caixa. Tente de novo.' && !lancandoCorrida && !!corridaAtual(), textoDe('erro-fim'));
+        apagarCorrida();
+        await abrirCaixa();
+        lancarDespesa(); await espera(100);
+        q('l-valor').value = '11,00'; categoria('lavagem').click();
+        q('form-lancamento').requestSubmit(); await espera(600);
+        ok('gravacao abortada: o Salvar avisa e volta a funcionar', textoDe('erro-lancamento') === 'Não deu para guardar o lançamento. Tente de novo.'
+           && !q('btn-salvar-lancamento').disabled && !salvandoLancamento && !q('tela-lancamento').hidden, textoDe('erro-lancamento'));
+        clicar('btn-fechar-lancamento'); await espera(300);
+      } finally {
+        IDBObjectStore.prototype.put = putDoNavegador;
+      }
+
+      // ── Navegacao e voltar do Android ──
+      await abrirCaixa();
+      clicar('btn-caixa-lancamento'); await espera(100);
+      ok('voltar do Android: lancamento -> Caixa', voltarUmNivel() === true && !q('tela-caixa').hidden);
+      await espera(300);
+      clicar('btn-abrir-mes'); await espera(300);
+      ok('voltar do Android: mes -> dia', voltarUmNivel() === true && !q('tela-caixa').hidden);
+      await espera(300);
+      clicar('btn-definir-meta'); await espera(100);
+      ok('voltar do Android com o campo da meta aberto: so fecha o campo', voltarUmNivel() === true && !q('tela-caixa').hidden && !visivel('form-meta'));
+      await espera(200);
+      ok('voltar do Android: Caixa -> inicio', voltarUmNivel() === true && !q('tela-inicio').hidden);
+      clicar('btn-inicio-lancamento'); await espera(100);
+      ok('"+ Lançamento" do cartao do inicio abre "Novo lançamento" de hoje, em Receita com "Corrida", com o foco no valor', !q('tela-lancamento').hidden
+         && document.activeElement === q('l-valor') && q('tipo-receita').getAttribute('aria-checked') === 'true'
+         && categoria('corrida').getAttribute('aria-pressed') === 'true' && textoDe('titulo-lancamento') === 'Novo lançamento' && q('l-data').value === hoje);
+      q('tipo-despesa').focus(); clicar('tipo-despesa'); await espera(50);
+      ok('e o toque em "Despesa" troca para a despesa de hoje, com o foco de volta no valor', q('tipo-despesa').getAttribute('aria-checked') === 'true'
+         && !q('l-categorias').querySelector('[aria-pressed="true"]') && document.activeElement === q('l-valor') && q('l-data').value === hoje);
+      ok('voltar do Android: o lancamento aberto pelo inicio volta ao inicio', voltarUmNivel() === true && !q('tela-inicio').hidden);
+      clicar('btn-abrir-caixa'); await espera(400);
+      ok('tocar no cartao do inicio abre o Caixa', !q('tela-caixa').hidden);
+      clicar('btn-perfil'); await espera(100);
+      clicar('btn-meus-dados'); await espera(300);
+      clicar('btn-fechar-perfil'); await espera(400);
+      ok('o Caixa e tela de base: "Voltar" de Meus dados volta para ele', !q('tela-caixa').hidden);
+      clicar('btn-fechar-caixa'); await espera(300);
+      ok('"Voltar" do Caixa vai ao inicio', !q('tela-inicio').hidden);
+
+      // ── Envio do que foi lancado pela tela ──
+      __lotes.length = 0;
+      await abrirCaixa();
+      clicar('btn-caixa-lancamento'); await espera(100);
+      q('l-valor').value = '12,00'; q('l-obs').value = 'envio pela tela';
+      q('form-lancamento').requestSubmit(); await espera(2900);
+      const subiu = __lotes.flatMap((c) => c.lancamentos).find((x) => x.obs === 'envio pela tela');
+      ok('o lancamento da tela sobe ~2 s depois, sem a rota nem o dono', !!subiu && !('rota' in subiu) && !('dono' in subiu)
+         && ((await listarLancamentos()).find((x) => x.obs === 'envio pela tela') || {}).pendente === false, JSON.stringify(subiu));
+
+      // ── Aparelho dividido ──
+      localStorage.setItem('motorista_id', JSON.stringify('outro'));
+      Guardado.set('motorista', { full_name: 'Outro', email: 'outro@teste.invalid' });
+      await abrirCaixa();
+      ok('aparelho dividido: o outro motorista ve o Caixa vazio', visivel('caixa-vazio') && !q('caixa-lista').children.length
+         && textoDe('caixa-liquido') === 'R$ 0,00');
+      irParaInicio(); await espera(300);
+      ok('nem o cartao do inicio mostra o caixa do outro', textoDe('caixa-inicio-valor') === 'Nenhum lançamento hoje');
+      localStorage.setItem('motorista_id', JSON.stringify('web-motorista'));
+      Guardado.set('motorista', retrato);
+
+      // ── Visual: cores, numeros e alvos ──
+      guardarMetaDoDia(40000);
+      await abrirCaixa();
+      const cor = (alvoCor) => getComputedStyle(alvoCor).color;
+      ok('texto do caixa: receita em verde, despesa em coral claro, secundario a 62% (contraste de 4,5:1 ou mais)',
+         cor(q('caixa-receitas')) === 'rgb(91, 214, 138)' && cor(q('caixa-despesas')) === 'rgb(255, 107, 94)'
+         && cor(q('caixa-liquido-rotulo')) === 'rgba(247, 245, 242, 0.62)' && cor(q('caixa-lista').querySelector('.caixa-item-hora')) === 'rgba(247, 245, 242, 0.62)',
+         [cor(q('caixa-receitas')), cor(q('caixa-despesas')), cor(q('caixa-liquido-rotulo'))].join(' '));
+      ok('numeros com algarismos de largura fixa', ['caixa-liquido', 'caixa-receitas', 'caixa-despesas'].every((id) => getComputedStyle(q(id)).fontVariantNumeric.includes('tabular-nums'))
+         && getComputedStyle(q('caixa-lista').querySelector('.caixa-item-valor')).fontVariantNumeric.includes('tabular-nums'));
+      // Os erros das telas do caixa no coral de texto (6,8:1), e nao no --coral
+      // do .erro (4,35:1): e a frase que ele precisa ler para o Salvar funcionar.
+      clicar('btn-caixa-lancamento'); await espera(100);
+      q('form-lancamento').requestSubmit(); await espera(150);
+      const corDoErroLancamento = visivel('erro-lancamento') && cor(q('erro-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+      clicar('btn-mudar-meta'); await espera(100);
+      q('meta-valor').value = 'abc'; q('form-meta').requestSubmit(); await espera(100);
+      const corDoErroMeta = visivel('erro-meta') && cor(q('erro-meta'));
+      clicar('btn-cancelar-meta'); await espera(200);
+      corridaEncerrada({ inicio: saidaDeHoje() });
+      await abrirCorrida(); await espera(150);
+      clicar('btn-lancar-corrida'); await espera(300);
+      const corDoErroFim = visivel('erro-fim') && cor(q('erro-fim'));
+      apagarCorrida();
+      ok('os erros do lancamento, da meta e do fim da corrida no coral de texto (6,8:1), e nao no coral do .erro (4,35:1)',
+         [corDoErroLancamento, corDoErroMeta, corDoErroFim].every((c) => c === 'rgb(255, 107, 94)'),
+         [corDoErroLancamento, corDoErroMeta, corDoErroFim].join(' | '));
+      await abrirCaixa();
+      const pequenos = [];
+      const medir = (raiz) => raiz.querySelectorAll('button, summary, select, input').forEach((b) => {
+        const h = b.getBoundingClientRect().height;
+        if (h && h < 44) pequenos.push(`${b.id || b.className || b.tagName}:${Math.round(h)}`);
+      });
+      medir(q('tela-caixa'));
+      await abrirMesDoCaixa(mesAtual); medir(q('tela-caixa-mes'));
+      clicar('btn-fechar-mes'); await espera(300);
+      lancarDespesa(); await espera(100);
+      categoria('combustivel').click(); q('l-mais').open = true; await espera(50);
+      medir(q('tela-lancamento'));
+      clicar('btn-fechar-lancamento'); await espera(300);
+      irParaInicio(); await espera(200); medir(q('caixa-inicio'));
+      ok('todo botao e campo das telas do caixa com alvo de 44 px ou mais', pequenos.length === 0, pequenos.join(' '));
+      ok('a pagina do Caixa nao rola de lado (390 px)', (await abrirCaixa(), document.documentElement.scrollWidth <= innerWidth), String(document.documentElement.scrollWidth));
+
+      // ── Sair cobre ──
+      // Com o olho aberto, o Sair: tudo coberto, tambem nas telas escondidas.
+      // Entrando de novo, o cartao abre coberto, e o caixa continua no aparelho.
+      mostrarValores();
+      await abrirCaixa();
+      irParaInicio(); await espera(300);
+      const comValoresAntesDeSair = !semDinheiro();
+      clicar('btn-perfil'); await espera(100);
+      clicar('btn-sair'); await espera(300);
+      ok('Sair cobre os valores: nenhum numero de dinheiro no cartao nem nas telas do Caixa, e o olho volta a "Mostrar valores"',
+         comValoresAntesDeSair && !valoresVisiveis && !q('tela-login').hidden && semDinheiro()
+         && ['btn-olho-inicio', 'btn-olho-caixa', 'btn-olho-mes'].every((id) => ariaDo(id) === 'Mostrar valores'), dinheiroNaPagina().join(' | '));
+      entrarNaSessao({ access_token: 'token-caixa3', refresh_token: 'refresh-caixa3' }, 'web@teste.invalid');
+      await iniciar(); await espera(300);
+      const diaDaVolta = Caixa.resumoDoDia(await listarLancamentos(), hoje, 'BRL');
+      ok('entrando de novo, o cartao vem coberto', !q('tela-inicio').hidden && !valoresVisiveis && textoDe('caixa-inicio-valor') === 'R$ ••••'
+         && diaDaVolta.nReceitas + diaDaVolta.nDespesas > 0, textoDe('caixa-inicio-valor'));
+      mostrarValores();
+      ok('e, com o olho aberto, o caixa dele continua no aparelho', textoDe('caixa-inicio-valor') === reais(diaDaVolta.liquido), textoDe('caixa-inicio-valor'));
+
+      // O mesmo pelo Sair, no Pro: com o Caixa num dia do mes passado (liberado
+      // para ele), o Sair o redesenha bloqueado (o plano ja saiu), e, entrando
+      // de novo, ainda Pro, o "Definir meta do dia" abria o campo sem o foco.
+      removerMetaDoDia();
+      window.__sessao = { ...sessaoGratis, plano: 'pro', limite_mensal: null };
+      try {
+        await atualizarSessao();
+        await abrirCaixa(`${mesPassado}-14`);
+        const diaNoPro = ehPro() && visivel('caixa-dia');
+        clicar('btn-perfil'); await espera(100);
+        clicar('btn-sair'); await espera(300);
+        entrarNaSessao({ access_token: 'token-caixa4', refresh_token: 'refresh-caixa4' }, 'web@teste.invalid');
+        await iniciar(); await espera(300);
+        const conviteNoPro = ehPro() && !q('tela-inicio').hidden && visivel('btn-inicio-definir-meta');
+        clicar('btn-inicio-definir-meta');
+        const focoNoToque = document.activeElement === q('meta-valor');
+        await espera(400);
+        ok('no Pro, depois do Sair com o Caixa num dia do mes passado, "Definir meta do dia" tambem abre hoje com o foco no valor, no mesmo toque',
+           diaNoPro && conviteNoPro && focoNoToque && textoDe('caixa-dia-titulo').startsWith('Hoje, ') && document.activeElement === q('meta-valor'),
+           JSON.stringify({ diaNoPro, conviteNoPro, focoNoToque, titulo: textoDe('caixa-dia-titulo') }));
+        clicar('btn-cancelar-meta');
+      } finally {
+        window.__sessao = sessaoGratis;
+      }
+    } catch (e) {
+      r.push(`FALHA caixa: excecao: ${e && e.stack || e}`);
     }
     terminar(r);
     return;

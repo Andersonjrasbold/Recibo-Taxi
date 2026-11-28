@@ -451,12 +451,13 @@ PLANOS_DO_LINK = {
 # Política e Termos de 2026-11-21 (venda por telefone com representante). A
 # própria Política promete 15 dias de aviso para mudança relevante: as ligações e
 # o representante de vendas só começam nesta data, e o aviso vai por e-mail.
-# Versão de 2026-11-27: o Caixa do app 1.8 (lançamentos com cópia no servidor).
-POLITICA_ATUALIZADA_EM = "27 de novembro de 2026"   # rascunho: acertar no dia do merge
+# Versão de 2026-11-28: o Caixa do app 1.8 (lançamentos com cópia no servidor).
+POLITICA_ATUALIZADA_EM = "28 de novembro de 2026"
 CONTATO_DE_VENDAS_A_PARTIR = "06/12/2026"
 # Caixa do app 1.8: a data de publicação da Política + os 15 dias de aviso que
-# ela promete (seção 11). Rascunho: acertar no dia do merge.
-CAIXA_A_PARTIR = "12/12/2026"
+# ela promete (seção 11). Publicação em 28/11/2026: se o merge atrasar, as duas
+# datas andam juntas (e a do e-mail de aviso também).
+CAIXA_A_PARTIR = "13/12/2026"
 # A mesma data para o código: antes dela o POST /api/lancamentos não grava nada.
 # O envio do app é automático (na primeira abertura do 1.8 os recibos do
 # aparelho viram lançamentos e sobem sozinhos): sem o portão, o 1.8 liberado
@@ -6807,9 +6808,8 @@ def pagina_excluir_conta():
 
     Mesma URL do POST logo abaixo, que e quem realmente apaga: aqui e GET.
     """
-    # 27/11: a lista do que é apagado ganhou o Caixa. Rascunho: acertar no dia
-    # do merge, junto com POLITICA_ATUALIZADA_EM.
-    return render_template("excluir_conta.html", updated_at="27 de novembro de 2026")
+    # 28/11: a lista do que é apagado ganhou o Caixa (mesma data da Política).
+    return render_template("excluir_conta.html", updated_at="28 de novembro de 2026")
 
 
 # ── Receipt view ──────────────────────────────────────────────────────────────
